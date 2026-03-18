@@ -1,0 +1,44 @@
+appId: com.chamaccounts.app
+productName: Chamaccounts
+copyright: Copyright © 2025
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - parametre/**/*
+  - data/**/*
+  - package.json
+
+asarUnpack:
+  - parametre/**/*
+  - data/**/*
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.finance
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Office
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+
+publish: null

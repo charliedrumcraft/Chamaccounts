@@ -1,0 +1,54 @@
+{
+  "name": "chamaccounts",
+  "version": "1.0.0",
+  "description": "Application dérivée, réutilisant des modules de Comptal2",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "node -e \"delete process.env.ELECTRON_RUN_AS_NODE;require('child_process').spawnSync('npx',['vite'],{stdio:'inherit',env:{...process.env}})\"",
+    "electron:build": "npx tsc -p tsconfig.electron.json && vite build",
+    "build": "npm run electron:build && electron-builder",
+    "build:win": "npm run electron:build && electron-builder --win",
+    "build:mac": "npm run electron:build && (if [ \"$(uname)\" = \"Darwin\" ]; then electron-builder --mac; else echo 'Build Mac impossible depuis Linux.'; exit 1; fi)",
+    "build:linux": "npm run electron:build && electron-builder --linux",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5174 && cross-env VITE_DEV_SERVER_URL=http://localhost:5174 electron .\""
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "chamaccounts"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "chart.js": "^4.5.1",
+    "date-fns": "^2.30.0",
+    "nouislider": "^15.8.1",
+    "papaparse": "^5.4.1",
+    "react": "^18.2.0",
+    "react-chartjs-2": "^5.3.1",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "@types/nouislider": "^9.0.10",
+    "@types/papaparse": "^5.3.14",
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.16",
+    "concurrently": "^8.2.2",
+    "cross-env": "^10.1.0",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.3.6",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.8",
+    "vite-plugin-electron": "^0.28.0",
+    "vite-plugin-electron-renderer": "^0.14.5",
+    "wait-on": "^7.2.0",
+    "xlsx": "^0.18.5"
+  }
+}
