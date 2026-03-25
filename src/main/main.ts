@@ -5,6 +5,12 @@ import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { mergeImportTransactions, getLastImportReportPath } from './mergeImportTransactions';
+import {
+  TRANSACTIONS_IMPORT_DIR,
+  TRANSACTIONS_OLD_DIR,
+  ANOMALY_REPORT_PATH,
+  MONTHLY_ANOMALY_REPORT_PATH,
+} from '../shared/dataPaths';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -177,8 +183,6 @@ ipcMain.handle('select-file', async (_, options?: { filters?: { name: string; ex
   }
 });
 
-const TRANSACTIONS_IMPORT_DIR = 'data/TransactionsData/Import';
-
 ipcMain.handle('import-transaction-files', async () => {
   try {
     if (!mainWindow) return { success: false, error: 'Fenêtre non disponible' };
@@ -226,8 +230,6 @@ ipcMain.handle('open-import-folder', async () => {
     return { success: false, error: message };
   }
 });
-
-const TRANSACTIONS_OLD_DIR = 'data/TransactionsData/Old';
 
 ipcMain.handle('archive-import-folder', async () => {
   try {
@@ -313,9 +315,6 @@ ipcMain.handle('open-import-report', async () => {
     return { success: false, error: message };
   }
 });
-
-const ANOMALY_REPORT_PATH = 'data/TransactionsData/Processed/anomaly_report.csv';
-const MONTHLY_ANOMALY_REPORT_PATH = 'data/TransactionsData/Processed/monthly_anomaly_report.csv';
 
 ipcMain.handle('open-anomaly-report', async () => {
   try {
@@ -478,7 +477,7 @@ ipcMain.handle('write-binary-file', async (_, filePath: string, base64Content: s
       const csvPath = fullPath.replace(/\.xlsx$/i, '.csv');
       await fs.writeFile(csvPath, csv, 'utf-8');
       const csvName = path.basename(csvPath);
-      const oldDir = path.join(getAppPath(), 'data', 'TransactionsData', 'Old');
+      const oldDir = path.join(getAppPath(), TRANSACTIONS_OLD_DIR);
       if (!existsSync(oldDir)) {
         await fs.mkdir(oldDir, { recursive: true });
       }

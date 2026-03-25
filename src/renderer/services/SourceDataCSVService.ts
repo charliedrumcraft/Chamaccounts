@@ -6,9 +6,8 @@
 
 import { FileService } from './FileService';
 import { formatDateDDMMYYYY } from '../utils/format';
+import { SOURCE_DATA_PATH } from '@/shared/dataPaths';
 import Papa from 'papaparse';
-
-const SOURCE_DATA_PATH = 'data/TransactionsData/Processed/source_data.csv';
 
 /** Chemin du fichier source pour l’édition (sauvegarde depuis le tableau). */
 export { SOURCE_DATA_PATH };

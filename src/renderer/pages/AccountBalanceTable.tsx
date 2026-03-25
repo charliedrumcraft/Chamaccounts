@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { format } from 'date-fns';
 import Sidebar from '../components/Layout/Sidebar';
+import { ACCOUNT_BALANCE_PROCESSED_DIR } from '@/shared/dataPaths';
 import {
   AccountBalanceCSVService,
   ACCOUNT_CODE_TO_LABEL,
@@ -37,7 +38,7 @@ const AccountBalanceTable: React.FC = () => {
         if (!cancelled) {
           setRows(data ?? null);
           if (!data) {
-            setError('Fichier data/AccountBalanceData/Processed/Account-Balance.csv absent ou vide.');
+            setError(`Fichier ${ACCOUNT_BALANCE_PROCESSED_DIR}/Account-Balance.csv absent ou vide.`);
           }
         }
       })

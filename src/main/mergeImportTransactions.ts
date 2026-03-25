@@ -7,10 +7,11 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
-
-const IMPORT_DIR = 'data/TransactionsData/Import';
-const PROCESSED_PATH = 'data/TransactionsData/Processed/source_data.csv';
-const MERGE_REPORT_PATH = 'data/TransactionsData/Processed/merge_report.csv';
+import {
+  TRANSACTIONS_IMPORT_DIR as IMPORT_DIR,
+  SOURCE_DATA_PATH as PROCESSED_PATH,
+  MERGE_REPORT_PATH,
+} from '../shared/dataPaths';
 /** En-têtes du fichier source_data.csv (colonne AMOUNT GBP : négatif = dépense, positif = revenu). */
 const OUTPUT_HEADERS = ['INDEX', 'DATE', 'TITLE', 'AMOUNT', 'CURRENCY', 'ACCOUNT', 'AMOUNT GBP', 'TYPE'];
 /** En-têtes reconnus à l'import (fichiers peuvent avoir EXPENSE et INCOME séparés). */

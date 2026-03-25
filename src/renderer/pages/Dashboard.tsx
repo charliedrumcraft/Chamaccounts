@@ -5,6 +5,7 @@ import AccountBalanceLineChart, {
 import AccountBalanceStockChart from '../components/Dashboard/AccountBalanceStockChart';
 import DateRangeSlider from '../components/Common/DateRangeSlider';
 import Sidebar from '../components/Layout/Sidebar';
+import { ACCOUNT_BALANCE_PROCESSED_DIR } from '@/shared/dataPaths';
 import { AccountBalanceCSVService } from '../services/AccountBalanceCSVService';
 import { SourceDataCSVService, type SourceDataResult } from '../services/SourceDataCSVService';
 import { getAccountCurrency } from '../constants/accountCurrencies';
@@ -1853,7 +1854,7 @@ const Dashboard: React.FC = () => {
           </div>
         ) : (
           <div className="flex items-center justify-center h-64 text-gray-500">
-            Aucune donnée (fichier data/AccountBalanceData/Processed/Account-Balance.csv ou account_balance.csv absent ou vide)
+            Aucune donnée (fichier {ACCOUNT_BALANCE_PROCESSED_DIR}/Account-Balance.csv ou account_balance.csv absent ou vide)
           </div>
         )}
         </>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Chart as ChartJS, ChartOptions, Filler, registerables } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 import Sidebar from '../components/Layout/Sidebar';
+import { MONTHLY_ANOMALY_REPORT_PATH } from '@/shared/dataPaths';
 import { SourceDataCSVService, type SourceDataResult, SOURCE_DATA_PATH } from '../services/SourceDataCSVService';
 import { EXCLUDE_ANOMALY_COLUMN, detectAnomalies } from '../services/AnomalyDetectionService';
 import { getSuggestions, getDateSuggestionsForMonth, completeDateForMonth, isTextSuggestibleColumn } from '../services/SuggestInputService';
@@ -40,8 +41,6 @@ const Y_AXIS_CURRENCIES = [
   { value: '€', label: 'EUR (€)' },
   { value: 'CHF', label: 'CHF' },
 ] as const;
-const MONTHLY_ANOMALY_REPORT_PATH = 'data/TransactionsData/Processed/monthly_anomaly_report.csv';
-
 /** Parse une cellule date en Date ou null (ISO ou JJ/MM/AAAA, JJ.MM.AAAA). */
 function parseDateFromCell(raw: string): Date | null {
   const s = (raw ?? '').trim();
@@ -261,7 +260,7 @@ const MonthlyAccounting: React.FC = () => {
       .then((result) => {
         setData(result);
         if (!result) {
-          setError('Fichier data/TransactionsData/Processed/source_data.csv absent ou vide.');
+          setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
         }
       })
       .catch((err) => {

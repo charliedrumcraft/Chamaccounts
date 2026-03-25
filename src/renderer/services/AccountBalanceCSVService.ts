@@ -3,6 +3,7 @@
  * On utilise uniquement les lignes au début de chaque mois (jour = 1) pour le graphique.
  */
 
+import { ACCOUNT_BALANCE_PROCESSED_DIR } from '@/shared/dataPaths';
 import { FileService } from './FileService';
 import Papa from 'papaparse';
 import { parse, isValid, format, startOfDay, getDate } from 'date-fns';
@@ -119,7 +120,7 @@ export class AccountBalanceCSVService {
   }
 
   private static getDataDirectory(): string {
-    return 'data/AccountBalanceData/Processed';
+    return ACCOUNT_BALANCE_PROCESSED_DIR;
   }
 
   /**

@@ -1,6 +1,7 @@
 /// <reference path="../vite-env.d.ts" />
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Sidebar from '../components/Layout/Sidebar';
+import { ANOMALY_REPORT_PATH, transactionsImportFile } from '@/shared/dataPaths';
 import { SourceDataCSVService, type SourceDataResult, SOURCE_DATA_PATH } from '../services/SourceDataCSVService';
 import { detectAnomalies, EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
 import { canonicalAccountFromSource, accountLabelFromSource } from '../constants/accountSourceLabels';
@@ -174,7 +175,7 @@ const TransactionsTable: React.FC = () => {
       .then((result) => {
         setData(result);
         if (!result) {
-          setError('Fichier data/TransactionsData/Processed/source_data.csv absent ou vide.');
+          setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
         }
       })
       .catch((err) => {
@@ -411,7 +412,7 @@ const TransactionsTable: React.FC = () => {
     setAnomalyLoading(true);
     try {
       const { anomalies, csvContent } = detectAnomalies(data);
-      const reportPath = 'data/TransactionsData/Processed/anomaly_report.csv';
+      const reportPath = ANOMALY_REPORT_PATH;
       const writeResult = await api.writeFile(reportPath, csvContent);
       if (writeResult.success) {
         const now = new Date().toISOString();
@@ -458,7 +459,7 @@ const TransactionsTable: React.FC = () => {
         return;
       }
       const fileName = sourcePath.replace(/^.*[/\\]/, '');
-      const destPath = `data/TransactionsData/Import/${fileName}`;
+      const destPath = transactionsImportFile(fileName);
       const writeResult = await api.writeFile(destPath, readResult.data);
       if (writeResult.success) {
         setImportFileMessage(`Fichier copié dans Import : ${fileName}`);

@@ -28,6 +28,6 @@
       "@comptal2/*": ["../Comptal2/src/*"]
     }
   },
-  "include": ["src/renderer/**/*"],
+  "include": ["src/renderer/**/*", "src/shared/**/*"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
