@@ -3,6 +3,8 @@ release/
 build/release-notes.md
 dist/
 dist-electron/
+# Données locales de dev (vos CSV réels) — ne pas committer
+/data/
 .DS_Store
 *.log
 .env

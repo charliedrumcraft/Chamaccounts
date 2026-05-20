@@ -11,18 +11,8 @@ import {
 
 export const RECOGNISED_ACCOUNTS_STORAGE_KEY = 'settings-recognised-accounts';
 
-export const DEFAULT_RECOGNISED_ACCOUNTS: string[] = [
-  'CM',
-  'REV EUR',
-  'REV GBP',
-  'REV CHF',
-  'N26FR',
-  'N26DE',
-  'HSBC A/C',
-  'HSBC OBS',
-  'Advanzia',
-  'Cash',
-];
+/** Liste vide par défaut : l’utilisateur configure ses comptes dans Paramètres. */
+export const DEFAULT_RECOGNISED_ACCOUNTS: string[] = [];
 
 export type RecognisedAccountEntry = {
   name: string;
@@ -212,15 +202,11 @@ export function loadRecognisedAccountsFromStorage(): RecognisedAccountEntry[] {
       'name' in (parsed[0] as object)
     ) {
       const entries = (parsed as RecognisedAccountEntry[]).map(normalizeEntry);
-      return migrateRecognisedAccountEntriesIfNeeded(
-        entries.length ? entries : defaultEntries()
-      );
+      return migrateRecognisedAccountEntriesIfNeeded(entries);
     }
 
     const strings = parsed.filter((v): v is string => typeof v === 'string');
-    const names = migrateRecognisedAccountsIfNeeded(
-      strings.length ? strings : [...DEFAULT_RECOGNISED_ACCOUNTS]
-    );
+    const names = migrateRecognisedAccountsIfNeeded(strings);
     const migrated = migrateRecognisedAccountEntriesIfNeeded(
       names.map((name) => ({
         name,

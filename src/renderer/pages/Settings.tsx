@@ -226,10 +226,10 @@ const Settings: React.FC = () => {
     loadRecognisedAccountsFromStorage()
   );
   const [recognisedEntryTypes, setRecognisedEntryTypes] = useState<string[]>(() =>
-    loadStringArray(STORAGE_KEYS.recognisedEntryTypes, KNOWN_ENTRY_TYPES)
+    loadStringArray(STORAGE_KEYS.recognisedEntryTypes, [])
   );
   const [recognisedOutputTypes, setRecognisedOutputTypes] = useState<string[]>(() =>
-    loadStringArray(STORAGE_KEYS.recognisedOutputTypes, KNOWN_OUTPUT_TYPES)
+    loadStringArray(STORAGE_KEYS.recognisedOutputTypes, [])
   );
 
   const [newAccountValue, setNewAccountValue] = useState('');

@@ -74,6 +74,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare virgin data for release build
+        shell: bash
+        run: bash scripts/prepare-release-data.sh
+
       - name: Prepare code signing (optional)
         if: matrix.prepare_signing == true
         shell: bash

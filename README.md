@@ -139,7 +139,8 @@ Chamaccounts/
 │   │   ├── services/         # Accès CSV, taux de change, assistants d’import
 │   │   └── hooks/            # Assistants d’import (transactions, soldes)
 │   └── shared/               # Chemins data/, logique d’import partagée
-├── data/                     # Données utilisateur (transactions, soldes, soutien, AppState)
+├── data-template/            # Données vierges empaquetées pour les releases (versionné)
+├── data/                     # Données locales de dev (ignoré par git, non écrasé)
 ├── build/                    # Ressources de build (entitlements macOS, notes de release)
 ├── scripts/                  # CI, notes de release, migrations
 ├── electron-builder.yml      # Configuration des installateurs et publication GitHub
@@ -147,6 +148,12 @@ Chamaccounts/
 ```
 
 **Dossiers générés** (à ne pas versionner) : `node_modules/`, `dist/`, `dist-electron/`, `release/`.
+
+### Données : release vs développement local
+
+- **`data-template/`** : CSV vides (en-têtes seuls) utilisés par la CI avant `electron-builder` (`scripts/prepare-release-data.sh`).
+- **`data/`** : votre dossier de travail local (ignoré par git). Un `git pull` ne modifie pas vos fichiers existants dans `data/`.
+- **Première installation** (release) : listes vides dans Paramètres (comptes, types d’entrées/sorties) à configurer par l’utilisateur.
 
 ## Licence
 

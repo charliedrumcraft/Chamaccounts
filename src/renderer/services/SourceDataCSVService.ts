@@ -69,8 +69,25 @@ export function parseSourceTransactionCsvContent(content: string): SourceDataRes
   const data = rawData.filter(
     (row) => !fields.every((f) => (row[f] ?? '').toString().trim() === (f ?? '').trim())
   );
-  if (!fields.length || !data.length) {
+  if (!fields.length) {
     return null;
+  }
+  if (!data.length) {
+    const headerOnly = fields
+      .map((orig) => ({ orig, norm: normalizeHeader(orig) }))
+      .filter(({ norm }) => norm && !HIDDEN_COLUMNS.has(norm) && !isIndexColumn(norm));
+    let headersFromCsv = headerOnly.map((x) => x.norm);
+    if (!headersFromCsv.length) return null;
+    if (!headersFromCsv.some((h) => /^projet$/i.test(h))) {
+      const typeIdx = headersFromCsv.findIndex((h) => /^type$/i.test(h));
+      const insertAt = typeIdx >= 0 ? typeIdx + 1 : headersFromCsv.length;
+      headersFromCsv = [
+        ...headersFromCsv.slice(0, insertAt),
+        'PROJET',
+        ...headersFromCsv.slice(insertAt),
+      ];
+    }
+    return { headers: ['Index', ...headersFromCsv], rows: [] };
   }
   const kept = fields
     .map((orig) => ({ orig, norm: normalizeHeader(orig) }))
