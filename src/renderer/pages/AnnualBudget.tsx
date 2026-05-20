@@ -1,12 +1,49 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import Sidebar from '../components/Layout/Sidebar';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { SourceDataCSVService, type SourceDataResult } from '../services/SourceDataCSVService';
-import { AccountBalanceCSVService, ACCOUNT_CODE_TO_CURRENCY, type BalanceRow } from '../services/AccountBalanceCSVService';
+import {
+  AccountBalanceCSVService,
+  ACCOUNT_CODE_TO_CURRENCY,
+  getBalanceCodeForSettingsAccountName,
+  type AccountFiatCurrency,
+  type BalanceRow,
+} from '../services/AccountBalanceCSVService';
+import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { convertToAxisCurrency, type CurrencySymbol } from '../services/EffectiveExchangeRates';
 import { formatCurrency } from '../utils/format';
+import { getDefaultLineAssignedTypes } from '../constants/annualBudgetTypeMapping';
+import {
+  type BudgetCategory,
+  type BudgetLine,
+  loadBilanStructureSnapshot,
+  saveBilanStructureSnapshot,
+  getYearSnapshot,
+  saveYearSnapshot,
+} from '../services/annualBudgetStorage';
 
-const STORAGE_KEY = 'annual-budget-sidebar-collapsed';
 const YEAR_STORAGE_KEY = 'annual-budget-selected-year';
+
+/** Police du tableau « Mouvements par type et par mois » (rem de base, défaut ~ text-sm). */
+const TYPES_MONTH_TABLE_FONT_STORAGE_KEY = 'annual-budget-types-month-table-font-rem';
+const TYPES_MONTH_FONT_REM_DEFAULT = 0.875;
+const TYPES_MONTH_FONT_REM_MIN = 0.6875;
+const TYPES_MONTH_FONT_REM_MAX = 1.125;
+const TYPES_MONTH_FONT_REM_STEP = 0.0625;
+
+function loadTypesMonthTableFontRem(): number {
+  try {
+    const raw =
+      typeof localStorage !== 'undefined' ? localStorage.getItem(TYPES_MONTH_TABLE_FONT_STORAGE_KEY) : null;
+    if (raw) {
+      const n = parseFloat(raw);
+      if (Number.isFinite(n) && n >= TYPES_MONTH_FONT_REM_MIN && n <= TYPES_MONTH_FONT_REM_MAX) {
+        const steps = Math.round((n - TYPES_MONTH_FONT_REM_MIN) / TYPES_MONTH_FONT_REM_STEP);
+        return TYPES_MONTH_FONT_REM_MIN + steps * TYPES_MONTH_FONT_REM_STEP;
+      }
+    }
+  } catch {}
+  return TYPES_MONTH_FONT_REM_DEFAULT;
+}
 
 /** Clés localStorage des types reconnus (Réglages / Données reconnues). Alignées avec Settings.tsx. */
 const RECOGNISED_ENTRY_TYPES_KEY = 'settings-recognised-entry-types';
@@ -47,16 +84,6 @@ function loadRecognisedTypesFromSettings(): { entryTypes: string[]; outputTypes:
 }
 
 /** Structure de la feuille de bilan budgétisé (Budgeted Balance Sheet) */
-interface BudgetLine {
-  id: string;
-  label: string;
-}
-interface BudgetCategory {
-  id: string;
-  label: string;
-  lines: BudgetLine[];
-}
-
 const BUDGETED_ASSETS: BudgetCategory[] = [
   {
     id: 'assets-bf',
@@ -182,71 +209,6 @@ const BUDGETED_LIABILITIES: BudgetCategory[] = [
   },
 ];
 
-/**
- * Correspondance Type (colonne du tableau des transactions) → id de ligne de la feuille de bilan.
- * Les montants réels par type (aggregation.byType) sont ventilés sur ces lignes pour afficher le "réel".
- */
-const TYPE_TO_BALANCE_LINE_ID: Record<string, string> = {
-  // Assets / revenus
-  'Lampton': 'ni-lampton',
-  'Lampton School': 'ni-lampton',
-  'LMB': 'ni-lmb',
-  'LTL': 'ni-ltl',
-  'MPC': 'ni-mpc',
-  'LGV': 'ni-lgv',
-  'Papa/Maman': 'fsp-papa-maman',
-  'Theo Vogt': 'fsp-theo-vogt',
-  'Candlefish': 'fsp-candlefish',
-  'André': 'fsp-andre',
-  'Elsa Vogt': 'fsp-elsa-vogt',
-  'Support': 'fsp-other',
-  'Perspectives': 'fspers-perspectives',
-  'Freddy Riess': 'fspers-freddy-riess',
-  'Leopaul Vogt': 'fspers-leopaul-vogt',
-  'Andre Vogt': 'fspers-andre-vogt',
-  'Refund': 'oi-refund',
-  'Other Inc': 'oi-other',
-  'Benefit': 'oi-benefit',
-  'SLC credit': 'slc-credit',
-  'SLCcredit': 'slc-credit',
-  // Passifs / dépenses
-  'Rent': 'hc-rent',
-  'Comm': 'hc-comm',
-  'Electricity': 'hc-electricity',
-  'Water': 'hc-water',
-  'Service Charge': 'hc-service-charge',
-  'Transport': 'mob-transport',
-  'Fuel': 'mob-fuel',
-  'Car': 'mob-car',
-  'Food': 'lc-food',
-  'Restaurant': 'lc-restaurant',
-  'Shopping': 'lc-shopping',
-  'Leisure': 'lc-leisure',
-  'Holiday': 'lc-holiday',
-  'Health': 'lc-health',
-  'Misc': 'misc-total',
-  'Donation': 'donation-total',
-  'LST': 'tr-lst-fees',
-  'LST Fees': 'tr-lst-fees',
-  'School': 'tr-school',
-  'SLC Maria': 'slc-maria',
-  'SLC Charlie': 'slc-charlie',
-  'SLCdebit': 'slc-maria',
-  'Council': 'slc-council-tax',
-  'Council tax': 'slc-council-tax',
-  'Other taxes': 'slc-other-taxes',
-};
-
-/** Pour chaque ligne de bilan, types affectés par défaut (inverse de TYPE_TO_BALANCE_LINE_ID). */
-function getDefaultLineAssignedTypes(): Record<string, string[]> {
-  const lineToTypes: Record<string, string[]> = {};
-  for (const [type, lineId] of Object.entries(TYPE_TO_BALANCE_LINE_ID)) {
-    if (!lineToTypes[lineId]) lineToTypes[lineId] = [];
-    lineToTypes[lineId].push(type);
-  }
-  return lineToTypes;
-}
-
 const MONTH_NAMES = [
   'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin',
   'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc',
@@ -286,6 +248,70 @@ function parseAmountGbp(raw: string): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
+/**
+ * Expression après le « = » : chiffres, + - * / % ( ).
+ * Sans eval/new Function (compatible Content-Security-Policy sans unsafe-eval).
+ */
+function evaluateBilanFormulaExpression(expr: string): number {
+  const s = expr.replace(/\s/g, '');
+  if (s === '') return NaN;
+  if (!/^[-+*/%.0-9()]+$/.test(s)) return NaN;
+  let i = 0;
+
+  const parseExpr = (): number => {
+    let left = parseTerm();
+    while (i < s.length && (s[i] === '+' || s[i] === '-')) {
+      const op = s[i++];
+      const right = parseTerm();
+      left = op === '+' ? left + right : left - right;
+    }
+    return left;
+  };
+
+  const parseTerm = (): number => {
+    let left = parseFactor();
+    while (i < s.length && (s[i] === '*' || s[i] === '/' || s[i] === '%')) {
+      const op = s[i++];
+      const right = parseFactor();
+      if (op === '*') left *= right;
+      else if (op === '/') left = right === 0 ? NaN : left / right;
+      else left %= right;
+    }
+    return left;
+  };
+
+  const parseFactor = (): number => {
+    if (i < s.length && s[i] === '+') {
+      i++;
+      return parseFactor();
+    }
+    if (i < s.length && s[i] === '-') {
+      i++;
+      return -parseFactor();
+    }
+    if (i < s.length && s[i] === '(') {
+      i++;
+      const v = parseExpr();
+      if (i >= s.length || s[i] !== ')') return NaN;
+      i++;
+      return v;
+    }
+    return parseNumber();
+  };
+
+  const parseNumber = (): number => {
+    const start = i;
+    while (i < s.length && ((s[i] >= '0' && s[i] <= '9') || s[i] === '.')) i++;
+    if (start === i) return NaN;
+    const n = parseFloat(s.slice(start, i));
+    return Number.isNaN(n) ? NaN : n;
+  };
+
+  const result = parseExpr();
+  if (i !== s.length) return NaN;
+  return Number.isFinite(result) ? result : NaN;
+}
+
 interface Aggregation {
   /** Par type puis par mois (1-12): montant GBP */
   byTypeAndMonth: Record<string, Record<number, number>>;
@@ -303,7 +329,6 @@ function aggregateByYear(data: SourceDataResult | null, year: number): Aggregati
   const byTypeAndMonth: Record<string, Record<number, number>> = {};
   const byMonth: Record<number, number> = {};
   const byType: Record<string, number> = {};
-  const yearsAvailable: number[] = [];
 
   if (!data?.rows?.length) {
     for (let m = 1; m <= 12; m++) byMonth[m] = 0;
@@ -383,22 +408,43 @@ function getLineIdsFromStructure(
   return ids;
 }
 
-function getAllBudgetLineIds(): string[] {
-  return getLineIdsFromStructure(BUDGETED_ASSETS, BUDGETED_LIABILITIES);
-}
-
-function getInitialBilanLabels(): { categoryLabels: Record<string, string>; lineLabels: Record<string, string> } {
+function getLabelsFromStructure(
+  assets: BudgetCategory[],
+  liabilities: BudgetCategory[]
+): { categoryLabels: Record<string, string>; lineLabels: Record<string, string> } {
   const categoryLabels: Record<string, string> = {};
   const lineLabels: Record<string, string> = {};
-  for (const cat of BUDGETED_ASSETS) {
+  for (const cat of assets) {
     categoryLabels[cat.id] = cat.label;
     for (const line of cat.lines) lineLabels[line.id] = line.label;
   }
-  for (const cat of BUDGETED_LIABILITIES) {
+  for (const cat of liabilities) {
     categoryLabels[cat.id] = cat.label;
     for (const line of cat.lines) lineLabels[line.id] = line.label;
   }
   return { categoryLabels, lineLabels };
+}
+
+function readInitialBilanState(): {
+  assets: BudgetCategory[];
+  liabilities: BudgetCategory[];
+  categoryLabels: Record<string, string>;
+  lineLabels: Record<string, string>;
+} {
+  const loaded = loadBilanStructureSnapshot();
+  const assets = loaded?.assets?.length
+    ? deepCloneCategories(loaded.assets)
+    : deepCloneCategories(BUDGETED_ASSETS);
+  const liabilities = loaded?.liabilities?.length
+    ? deepCloneCategories(loaded.liabilities)
+    : deepCloneCategories(BUDGETED_LIABILITIES);
+  const derived = getLabelsFromStructure(assets, liabilities);
+  return {
+    assets,
+    liabilities,
+    categoryLabels: loaded ? { ...derived.categoryLabels, ...loaded.categoryLabels } : derived.categoryLabels,
+    lineLabels: loaded ? { ...derived.lineLabels, ...loaded.lineLabels } : derived.lineLabels,
+  };
 }
 
 function deepCloneCategories(cats: BudgetCategory[]): BudgetCategory[] {
@@ -409,34 +455,59 @@ function deepCloneCategories(cats: BudgetCategory[]): BudgetCategory[] {
   }));
 }
 
-const AnnualBudget: React.FC = () => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
+function collectLiabilityLineIds(liabilities: BudgetCategory[]): Set<string> {
+  const s = new Set<string>();
+  for (const cat of liabilities) {
+    for (const line of cat.lines) s.add(line.id);
+  }
+  return s;
+}
 
+/** Forecast passifs : toujours ≤ 0 (entrée ramenée à −|x|, y compris si l’utilisateur tape un positif). */
+function normalizeLiabilityForecastValue(value: number): number {
+  if (!Number.isFinite(value) || value === 0) return 0;
+  return -Math.abs(value);
+}
+
+function normalizeBudgetValuesLiabilitiesForecast(
+  values: Record<string, number>,
+  liabilityIds: Set<string>
+): Record<string, number> {
+  const out = { ...values };
+  for (const id of liabilityIds) {
+    if (Object.prototype.hasOwnProperty.call(out, id)) {
+      out[id] = normalizeLiabilityForecastValue(out[id]);
+    }
+  }
+  return out;
+}
+
+function readStoredYear(): number {
+  try {
+    const saved = localStorage.getItem(YEAR_STORAGE_KEY);
+    if (saved) {
+      const y = parseInt(saved, 10);
+      if (!Number.isNaN(y) && y >= 2000 && y <= 2100) return y;
+    }
+  } catch {}
+  return new Date().getFullYear();
+}
+
+const AnnualBudget: React.FC = () => {
+  const location = useLocation();
   const [data, setData] = useState<SourceDataResult | null>(null);
   const [accountBalanceRows, setAccountBalanceRows] = useState<BalanceRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedYear, setSelectedYear] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem(YEAR_STORAGE_KEY);
-      if (saved) {
-        const y = parseInt(saved, 10);
-        if (!Number.isNaN(y) && y >= 2000 && y <= 2100) return y;
-      }
-    } catch {}
-    return new Date().getFullYear();
-  });
+  const [selectedYear, setSelectedYear] = useState<number>(() => readStoredYear());
 
-  /** Structure éditable du bilan (mode édition). */
-  const [budgetedAssets, setBudgetedAssets] = useState<BudgetCategory[]>(() => deepCloneCategories(BUDGETED_ASSETS));
+  /** Structure éditable du bilan : chargée depuis le stockage si présent (export AppState / ZIP). */
+  const initialBilan = useMemo(() => readInitialBilanState(), []);
+  const [budgetedAssets, setBudgetedAssets] = useState<BudgetCategory[]>(() =>
+    deepCloneCategories(initialBilan.assets)
+  );
   const [budgetedLiabilities, setBudgetedLiabilities] = useState<BudgetCategory[]>(() =>
-    deepCloneCategories(BUDGETED_LIABILITIES)
+    deepCloneCategories(initialBilan.liabilities)
   );
 
   const allBudgetLineIds = useMemo(
@@ -449,37 +520,133 @@ const AnnualBudget: React.FC = () => {
 
   const [budgetValues, setBudgetValues] = useState<Record<string, number>>(() => {
     const initial: Record<string, number> = {};
-    getAllBudgetLineIds().forEach((id) => { initial[id] = 0; });
-    return initial;
+    getLineIdsFromStructure(initialBilan.assets, initialBilan.liabilities).forEach((id) => {
+      initial[id] = 0;
+    });
+    const snap = getYearSnapshot(readStoredYear());
+    const merged = snap ? { ...initial, ...snap.budgetValues } : initial;
+    const liabIds = collectLiabilityLineIds(initialBilan.liabilities);
+    return normalizeBudgetValuesLiabilitiesForecast(merged, liabIds);
   });
 
   const [bilanEditMode, setBilanEditMode] = useState(false);
   const [bilanCategoryLabels, setBilanCategoryLabels] = useState<Record<string, string>>(
-    () => getInitialBilanLabels().categoryLabels
+    () => initialBilan.categoryLabels
   );
   const [bilanLineLabels, setBilanLineLabels] = useState<Record<string, string>>(
-    () => getInitialBilanLabels().lineLabels
+    () => initialBilan.lineLabels
   );
   /** Pour chaque ligne, types de transactions affectés (pour la colonne Réel). */
-  const [lineAssignedTypes, setLineAssignedTypes] = useState<Record<string, string[]>>(
-    () => getDefaultLineAssignedTypes()
-  );
+  const [lineAssignedTypes, setLineAssignedTypes] = useState<Record<string, string[]>>(() => {
+    const base = getDefaultLineAssignedTypes();
+    const snap = getYearSnapshot(readStoredYear());
+    if (!snap) return base;
+    return { ...base, ...snap.lineAssignedTypes };
+  });
   /** Id de la ligne dont le menu "Affecter" est ouvert, ou null. */
   const [affecterOpenLineId, setAffecterOpenLineId] = useState<string | null>(null);
 
-  const setBudgetAmount = (lineId: string, value: number) => {
-    setBudgetValues((prev) => ({ ...prev, [lineId]: value }));
-  };
+  const [bilanBlockExpanded, setBilanBlockExpanded] = useState(true);
+  const [typesByMonthBlockExpanded, setTypesByMonthBlockExpanded] = useState(true);
+  const [typesMonthTableFontRem, setTypesMonthTableFontRem] = useState(loadTypesMonthTableFontRem);
+
+  useEffect(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(TYPES_MONTH_TABLE_FONT_STORAGE_KEY, String(typesMonthTableFontRem));
+      }
+    } catch {}
+  }, [typesMonthTableFontRem]);
+
+  const yearChangeSkipRef = useRef(true);
+  useEffect(() => {
+    if (yearChangeSkipRef.current) {
+      yearChangeSkipRef.current = false;
+      return;
+    }
+    const initial: Record<string, number> = {};
+    getLineIdsFromStructure(
+      Array.isArray(budgetedAssets) ? budgetedAssets : [],
+      Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []
+    ).forEach((id) => {
+      initial[id] = 0;
+    });
+    const snap = getYearSnapshot(selectedYear);
+    const baseTypes = getDefaultLineAssignedTypes();
+    const liabIds = collectLiabilityLineIds(
+      Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []
+    );
+    if (snap) {
+      const merged = { ...initial, ...snap.budgetValues };
+      setBudgetValues(normalizeBudgetValuesLiabilitiesForecast(merged, liabIds));
+      setLineAssignedTypes({ ...baseTypes, ...snap.lineAssignedTypes });
+    } else {
+      setBudgetValues(initial);
+      setLineAssignedTypes(baseTypes);
+    }
+  }, [selectedYear]);
+
+  const selectedYearRef = useRef(selectedYear);
+  selectedYearRef.current = selectedYear;
+  useEffect(() => {
+    const t = setTimeout(() => {
+      saveYearSnapshot(selectedYearRef.current, { budgetValues, lineAssignedTypes });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [budgetValues, lineAssignedTypes]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      saveBilanStructureSnapshot({
+        version: 1,
+        assets: budgetedAssets,
+        liabilities: budgetedLiabilities,
+        categoryLabels: bilanCategoryLabels,
+        lineLabels: bilanLineLabels,
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [budgetedAssets, budgetedLiabilities, bilanCategoryLabels, bilanLineLabels]);
+
+  const liabilityLineIds = useMemo(
+    () => collectLiabilityLineIds(Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []),
+    [budgetedLiabilities]
+  );
+
+  const setBudgetAmount = useCallback((lineId: string, value: number) => {
+    const raw = Number.isFinite(value) ? value : 0;
+    const stored = liabilityLineIds.has(lineId) ? normalizeLiabilityForecastValue(raw) : raw;
+    setBudgetValues((prev) => ({ ...prev, [lineId]: stored }));
+  }, [liabilityLineIds]);
+
+  /** Brouillon des champs Forecast en mode édition (permet `=100*12` avant validation). */
+  const [bilanForecastDrafts, setBilanForecastDrafts] = useState<Record<string, string>>({});
+
+  const commitBilanForecast = useCallback(
+    (lineId: string, raw: string) => {
+      const trimmed = raw.trim().replace(/,/g, '.');
+      let n: number;
+      if (trimmed === '') {
+        n = 0;
+      } else if (trimmed.startsWith('=')) {
+        n = evaluateBilanFormulaExpression(trimmed.slice(1).trim());
+      } else {
+        n = parseFloat(trimmed);
+      }
+      setBudgetAmount(lineId, Number.isNaN(n) ? 0 : n);
+    },
+    [setBudgetAmount]
+  );
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    SourceDataCSVService.load()
+    SourceDataCSVService.loadMergedWithSupport()
       .then((sourceResult) => {
         if (!cancelled) {
           setData(sourceResult ?? null);
-          if (!sourceResult) setError('Aucune donnée source (source_data.csv).');
+          if (!sourceResult) setError('Aucune donnée source (transactions + soutien).');
         }
       })
       .catch((err) => {
@@ -512,33 +679,45 @@ const AnnualBudget: React.FC = () => {
         .sort((a, b) => a.date.getTime() - b.date.getTime())[0];
       const row = rowOnOrAfterJan1 ?? rowOnOrBeforeJan1;
       if (!row || !row.balances) return null;
+      const entries = loadRecognisedAccountsFromStorage();
+      const fiatByCode = new Map<string, AccountFiatCurrency>();
+      for (const e of entries) {
+        const c = getBalanceCodeForSettingsAccountName(e.name);
+        if (c) fiatByCode.set(c, e.currency);
+      }
       let totalGbp = 0;
       for (const [accountCode, amount] of Object.entries(row.balances)) {
-        const currencyStr = ACCOUNT_CODE_TO_CURRENCY[accountCode] ?? '£';
-        const currency: CurrencySymbol = currencyStr === '€' ? '€' : currencyStr === 'CHF' ? 'CHF' : '£';
+        const fiat = fiatByCode.get(accountCode);
+        const currencyStr = fiat
+          ? fiat === 'GBP'
+            ? '£'
+            : fiat === 'CHF'
+              ? 'CHF'
+              : '€'
+          : ACCOUNT_CODE_TO_CURRENCY[accountCode] ?? '£';
+        const currency: CurrencySymbol =
+          currencyStr === '€' ? '€' : currencyStr === 'CHF' ? 'CHF' : '£';
         totalGbp += convertToAxisCurrency(Number(amount), currency, '£');
       }
       return Number.isFinite(totalGbp) ? totalGbp : null;
     } catch {
       return null;
     }
-  }, [accountBalanceRows, selectedYear]);
-
-  /** Valeur forecast pour une ligne : Bank = solde total au 1er jan (GBP), sinon valeur saisie. */
-  const getForecastValue = (lineId: string): number =>
-    lineId === 'assets-bank'
-      ? (bankBalanceJan1Gbp ?? budgetValues[lineId] ?? 0)
-      : (budgetValues[lineId] ?? 0);
+  }, [accountBalanceRows, selectedYear, location.pathname]);
 
   const totalAssets = (Array.isArray(budgetedAssets) ? budgetedAssets : []).reduce((sum, cat) => {
     const lines = Array.isArray(cat?.lines) ? cat.lines : [];
-    return sum + lines.reduce((s, line) => s + getForecastValue(line?.id ?? ''), 0);
+    return sum + lines.reduce((s, line) => {
+      const id = line?.id ?? '';
+      return s + (budgetValues[id] ?? 0);
+    }, 0);
   }, 0);
   const totalLiabilities = (Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []).reduce((sum, cat) => {
     const lines = Array.isArray(cat?.lines) ? cat.lines : [];
     return sum + lines.reduce((s, line) => s + (budgetValues[line?.id ?? ''] ?? 0), 0);
   }, 0);
-  const totalFundCF = totalAssets - totalLiabilities;
+  /** Passifs forecast stockés en négatif : totalLiabilities ≤ 0, donc TF = actifs + passifs (somme algébrique). */
+  const totalFundCF = totalAssets + totalLiabilities;
 
   const aggregation = useMemo(
     () => aggregateByYear(data, selectedYear),
@@ -563,15 +742,31 @@ const AnnualBudget: React.FC = () => {
     return out;
   }, [aggregation.byType, lineAssignedTypes, allBudgetLineIds]);
 
+  const getActualValue = (lineId: string): number =>
+    lineId === 'assets-bank'
+      ? (bankBalanceJan1Gbp ?? 0)
+      : (actualValues[lineId] ?? 0);
+
   const totalAssetsActual = (Array.isArray(budgetedAssets) ? budgetedAssets : []).reduce((sum, cat) => {
     const lines = Array.isArray(cat?.lines) ? cat.lines : [];
-    return sum + lines.reduce((s, line) => s + (actualValues[line?.id ?? ''] ?? 0), 0);
+    return sum + lines.reduce((s, line) => s + getActualValue(line?.id ?? ''), 0);
   }, 0);
   const totalLiabilitiesActual = (Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []).reduce((sum, cat) => {
     const lines = Array.isArray(cat?.lines) ? cat.lines : [];
-    return sum + lines.reduce((s, line) => s + (actualValues[line?.id ?? ''] ?? 0), 0);
+    return sum + lines.reduce((s, line) => s + getActualValue(line?.id ?? ''), 0);
   }, 0);
-  const totalFundCFActual = totalAssetsActual - totalLiabilitiesActual;
+  // Les montants "liabilities" sont déjà signés (dépenses négatives). Pour la balance, on additionne donc directement.
+  const totalFundCFActual = totalAssetsActual + totalLiabilitiesActual;
+
+  const assetsBfCategory =
+    (Array.isArray(budgetedAssets) ? budgetedAssets : []).find((c) => c.id === 'assets-bf') ??
+    (Array.isArray(budgetedAssets) ? budgetedAssets[0] : undefined);
+  const assetsBfLines = assetsBfCategory && Array.isArray(assetsBfCategory.lines) ? assetsBfCategory.lines : [];
+  const assetsBfForecast = assetsBfLines.reduce((s, line) => s + (budgetValues[line?.id ?? ''] ?? 0), 0);
+  const assetsBfActual = assetsBfLines.reduce((s, line) => s + getActualValue(line?.id ?? ''), 0);
+  /** Écart Total Fund C/F vs totaux de la catégorie Assets B/F (même colonne). */
+  const fundCfDeltaVsAssetsBfForecast = totalFundCF - assetsBfForecast;
+  const fundCfDeltaVsAssetsBfActual = totalFundCFActual - assetsBfActual;
 
   const typesOrder = useMemo(() => {
     const types = Object.keys(aggregation.byType).filter((t) => t !== 'Sans type');
@@ -760,7 +955,36 @@ const AnnualBudget: React.FC = () => {
     return out;
   }, [aggregation.byTypeAndMonth, aggregation.byType, typesOrder]);
 
+  /** Moyennes mensuelles du tableau « types × mois » : total ÷ nb de mois avec mouvement ≠ 0. */
+  const typesByMonthTableAvg = useMemo(() => {
+    const countNonZeroMonths = (getVal: (m: number) => number): number => {
+      let n = 0;
+      for (let m = 1; m <= 12; m++) {
+        if (getVal(m) !== 0) n++;
+      }
+      return n;
+    };
+    const sortiesN = countNonZeroMonths((m) => totalSortiesByMonth[m] ?? 0);
+    const entreesN = countNonZeroMonths((m) => totalEntreesByMonth[m] ?? 0);
+    const balanceN = countNonZeroMonths((m) => aggregation.byMonth[m] ?? 0);
+    return {
+      sortiesAvg: sortiesN === 0 ? null : aggregation.totalExpenses / sortiesN,
+      entreesAvg: entreesN === 0 ? null : aggregation.totalIncome / entreesN,
+      balanceAvg: balanceN === 0 ? null : aggregation.total / balanceN,
+    };
+  }, [
+    totalSortiesByMonth,
+    totalEntreesByMonth,
+    aggregation.byMonth,
+    aggregation.total,
+    aggregation.totalExpenses,
+    aggregation.totalIncome,
+  ]);
+
   const handleYearChange = (y: number) => {
+    if (y !== selectedYear) {
+      saveYearSnapshot(selectedYear, { budgetValues, lineAssignedTypes });
+    }
     setSelectedYear(y);
     try {
       localStorage.setItem(YEAR_STORAGE_KEY, String(y));
@@ -769,19 +993,14 @@ const AnnualBudget: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen bg-gray-50">
-        <Sidebar collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)} />
-        <main className="flex-1 flex items-center justify-center p-6">
-          <p className="text-gray-500">Chargement…</p>
-        </main>
-      </div>
+      <main className="flex-1 flex items-center justify-center p-6">
+        <p className="text-gray-500">Chargement…</p>
+      </main>
     );
   }
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
-      <Sidebar collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)} />
-      <main className="flex-1 overflow-auto p-6">
+    <main className="flex-1 overflow-auto p-6">
         <div className="max-w-8xl mx-auto">
           <h1 className="text-2xl font-bold text-gray-800 mb-6">Budget annuel</h1>
 
@@ -835,23 +1054,50 @@ const AnnualBudget: React.FC = () => {
             </div>
           </div>
 
-          {/* Feuille de bilan : Forecast | Réel */}
-          <section className="mb-8 bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-gray-200 bg-gray-50">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-bold text-gray-800 uppercase tracking-wide">
-                    Feuille de bilan
-                  </h2>
-                  <div className="mt-2 text-sm text-gray-600">
-                    <strong>Année:</strong> {selectedYear} — Forecast (saisie) et Réel (d’après le tableau des transactions et les types associés)
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
+          <section
+            className="mb-8 flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden"
+            aria-labelledby="annual-budget-bloc-bilan-title"
+          >
+            <header
+              className={`bg-gradient-to-br from-slate-50 to-white ${
+                bilanBlockExpanded ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+              }`}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-stretch">
+                <button
+                  type="button"
+                  className="flex flex-1 items-start gap-3 px-4 py-3 sm:py-4 text-left transition-colors hover:bg-slate-50/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset"
+                  aria-expanded={bilanBlockExpanded}
+                  aria-controls={bilanBlockExpanded ? 'annual-budget-panel-bilan' : undefined}
+                  onClick={() => setBilanBlockExpanded((e) => !e)}
+                >
+                  <span
+                    className={`mt-1.5 shrink-0 text-sm leading-none text-gray-500 transition-transform duration-200 ${
+                      bilanBlockExpanded ? 'rotate-90' : ''
+                    }`}
+                    aria-hidden
+                  >
+                    ▶
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span
+                      id="annual-budget-bloc-bilan-title"
+                      className="block text-xl font-bold tracking-tight text-gray-900 sm:text-2xl"
+                    >
+                      Feuille de bilan
+                    </span>
+                    <span className="mt-1.5 block text-sm text-gray-500">
+                      <strong className="font-semibold text-gray-600">Année {selectedYear}</strong>
+                      {' — '}
+                      Forecast (saisie) et Réel (d’après le tableau des transactions et les types associés)
+                    </span>
+                  </span>
+                </button>
+                <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 bg-slate-50/60 px-4 py-2.5 sm:border-t-0 sm:border-l sm:border-gray-200 sm:bg-transparent sm:px-4 sm:py-3">
                   <button
                     type="button"
                     onClick={() => setBilanEditMode((v) => !v)}
-                    className={`rounded border px-3 py-1.5 text-sm font-medium text-white ${
+                    className={`rounded-lg border px-3 py-1.5 text-sm font-medium text-white ${
                       bilanEditMode
                         ? 'border-gray-500 bg-gray-500 hover:bg-gray-600'
                         : 'border-red-600 bg-red-600 hover:bg-red-700'
@@ -859,13 +1105,20 @@ const AnnualBudget: React.FC = () => {
                   >
                     {bilanEditMode ? 'Quitter le mode édition' : 'Mode édition'}
                   </button>
-                  {bilanEditMode && (
-                    <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
-                  )}
+                  {bilanEditMode ? (
+                    <span className="text-xs font-medium text-red-600 sm:text-sm">Mode édition — les cellules sont modifiables</span>
+                  ) : null}
                 </div>
               </div>
-            </div>
-
+            </header>
+            {bilanBlockExpanded ? (
+              <div
+                id="annual-budget-panel-bilan"
+                className="flex min-h-0 flex-col px-4 pb-4 pt-3"
+                role="region"
+                aria-label="Feuille de bilan"
+              >
+                <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-inner">
             <div className="grid grid-cols-1 md:grid-cols-2 border-b border-gray-200">
               <div className="bg-gray-100 py-1.5 px-4 flex items-center gap-4 text-sm font-semibold text-gray-600">
                 <span className="flex-1" />
@@ -883,8 +1136,8 @@ const AnnualBudget: React.FC = () => {
                 <div className="divide-y divide-emerald-100">
                   {budgetedAssets.map((cat, catIndex) => {
                     const catLines = Array.isArray(cat.lines) ? cat.lines : [];
-                    const catForecast = catLines.reduce((s, l) => s + getForecastValue(l?.id ?? ''), 0);
-                    const catActual = catLines.reduce((s, l) => s + (actualValues[l?.id ?? ''] ?? 0), 0);
+                    const catForecast = catLines.reduce((s, l) => s + (budgetValues[l?.id ?? ''] ?? 0), 0);
+                    const catActual = catLines.reduce((s, l) => s + getActualValue(l?.id ?? ''), 0);
                     return (
                       <div key={cat.id}>
                         <div className="bg-emerald-100 font-semibold text-gray-800 py-1.5 px-4 text-sm flex items-center gap-4">
@@ -998,39 +1251,55 @@ const AnnualBudget: React.FC = () => {
                               ) : (
                                 <span className="flex-1 text-sm text-gray-700">{bilanLineLabels[line.id] ?? line.label}</span>
                               )}
-                              {line.id === 'assets-bank' && bankBalanceJan1Gbp != null ? (
-                                <span
-                                  className="w-28 text-right text-sm tabular-nums text-gray-700"
-                                  title="Solde total des comptes au 1er janvier (converti en GBP)"
-                                >
-                                  {formatCurrency(bankBalanceJan1Gbp, '£')}
-                                </span>
-                              ) : bilanEditMode ? (
+                              {bilanEditMode ? (
                                 <input
                                   type="text"
                                   inputMode="decimal"
                                   className="w-28 text-right text-sm border border-gray-300 rounded px-2 py-1 tabular-nums focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
                                   placeholder="—"
+                                  title="Saisie directe ou formule : =100*12 puis Entrée"
                                   value={
-                                    getForecastValue(line.id) === 0 || getForecastValue(line.id) == null
-                                      ? ''
-                                      : String(getForecastValue(line.id))
+                                    bilanForecastDrafts[line.id] !== undefined
+                                      ? bilanForecastDrafts[line.id]
+                                      : budgetValues[line.id] === 0 || budgetValues[line.id] == null
+                                        ? ''
+                                        : String(budgetValues[line.id])
                                   }
+                                  onFocus={() => {
+                                    const v = budgetValues[line.id];
+                                    setBilanForecastDrafts((prev) => ({
+                                      ...prev,
+                                      [line.id]: v === 0 || v == null ? '' : String(v),
+                                    }));
+                                  }}
                                   onChange={(e) => {
-                                    const raw = e.target.value.trim().replace(',', '.');
-                                    const n = raw === '' ? 0 : parseFloat(raw);
-                                    setBudgetAmount(line.id, Number.isNaN(n) ? 0 : n);
+                                    setBilanForecastDrafts((prev) => ({ ...prev, [line.id]: e.target.value }));
+                                  }}
+                                  onBlur={(e) => {
+                                    commitBilanForecast(line.id, e.currentTarget.value);
+                                    setBilanForecastDrafts((prev) => {
+                                      const next = { ...prev };
+                                      delete next[line.id];
+                                      return next;
+                                    });
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      e.currentTarget.blur();
+                                    }
                                   }}
                                 />
                               ) : (
                                 <span className="w-28 text-right text-sm tabular-nums text-gray-700">
-                                  {getForecastValue(line.id) === 0 || getForecastValue(line.id) == null
+                                  {budgetValues[line.id] === 0 || budgetValues[line.id] == null
                                     ? '—'
-                                    : formatCurrency(getForecastValue(line.id), '£')}
+                                    : formatCurrency(budgetValues[line.id] ?? 0, '£')}
                                 </span>
                               )}
                               <span className="w-28 text-right text-sm tabular-nums text-gray-700">
-                                {formatCurrency(actualValues[line.id] ?? 0, '£')}
+                                {formatCurrency(getActualValue(line.id) ?? 0, '£')}
                               </span>
                               {bilanEditMode && (
                                 <div
@@ -1117,7 +1386,7 @@ const AnnualBudget: React.FC = () => {
                   {budgetedLiabilities.map((cat, catIndex) => {
                     const catLinesLiab = Array.isArray(cat.lines) ? cat.lines : [];
                     const catForecast = catLinesLiab.reduce((s, l) => s + (budgetValues[l?.id ?? ''] ?? 0), 0);
-                    const catActual = catLinesLiab.reduce((s, l) => s + (actualValues[l?.id ?? ''] ?? 0), 0);
+                    const catActual = catLinesLiab.reduce((s, l) => s + getActualValue(l?.id ?? ''), 0);
                     return (
                       <div key={cat.id}>
                         <div className="bg-red-100 font-semibold text-gray-800 py-1.5 px-4 text-sm flex items-center gap-4">
@@ -1237,15 +1506,38 @@ const AnnualBudget: React.FC = () => {
                                   inputMode="decimal"
                                   className="w-28 text-right text-sm border border-gray-300 rounded px-2 py-1 tabular-nums focus:ring-2 focus:ring-red-500 focus:border-red-500"
                                   placeholder="—"
+                                  title="Saisie directe ou formule : =100*12 puis Entrée"
                                   value={
-                                    budgetValues[line.id] === 0 || budgetValues[line.id] == null
-                                      ? ''
-                                      : String(budgetValues[line.id])
+                                    bilanForecastDrafts[line.id] !== undefined
+                                      ? bilanForecastDrafts[line.id]
+                                      : budgetValues[line.id] === 0 || budgetValues[line.id] == null
+                                        ? ''
+                                        : String(budgetValues[line.id])
                                   }
+                                  onFocus={() => {
+                                    const v = budgetValues[line.id];
+                                    setBilanForecastDrafts((prev) => ({
+                                      ...prev,
+                                      [line.id]: v === 0 || v == null ? '' : String(v),
+                                    }));
+                                  }}
                                   onChange={(e) => {
-                                    const raw = e.target.value.trim().replace(',', '.');
-                                    const n = raw === '' ? 0 : parseFloat(raw);
-                                    setBudgetAmount(line.id, Number.isNaN(n) ? 0 : n);
+                                    setBilanForecastDrafts((prev) => ({ ...prev, [line.id]: e.target.value }));
+                                  }}
+                                  onBlur={(e) => {
+                                    commitBilanForecast(line.id, e.currentTarget.value);
+                                    setBilanForecastDrafts((prev) => {
+                                      const next = { ...prev };
+                                      delete next[line.id];
+                                      return next;
+                                    });
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      e.currentTarget.blur();
+                                    }
                                   }}
                                 />
                               ) : (
@@ -1256,7 +1548,7 @@ const AnnualBudget: React.FC = () => {
                                 </span>
                               )}
                               <span className="w-28 text-right text-sm tabular-nums text-gray-700">
-                                {formatCurrency(actualValues[line.id] ?? 0, '£')}
+                                {formatCurrency(getActualValue(line.id), '£')}
                               </span>
                               {bilanEditMode && (
                                 <div
@@ -1338,37 +1630,227 @@ const AnnualBudget: React.FC = () => {
                 </div>
               </div>
             </div>
-
-            {/* TOTAL ASSETS / TOTAL LIABILITIES en bas du tableau */}
-            <div className="flex flex-col md:flex-row border-t-2 border-gray-200">
-              <div className="flex-1 min-w-0">
-                <div className="bg-emerald-800 text-white font-bold py-2 px-4 flex items-center gap-4">
-                  <span className="flex-1">TOTAL ASSETS</span>
-                  <span className="tabular-nums w-28 text-right">{formatCurrency(totalAssets, '£')}</span>
-                  <span className="tabular-nums w-28 text-right">{formatCurrency(totalAssetsActual, '£')}</span>
+                <div className="border-t border-gray-200">
+                  <div className="flex flex-col md:flex-row md:items-stretch">
+                    <div className="flex flex-1 flex-wrap items-center gap-3 border-b-4 border-b-red-800 border-l-4 border-l-emerald-600 bg-emerald-50 px-4 py-3 sm:gap-4 md:border-b-0">
+                      <span className="min-w-0 flex-1 text-sm font-bold text-emerald-900 sm:text-base">TOTAL ASSETS</span>
+                      <div className="flex flex-wrap items-end justify-end gap-6 tabular-nums">
+                        <div className="text-right">
+                          <div className="text-base font-bold text-emerald-950">{formatCurrency(totalAssets, '£')}</div>
+                          <div className="text-xs font-medium text-emerald-700">Forecast</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-base font-bold text-emerald-950">{formatCurrency(totalAssetsActual, '£')}</div>
+                          <div className="text-xs font-medium text-emerald-700">Réel</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      className="hidden w-1 shrink-0 self-stretch bg-red-800 md:block"
+                      aria-hidden
+                    />
+                    <div className="flex flex-1 flex-wrap items-center gap-3 bg-red-50 px-4 py-3 sm:gap-4">
+                      <span className="min-w-0 flex-1 text-sm font-bold text-red-900 sm:text-base">TOTAL LIABILITIES</span>
+                      <div className="flex flex-wrap items-end justify-end gap-6 tabular-nums">
+                        <div className="text-right">
+                          <div className="text-base font-bold text-red-950">{formatCurrency(totalLiabilities, '£')}</div>
+                          <div className="text-xs font-medium text-red-700">Forecast</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-base font-bold text-red-950">{formatCurrency(totalLiabilitiesActual, '£')}</div>
+                          <div className="text-xs font-medium text-red-700">Réel</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="border-t-2 border-slate-200 bg-gradient-to-br from-slate-50/95 to-white px-4 py-4 sm:px-6">
+                    <div className="flex flex-col items-center gap-5 md:flex-row md:items-center md:justify-between md:gap-10">
+                      <span className="shrink-0 text-center text-sm font-bold text-gray-900 sm:text-base md:text-left">
+                        Total Fund C/F
+                      </span>
+                      <div className="flex w-full max-w-2xl flex-1 flex-wrap justify-center gap-12 sm:gap-16 md:max-w-none md:gap-20">
+                        <div className="flex min-w-0 flex-col items-center gap-3 text-center">
+                          <div className="w-full shrink-0 border-b border-slate-200/80 pb-2">
+                            <span className="block text-xs font-normal italic text-gray-600">Forecast</span>
+                          </div>
+                          <div className="flex w-full min-w-0 flex-nowrap items-center justify-between gap-3 overflow-x-auto">
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1">
+                              <div className="flex items-baseline gap-1.5 tabular-nums">
+                                <span className="text-[10px] font-normal italic text-gray-500 whitespace-nowrap">
+                                  Assets B/F
+                                </span>
+                                <span className="text-[11px] font-medium leading-none text-gray-600">
+                                  {formatCurrency(assetsBfForecast, '£')}
+                                </span>
+                              </div>
+                              <span className="tabular-nums text-xl font-bold leading-none text-gray-900">
+                                {formatCurrency(totalFundCF, '£')}
+                              </span>
+                            </div>
+                            <span
+                              className={`inline-flex shrink-0 items-center gap-1 text-xs font-semibold tabular-nums ${
+                                fundCfDeltaVsAssetsBfForecast > 0.005
+                                  ? 'text-green-700'
+                                  : fundCfDeltaVsAssetsBfForecast < -0.005
+                                    ? 'text-red-700'
+                                    : 'text-gray-500'
+                              }`}
+                              title="Écart : Total Fund C/F (forecast) − total Assets B/F (forecast)"
+                            >
+                              {fundCfDeltaVsAssetsBfForecast > 0.005 ? (
+                                <>
+                                  <span aria-hidden>↑</span>
+                                  {formatCurrency(fundCfDeltaVsAssetsBfForecast, '£')}
+                                </>
+                              ) : fundCfDeltaVsAssetsBfForecast < -0.005 ? (
+                                <>
+                                  <span aria-hidden>↓</span>
+                                  {formatCurrency(Math.abs(fundCfDeltaVsAssetsBfForecast), '£')}
+                                </>
+                              ) : (
+                                <span className="font-normal">—</span>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex min-w-0 flex-col items-center gap-3 text-center">
+                          <div className="w-full shrink-0 border-b border-slate-200/80 pb-2">
+                            <span className="block text-xs font-normal italic text-gray-600">Réel</span>
+                          </div>
+                          <div className="flex w-full min-w-0 flex-nowrap items-center justify-between gap-3 overflow-x-auto">
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1">
+                              <div className="flex items-baseline gap-1.5 tabular-nums">
+                                <span className="text-[10px] font-normal italic text-gray-500 whitespace-nowrap">
+                                  Assets B/F
+                                </span>
+                                <span className="text-[11px] font-medium leading-none text-gray-600">
+                                  {formatCurrency(assetsBfActual, '£')}
+                                </span>
+                              </div>
+                              <span className="tabular-nums text-xl font-bold leading-none text-gray-900">
+                                {formatCurrency(totalFundCFActual, '£')}
+                              </span>
+                            </div>
+                            <span
+                              className={`inline-flex shrink-0 items-center gap-1 text-xs font-semibold tabular-nums ${
+                                fundCfDeltaVsAssetsBfActual > 0.005
+                                  ? 'text-green-700'
+                                  : fundCfDeltaVsAssetsBfActual < -0.005
+                                    ? 'text-red-700'
+                                    : 'text-gray-500'
+                              }`}
+                              title="Écart : Total Fund C/F (réel) − total Assets B/F (réel)"
+                            >
+                              {fundCfDeltaVsAssetsBfActual > 0.005 ? (
+                                <>
+                                  <span aria-hidden>↑</span>
+                                  {formatCurrency(fundCfDeltaVsAssetsBfActual, '£')}
+                                </>
+                              ) : fundCfDeltaVsAssetsBfActual < -0.005 ? (
+                                <>
+                                  <span aria-hidden>↓</span>
+                                  {formatCurrency(Math.abs(fundCfDeltaVsAssetsBfActual), '£')}
+                                </>
+                              ) : (
+                                <span className="font-normal">—</span>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 </div>
               </div>
-              <div className="flex-1 min-w-0 border-t md:border-t-0 md:border-l border-gray-200">
-                <div className="bg-red-800 text-white font-bold py-2 px-4 flex items-center gap-4">
-                  <span className="flex-1">TOTAL LIABILITIES</span>
-                  <span className="tabular-nums w-28 text-right" title="Forecast">{formatCurrency(totalLiabilities, '£')}</span>
-                  <span className="tabular-nums w-28 text-right" title="Réel">{formatCurrency(totalLiabilitiesActual, '£')}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Total Fund C/F */}
-            <div className="bg-amber-600 text-white font-bold py-3 px-4 flex items-center gap-4 border-t-2 border-amber-700">
-              <span className="flex-1">Total Fund C/F</span>
-              <span className="tabular-nums w-28 text-right">{formatCurrency(totalFundCF, '£')}</span>
-              <span className="tabular-nums w-28 text-right">{formatCurrency(totalFundCFActual, '£')}</span>
-            </div>
+            ) : null}
           </section>
 
-          {/* Tableau par type et par mois */}
-          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+          <section
+            className="mb-8 flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden"
+            aria-labelledby="annual-budget-bloc-types-title"
+          >
+            <header
+              className={`flex flex-col sm:flex-row sm:items-stretch bg-gradient-to-br from-slate-50 to-white ${
+                typesByMonthBlockExpanded ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+              }`}
+            >
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset sm:py-4"
+                aria-expanded={typesByMonthBlockExpanded}
+                aria-controls={typesByMonthBlockExpanded ? 'annual-budget-panel-types-month' : undefined}
+                onClick={() => setTypesByMonthBlockExpanded((e) => !e)}
+              >
+                <span
+                  className={`mt-1.5 shrink-0 text-sm leading-none text-gray-500 transition-transform duration-200 ${
+                    typesByMonthBlockExpanded ? 'rotate-90' : ''
+                  }`}
+                  aria-hidden
+                >
+                  ▶
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span
+                    id="annual-budget-bloc-types-title"
+                    className="block text-xl font-bold tracking-tight text-gray-900 sm:text-2xl"
+                  >
+                    Mouvements par type et par mois
+                  </span>
+                  <span className="mt-1.5 block text-sm text-gray-500">
+                    Année <strong className="font-semibold text-gray-600">{selectedYear}</strong>
+                    {' — '}sommes par type sur les 12 mois et ligne de balance
+                  </span>
+                </span>
+              </button>
+              <div
+                className="flex shrink-0 items-center justify-end gap-1 border-t border-gray-200/80 px-3 py-2 sm:border-t-0 sm:border-l sm:py-0"
+                role="group"
+                aria-label="Taille du texte du tableau"
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTypesMonthTableFontRem((prev) =>
+                      Math.max(TYPES_MONTH_FONT_REM_MIN, prev - TYPES_MONTH_FONT_REM_STEP)
+                    );
+                  }}
+                  disabled={typesMonthTableFontRem <= TYPES_MONTH_FONT_REM_MIN + 1e-6}
+                  title="Réduire la taille du texte du tableau"
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-gray-300 bg-white text-lg font-semibold leading-none text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTypesMonthTableFontRem((prev) =>
+                      Math.min(TYPES_MONTH_FONT_REM_MAX, prev + TYPES_MONTH_FONT_REM_STEP)
+                    );
+                  }}
+                  disabled={typesMonthTableFontRem >= TYPES_MONTH_FONT_REM_MAX - 1e-6}
+                  title="Augmenter la taille du texte du tableau"
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-gray-300 bg-white text-lg font-semibold leading-none text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  +
+                </button>
+              </div>
+            </header>
+            {typesByMonthBlockExpanded ? (
+              <div
+                id="annual-budget-panel-types-month"
+                className="flex min-h-0 flex-col px-4 pb-4 pt-3"
+                role="region"
+                aria-label="Mouvements par type et par mois"
+              >
+                <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-inner">
+            <div
+              className="overflow-x-auto"
+              style={{ fontSize: `${typesMonthTableFontRem}rem` }}
+            >
+              <table className="w-full">
                 <thead>
                   <tr className="bg-gray-100 border-b border-gray-200">
                     <th className="text-left py-3 px-4 font-semibold text-gray-700">Type</th>
@@ -1377,15 +1859,29 @@ const AnnualBudget: React.FC = () => {
                         {label}
                       </th>
                     ))}
-                    <th className="text-right py-3 px-4 font-semibold text-gray-700 w-28">Total</th>
+                    <th
+                      className="text-right py-3 px-3 font-semibold text-gray-700 w-28"
+                      title="Moyenne sur les mois où il y a un mouvement (non nul)"
+                    >
+                      Moy. mens.
+                    </th>
+                    <th className="text-right py-3 px-4 font-semibold text-slate-700 w-28 border-l border-slate-300 bg-slate-200/90">
+                      Total
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {typesOrder.map((type) => {
                     const rowTotal = aggregation.byType[type] ?? 0;
+                    let monthsWithMovement = 0;
+                    for (let m = 1; m <= 12; m++) {
+                      if ((aggregation.byTypeAndMonth[type]?.[m] ?? 0) !== 0) monthsWithMovement++;
+                    }
+                    const rowMonthlyAvg =
+                      monthsWithMovement === 0 ? null : rowTotal / monthsWithMovement;
                     return (
                       <React.Fragment key={type}>
-                        <tr className="border-b border-gray-100 hover:bg-gray-50">
+                        <tr className="group border-b border-gray-100 hover:bg-gray-50">
                           <td className="py-2 px-4 font-medium text-gray-800">{type}</td>
                           {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => {
                             const val = aggregation.byTypeAndMonth[type]?.[m] ?? 0;
@@ -1399,7 +1895,12 @@ const AnnualBudget: React.FC = () => {
                             );
                           })}
                           <td
-                            className={`text-right py-2 px-4 font-medium tabular-nums ${rowTotal >= 0 ? 'text-green-700' : 'text-red-700'}`}
+                            className={`text-right py-2 px-3 font-medium tabular-nums ${rowMonthlyAvg === null ? 'text-gray-400' : rowMonthlyAvg >= 0 ? 'text-green-700' : 'text-red-700'}`}
+                          >
+                            {rowMonthlyAvg === null ? '—' : formatCurrency(rowMonthlyAvg, '£')}
+                          </td>
+                          <td
+                            className={`border-l border-slate-200/90 bg-slate-100/80 text-right py-2 px-4 font-medium tabular-nums group-hover:bg-slate-100 ${rowTotal >= 0 ? 'text-green-700' : 'text-red-700'}`}
                           >
                             {formatCurrency(rowTotal, '£')}
                           </td>
@@ -1415,7 +1916,12 @@ const AnnualBudget: React.FC = () => {
                                 </td>
                               );
                             })}
-                            <td className="text-right py-2 px-4 tabular-nums text-red-700">
+                            <td className="text-right py-2 px-3 tabular-nums text-red-700">
+                              {typesByMonthTableAvg.sortiesAvg === null
+                                ? '—'
+                                : formatCurrency(typesByMonthTableAvg.sortiesAvg, '£')}
+                            </td>
+                            <td className="border-l border-red-200/80 bg-slate-200/50 text-right py-2 px-4 tabular-nums text-red-800">
                               {formatCurrency(aggregation.totalExpenses, '£')}
                             </td>
                           </tr>
@@ -1431,7 +1937,12 @@ const AnnualBudget: React.FC = () => {
                                 </td>
                               );
                             })}
-                            <td className="text-right py-2 px-4 tabular-nums text-green-700">
+                            <td className="text-right py-2 px-3 tabular-nums text-green-700">
+                              {typesByMonthTableAvg.entreesAvg === null
+                                ? '—'
+                                : formatCurrency(typesByMonthTableAvg.entreesAvg, '£')}
+                            </td>
+                            <td className="border-l border-emerald-200/80 bg-slate-200/50 text-right py-2 px-4 tabular-nums text-green-800">
                               {formatCurrency(aggregation.totalIncome, '£')}
                             </td>
                           </tr>
@@ -1453,7 +1964,20 @@ const AnnualBudget: React.FC = () => {
                       );
                     })}
                     <td
-                      className={`text-right py-3 px-4 tabular-nums ${aggregation.total >= 0 ? 'text-green-700' : 'text-red-700'}`}
+                      className={`text-right py-3 px-3 tabular-nums ${
+                        typesByMonthTableAvg.balanceAvg === null
+                          ? 'text-gray-500'
+                          : typesByMonthTableAvg.balanceAvg >= 0
+                            ? 'text-green-700'
+                            : 'text-red-700'
+                      }`}
+                    >
+                      {typesByMonthTableAvg.balanceAvg === null
+                        ? '—'
+                        : formatCurrency(typesByMonthTableAvg.balanceAvg, '£')}
+                    </td>
+                    <td
+                      className={`border-l border-slate-300 bg-slate-200/70 text-right py-3 px-4 tabular-nums ${aggregation.total >= 0 ? 'text-green-800' : 'text-red-800'}`}
                     >
                       {formatCurrency(aggregation.total, '£')}
                     </td>
@@ -1461,10 +1985,12 @@ const AnnualBudget: React.FC = () => {
                 </tbody>
               </table>
             </div>
-          </div>
+                </div>
+              </div>
+            ) : null}
+          </section>
         </div>
-      </main>
-    </div>
+    </main>
   );
 };
 

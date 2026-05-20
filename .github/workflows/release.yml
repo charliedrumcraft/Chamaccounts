@@ -1,0 +1,89 @@
+# Build Mac / Windows / Linux et publication GitHub Releases sur tag v*.
+# Notes de release : scripts/generate-release-notes.mjs
+# Signature optionnelle : voir .github/release-secrets.example.env
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate release notes
+        run: node scripts/generate-release-notes.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: build/release-notes.md
+
+  build:
+    needs: release-notes
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            prepare_signing: true
+          - os: windows-latest
+            platform: win
+            prepare_signing: true
+          - os: ubuntu-latest
+            platform: linux
+            prepare_signing: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: build
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare code signing (optional)
+        if: matrix.prepare_signing == true
+        shell: bash
+        env:
+          MAC_CERTIFICATE_BASE64: ${{ secrets.MAC_CERTIFICATE_BASE64 }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          WIN_CERTIFICATE_BASE64: ${{ secrets.WIN_CERTIFICATE_BASE64 }}
+          WIN_CERTIFICATE_PASSWORD: ${{ secrets.WIN_CERTIFICATE_PASSWORD }}
+        run: bash scripts/ci-prepare-signing.sh
+
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CERTIFICATE_PASSWORD }}
+        run: |
+          npm run electron:build
+          npx electron-builder --${{ matrix.platform }} --publish always

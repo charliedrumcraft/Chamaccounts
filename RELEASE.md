@@ -1,0 +1,71 @@
+# Chamaccounts v1.0.0
+
+Première version publique de **Chamaccounts**, application de comptabilité multi-plateforme (Windows, macOS, Linux) pour le suivi des transactions, des soldes de comptes, de la comptabilité mensuelle et du budget annuel.
+
+---
+
+## Fonctionnalités principales
+
+### Import et données
+- Assistant d’import **transactions** (mapping CSV, fusion, rapports de merge)
+- Assistant d’import **soldes de comptes**
+- Détection d’**anomalies** avec rapports et exceptions configurables
+- Données centralisées sous `data/` (transactions, soldes, soutien, état applicatif)
+
+### Tableau de bord
+- Graphiques des soldes et des mouvements (courbes, camemberts, barres, synthèse annuelle)
+- Filtres par période et affichage en **GBP**, **EUR** ou **CHF**
+- Taux de change EUR/CHF vers GBP (manuel ou cours en direct)
+
+### Pages métier
+- **Tableau des transactions** — consultation et édition des données consolidées
+- **Soldes des comptes** — historique par compte
+- **Comptabilité mensuelle**
+- **Budget annuel**
+- **Soutien** — lignes dédiées hors import transactions
+
+### Réglages et portabilité
+- Comptes reconnus, projets, types d’entrées et de sorties
+- Export / import du projet en **ZIP** (`data/` + préférences)
+- **Mises à jour** via GitHub Releases (`electron-updater`)
+
+---
+
+## Installation
+
+Téléchargez les installateurs dans [GitHub Releases](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.0).
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.0-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.0-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.0-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.0-linux-x64.AppImage` |
+
+### Premiers pas
+
+1. Installez et lancez Chamaccounts
+2. Configurez comptes, types et taux dans **Réglages**
+3. Importez vos CSV depuis **Tableau des transactions** ou **Soldes des comptes**
+4. Consultez le **Tableau de bord**
+
+---
+
+## Développement et CI
+
+- Build local : `npm run build:win` / `build:mac` / `build:linux`
+- Publication : pousser le tag `v1.0.0` déclenche le workflow `.github/workflows/release.yml` (builds Mac, Windows, Linux + publication GitHub)
+
+---
+
+## Licence
+
+MIT — voir [LICENSE](LICENSE).
+
+---
+
+## Notes
+
+> Signalez les problèmes via les [issues GitHub](https://github.com/charliedrumcraft/Chamaccounts/issues).
+
+> Sous Linux, les données utilisateur sont stockées dans le répertoire de configuration Electron de l’application.

@@ -2,6 +2,10 @@ appId: com.chamaccounts.app
 productName: Chamaccounts
 copyright: Copyright © 2025
 
+# Corps de la release GitHub (généré en CI par scripts/generate-release-notes.mjs)
+releaseInfo:
+  releaseNotesFile: build/release-notes.md
+
 directories:
   output: release
   buildResources: build
@@ -23,6 +27,7 @@ win:
       arch:
         - x64
   artifactName: ${productName}-${version}-win-${arch}.${ext}
+  # WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD via secrets CI (scripts/ci-prepare-signing.sh)
 
 mac:
   target:
@@ -32,6 +37,11 @@ mac:
         - arm64
   category: public.app-category.finance
   artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Notarisation auto si APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID (CI ou local)
 
 linux:
   target:
@@ -41,4 +51,8 @@ linux:
   category: Office
   artifactName: ${productName}-${version}-linux-${arch}.${ext}
 
-publish: null
+publish:
+  provider: github
+  owner: charliedrumcraft
+  repo: Chamaccounts
+  releaseType: release

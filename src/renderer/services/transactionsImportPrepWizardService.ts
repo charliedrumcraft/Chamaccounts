@@ -1,0 +1,32 @@
+/**
+ * @deprecated Importer depuis `./mappingWizardService` (politique d'import unifiée).
+ */
+export {
+  IMPORT_WIZARD_RESULT_FIELDS,
+  PREP_COL_IGN,
+  PREP_COL_LINE,
+  PREP_COL_DUP,
+  PREP_WIZARD_COL_KEY,
+  PREP_SRC_MAPPED_FIELD_SUFFIX,
+  buildPrepTableColDefsRaw,
+  getPrepSourceCellDisplayValue,
+  getSrcMappedFieldDisplayValue,
+  prepTableColLabel,
+  srcTransactionDataColumnTitle,
+  parseAmountNumericForImport,
+  applyGbpFromAmountAndFiat,
+  resolveImportFiatEffective,
+  computeTransactionsImportWizardPreview,
+  getUncoveredManualFieldsRecommendedToFill,
+  getUncoveredManualFieldsRequiringInput,
+  buildPrepTableColDefs,
+  computeImportPreviewMappedOutputFields,
+  computeImportPreviewActiveOutputFields,
+  computeImportPreviewDisplayFields,
+  computeMappingWizardAvailableFields,
+  filterImportPreviewImportableRows,
+  type ImportWizardResultField,
+  type PrepTableColDef,
+  type ImportWizardPreviewItem,
+  type ImportWizardPreviewResult,
+} from './mappingWizardService';

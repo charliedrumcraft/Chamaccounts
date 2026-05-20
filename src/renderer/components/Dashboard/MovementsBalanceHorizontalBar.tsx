@@ -18,6 +18,8 @@ interface MovementsBalanceHorizontalBarProps {
   /** Données mensuelles (période = slider) ; on agrège par type sur toute la période. */
   data: MovementsMonthlyChartData | null;
   currency?: string;
+  /** Séries cachées via la légende du graphique mensuel. */
+  hiddenSeriesByLabel?: Record<string, boolean>;
 }
 
 const BAR_HEIGHT = 40;
@@ -27,6 +29,7 @@ const TRANSITION_MS = 320;
 const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps> = ({
   data,
   currency = '£',
+  hiddenSeriesByLabel = {},
 }) => {
   const [hoverBalance, setHoverBalance] = useState<boolean>(false);
   const [hoverSegment, setHoverSegment] = useState<{ label: string; value: number; isSortie: boolean } | null>(null);
@@ -45,23 +48,30 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
     const sum = (arr: number[]) => arr.reduce((a, b) => a + b, 0);
     const entréesByType: Record<string, number> = {};
     entréeTypes.forEach((type) => {
+      if (hiddenSeriesByLabel[type]) return;
       const monthly = entréesByTypeByMonth[type];
       entréesByType[type] = monthly ? sum(monthly) : 0;
     });
     const sortiesByType: Record<string, number> = {};
     sortieTypes.forEach((type) => {
+      if (hiddenSeriesByLabel[type]) return;
       const monthly = sortiesByTypeByMonth[type];
       sortiesByType[type] = monthly ? sum(monthly) : 0;
     });
 
     let totalEntrées = Object.values(entréesByType).reduce((a, b) => a + b, 0);
     let totalSorties = Object.values(sortiesByType).reduce((a, b) => a + b, 0);
-    if (totalEntrées === 0 && entréesByMonth.length > 0) totalEntrées = sum(entréesByMonth);
-    if (totalSorties === 0 && sortiesByMonth.length > 0) totalSorties = sum(sortiesByMonth);
+    if (totalEntrées === 0 && entréesByMonth.length > 0 && entréeTypes.length === 0 && !hiddenSeriesByLabel['Entrées']) {
+      totalEntrées = sum(entréesByMonth);
+    }
+    if (totalSorties === 0 && sortiesByMonth.length > 0 && sortieTypes.length === 0 && !hiddenSeriesByLabel['Sorties']) {
+      totalSorties = sum(sortiesByMonth);
+    }
 
     const balance = totalEntrées - totalSorties;
 
     const leftSegments = entréeTypes
+      .filter((t) => !hiddenSeriesByLabel[t])
       .filter((t) => (entréesByType[t] ?? 0) > 0)
       .map((type, i) => ({
         label: type,
@@ -70,6 +80,7 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
         color: getColor(i, false),
       }));
     const rightSegments = sortieTypes
+      .filter((t) => !hiddenSeriesByLabel[t])
       .filter((t) => (sortiesByType[t] ?? 0) > 0)
       .map((type, i) => ({
         label: type,
@@ -87,7 +98,7 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
       leftSegments: leftFinal,
       rightSegments: rightFinal,
     };
-  }, [data]);
+  }, [data, hiddenSeriesByLabel]);
 
   if (!aggregated) return null;
   const { totalEntrées, totalSorties, balance, leftSegments, rightSegments } = aggregated;

@@ -3,15 +3,8 @@ import { Link, useLocation } from 'react-router-dom';
 
 export interface SidebarProps {
   collapsed: boolean;
-  onToggleCollapsed: () => void;
-}
-
-function HomeIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-    </svg>
-  );
+  /** Uniquement le clic sur la flèche en tête de barre : le parent y met l’affichage et la persistance (ex. localStorage). */
+  onCollapsedPreferenceToggle: () => void;
 }
 
 function ChartIcon({ className }: { className?: string }) {
@@ -63,13 +56,25 @@ function SettingsIcon({ className }: { className?: string }) {
   );
 }
 
+function HeartIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
+      />
+    </svg>
+  );
+}
+
 const navItems = [
-  { to: '/', label: 'Accueil', icon: HomeIcon },
-  { to: '/dashboard', label: 'Tableau de bord', icon: ChartIcon },
+  { to: '/', label: 'Tableau de bord', icon: ChartIcon },
   { to: '/transactions', label: 'Tableau des transactions', icon: TableIcon },
   { to: '/account-balance', label: 'Soldes des comptes', icon: BankIcon },
   { to: '/monthly-accounting', label: 'Comptabilité mensuelle', icon: CalendarIcon },
   { to: '/annual-budget', label: 'Budget annuel', icon: BudgetIcon },
+  { to: '/soutien', label: 'Soutien', icon: HeartIcon },
   { to: '/settings', label: 'Réglages', icon: SettingsIcon },
 ];
 
@@ -87,7 +92,7 @@ function ChevronIcon({ left }: { left: boolean }) {
   );
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapsed }) => {
+const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggle }) => {
   const location = useLocation();
 
   return (
@@ -105,7 +110,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapsed }) => {
         )}
         <button
           type="button"
-          onClick={onToggleCollapsed}
+          onClick={onCollapsedPreferenceToggle}
           className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
           title={collapsed ? 'Ouvrir le menu' : 'Réduire le menu'}
           aria-label={collapsed ? 'Ouvrir le menu' : 'Réduire le menu'}

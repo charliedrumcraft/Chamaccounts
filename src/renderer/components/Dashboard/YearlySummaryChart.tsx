@@ -254,6 +254,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
       data: visibleBalanceByYear,
       type: 'line',
       yAxisID: 'yLines',
+      hidden: hiddenSeriesByLabel['Balance'] ?? false,
       borderColor: isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.6)',
       borderWidth: 2,
       fill: false,
@@ -447,6 +448,9 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
             if (tooltip.opacity === 0 || !tooltip.dataPoints?.length) {
               el.style.opacity = '0';
               el.style.pointerEvents = 'none';
+              el.style.maxHeight = '';
+              el.style.overflowY = '';
+              el.style.overflowX = '';
               return;
             }
             const dp = tooltip.dataPoints[0];
@@ -529,7 +533,12 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
             el.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
             el.style.color = isDarkMode ? '#cbd5e1' : '#666';
             el.style.opacity = '1';
-            el.style.pointerEvents = 'none';
+            el.style.pointerEvents = 'auto';
+            /** Reste dans la zone du graphe : hauteur max + défilement si beaucoup de séries */
+            const tooltipMaxH = Math.min(320, Math.max(140, height - 32));
+            el.style.maxHeight = `${tooltipMaxH}px`;
+            el.style.overflowY = 'auto';
+            el.style.overflowX = 'hidden';
 
             const { x, y } = tooltip;
             el.style.left = `${x}px`;
@@ -577,7 +586,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
         },
       },
     }),
-    [initialLimits, isDarkMode, currency, hiddenSeriesByLabel, onLegendVisibilityChange, tooltipExtraByLabel]
+    [initialLimits, isDarkMode, currency, hiddenSeriesByLabel, onLegendVisibilityChange, tooltipExtraByLabel, height]
   );
 
   if (!data || data.years.length === 0) {

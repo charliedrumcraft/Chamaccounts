@@ -1,19 +1,49 @@
 /// <reference path="../vite-env.d.ts" />
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import Sidebar from '../components/Layout/Sidebar';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
 import { ANOMALY_REPORT_PATH, transactionsImportFile } from '@/shared/dataPaths';
-import { SourceDataCSVService, type SourceDataResult, SOURCE_DATA_PATH } from '../services/SourceDataCSVService';
+import {
+  SourceDataCSVService,
+  type SourceDataResult,
+  SOURCE_DATA_PATH,
+  normalizeOrderAndIndex,
+  stripSourceColumnFromSourceData,
+  sortSourceDataByDateChronology,
+} from '../services/SourceDataCSVService';
 import { detectAnomalies, EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
 import { canonicalAccountFromSource, accountLabelFromSource } from '../constants/accountSourceLabels';
 import { formatDateDDMMYYYY, formatEur, formatFx, formatGbp, formatAmountGbpForCsv } from '../utils/format';
 import { amountToGbp } from '../services/EffectiveExchangeRates';
 import Papa from 'papaparse';
+import { AnomalyExceptionsModal } from '../components/AnomalyExceptionsModal';
+import TransactionsImportPrepSection from '../components/TransactionsImportPrepSection';
+import { useTransactionsImportPrepWizard } from '../hooks/useTransactionsImportPrepWizard';
+import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
+import { formatDateDDMMYY, rowSignature, type ValidRow } from '@/shared/transactionsImportCore';
+import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
+import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
 
-const STORAGE_KEY = 'transactions-sidebar-collapsed';
-const MERGE_STATUS_STORAGE_KEY = 'transactions-merge-status';
-const MERGE_LAST_REPORT_STORAGE_KEY = 'transactions-merge-last-report';
 const ANOMALY_STATUS_STORAGE_KEY = 'transactions-anomaly-status';
 const ANOMALY_LAST_REPORT_STORAGE_KEY = 'transactions-anomaly-last-report';
+
+/** Clé de tri pour la colonne Anomalie (mode édition). */
+const ANOMALY_SORT_COLUMN_KEY = '__anomaly__';
+/** Clé du filtre « rechercher dans la colonne Anomalie » (barre de recherche, mode édition). */
+const ANOMALY_FILTER_COLUMN_KEY = '__anomaly_filter__';
+
+/** Persistance replier/déplier des blocs Import wizard et détection d’anomalies. */
+const TX_IMPORT_MODULE_EXPANDED_KEY = 'transactions-import-module-expanded';
+const TX_ANOMALY_MODULE_EXPANDED_KEY = 'transactions-anomaly-module-expanded';
+
+function readModuleExpandedFromStorage(key: string): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    if (v === 'false') return false;
+    if (v === 'true') return true;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
 
 /** Formate une date ISO en "DD/MM/YYYY à HH:mm". */
 function formatReportDate(iso: string, prefix: string): string {
@@ -61,49 +91,43 @@ function parseDateFromCell(raw: string): Date | null {
   return null;
 }
 
-/** Tri canonique : Date (ancienne → récente), puis Account, Type, Title (alphabétique). Réattribue Index 1, 2, 3, ... */
-function normalizeOrderAndIndex(source: SourceDataResult): SourceDataResult {
-  const headers = source.headers;
-  const dateCol = headers.find((h) => /date/i.test(h)) ?? null;
-  const accountCol = headers.find((h) => /^account$/i.test(h) || /compte/i.test(h)) ?? null;
-  const typeCol = headers.find((h) => /^type$/i.test(h)) ?? null;
-  const titleCol = headers.find((h) => /^title$/i.test(h)) ?? null;
-  const indexCol = headers.find((h) => /^index$/i.test(h)) ?? 'Index';
+/** Copie profonde pour annuler le mode édition sans écraser le fichier. */
+function cloneSourceDataResult(source: SourceDataResult): SourceDataResult {
+  return {
+    headers: [...source.headers],
+    rows: source.rows.map((row) => ({ ...row })),
+  };
+}
 
-  const sorted = [...source.rows].sort((a, b) => {
-    const dA = dateCol ? parseDateFromCell(a[dateCol] ?? '') : null;
-    const dB = dateCol ? parseDateFromCell(b[dateCol] ?? '') : null;
-    const tA = dA ? dA.getTime() : Infinity;
-    const tB = dB ? dB.getTime() : Infinity;
-    if (tA !== tB) return tA - tB;
-    const accA = (accountCol ? (a[accountCol] ?? '') : '').trim().toLowerCase();
-    const accB = (accountCol ? (b[accountCol] ?? '') : '').trim().toLowerCase();
-    const cmpAcc = accA.localeCompare(accB, undefined, { sensitivity: 'base' });
-    if (cmpAcc !== 0) return cmpAcc;
-    const typeA = (typeCol ? (a[typeCol] ?? '') : '').trim().toLowerCase();
-    const typeB = (typeCol ? (b[typeCol] ?? '') : '').trim().toLowerCase();
-    const cmpType = typeA.localeCompare(typeB, undefined, { sensitivity: 'base' });
-    if (cmpType !== 0) return cmpType;
-    const titleA = (titleCol ? (a[titleCol] ?? '') : '').trim().toLowerCase();
-    const titleB = (titleCol ? (b[titleCol] ?? '') : '').trim().toLowerCase();
-    return titleA.localeCompare(titleB, undefined, { sensitivity: 'base' });
-  });
+function isSourceDataResultEqual(a: SourceDataResult, b: SourceDataResult): boolean {
+  if (a.headers.length !== b.headers.length) return false;
+  for (let i = 0; i < a.headers.length; i++) {
+    if (a.headers[i] !== b.headers[i]) return false;
+  }
+  if (a.rows.length !== b.rows.length) return false;
+  for (let i = 0; i < a.rows.length; i++) {
+    const ra = a.rows[i];
+    const rb = b.rows[i];
+    const keys = new Set([...Object.keys(ra), ...Object.keys(rb)]);
+    for (const k of keys) {
+      if ((ra[k] ?? '') !== (rb[k] ?? '')) return false;
+    }
+  }
+  return true;
+}
 
-  // Première ligne de donnée = index 1 (pas de header dans source.rows)
-  const firstDataRowIndex = 1;
-  const rows = sorted.map((row, i) => ({ ...row, [indexCol]: String(firstDataRowIndex + i) }));
-  return { ...source, rows };
+function isTransactionsEditSessionDirty(
+  data: SourceDataResult | null,
+  baseline: SourceDataResult | null,
+  rowsToDelete: Set<number>
+): boolean {
+  if (!data || !baseline) return false;
+  if (rowsToDelete.size > 0) return true;
+  return !isSourceDataResultEqual(data, baseline);
 }
 
 const TransactionsTable: React.FC = () => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
-
+  const projects = useProjectsFromStorage();
   const [data, setData] = useState<SourceDataResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,32 +135,22 @@ const TransactionsTable: React.FC = () => {
   const [filterColumn, setFilterColumn] = useState<string>('__all__');
   const [sortColumn, setSortColumn] = useState<string | null>('Index');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [mergeStatus, setMergeStatusState] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(MERGE_STATUS_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  });
-  const [mergeLastReportAt, setMergeLastReportAt] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(MERGE_LAST_REPORT_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  });
-  const setMergeStatus = useCallback((msg: string | null) => {
-    setMergeStatusState(msg);
-    try {
-      if (msg != null) localStorage.setItem(MERGE_STATUS_STORAGE_KEY, msg);
-      else localStorage.removeItem(MERGE_STATUS_STORAGE_KEY);
-    } catch {}
-  }, []);
-  const [mergeLoading, setMergeLoading] = useState(false);
+  /** Incrémenté après copie de fichiers vers Import ou vidage du dossier pour recharger le wizard. */
+  const [importFolderReloadToken, setImportFolderReloadToken] = useState(0);
+  const [anomalyExceptionsModalOpen, setAnomalyExceptionsModalOpen] = useState(false);
   const [importFileLoading, setImportFileLoading] = useState(false);
   const [importFileMessage, setImportFileMessage] = useState<string | null>(null);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveMessage, setArchiveMessage] = useState<string | null>(null);
+  const [emptyImportConfirmOpen, setEmptyImportConfirmOpen] = useState(false);
+  /** Affiche ou masque préparation d’import + wizard (sous le titre). */
+  const [importModuleExpanded, setImportModuleExpanded] = useState(() =>
+    readModuleExpandedFromStorage(TX_IMPORT_MODULE_EXPANDED_KEY)
+  );
+  /** Affiche ou masque le bloc détection d’anomalies + édition. */
+  const [anomalyModuleExpanded, setAnomalyModuleExpanded] = useState(() =>
+    readModuleExpandedFromStorage(TX_ANOMALY_MODULE_EXPANDED_KEY)
+  );
   const [anomalyLoading, setAnomalyLoading] = useState(false);
   const [anomalyMessage, setAnomalyMessageState] = useState<string | null>(() => {
     try {
@@ -163,11 +177,13 @@ const TransactionsTable: React.FC = () => {
   const [editMode, setEditMode] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [reorderChronoLoading, setReorderChronoLoading] = useState(false);
+  const [reorderChronoMessage, setReorderChronoMessage] = useState<string | null>(null);
+  /** État à restaurer en quittant le mode édition sans sauvegarder (mis à jour après chaque enregistrement réussi). */
+  const editSessionBaselineRef = useRef<SourceDataResult | null>(null);
+  const [editExitConfirmOpen, setEditExitConfirmOpen] = useState(false);
   /** Indices des lignes (dans data.rows) marquées pour suppression à la sauvegarde. */
   const [rowsToDelete, setRowsToDelete] = useState<Set<number>>(() => new Set());
-  /** Indices des lignes exclues de la détection d'anomalies (persistées au sauvegarder). */
-  const [rowsExcludedFromAnomaly, setRowsExcludedFromAnomaly] = useState<Set<number>>(() => new Set());
-
   const loadData = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -188,27 +204,62 @@ const TransactionsTable: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  /** Synchronise rowsExcludedFromAnomaly avec la colonne Exclure_anomalie au chargement. */
-  useEffect(() => {
-    if (!data?.rows) {
-      setRowsExcludedFromAnomaly(new Set());
-      return;
+  /** Signatures des lignes déjà enregistrées (détection de doublons à l’import). */
+  const existingTransactionSignatures = useMemo(() => {
+    if (!data?.rows?.length) return new Set<string>();
+    const headers = data.headers;
+    const cell = (row: Record<string, string>, re: RegExp) => {
+      const h = headers.find((x) => re.test(x));
+      return h ? (row[h] ?? '').trim() : '';
+    };
+    const sigs = new Set<string>();
+    for (const row of data.rows) {
+      // Même normalisation DATE que processImportRow / prévisualisation wizard (JJ.MM.AA),
+      // alors que SourceDataCSVService affiche souvent JJ.MM.AAAA — sinon les signatures ne coïncident pas.
+      const vr: ValidRow = {
+        DATE: formatDateDDMMYY(cell(row, /^date$/i)),
+        TITLE: cell(row, /^title$/i),
+        AMOUNT: cell(row, /^amount$/i),
+        CURRENCY: cell(row, /^currency$/i),
+        ACCOUNT: cell(row, /^account$/i),
+        'AMOUNT GBP': cell(row, /^amount\s*gbp$/i),
+        TYPE: cell(row, /^type$/i),
+      };
+      sigs.add(rowSignature(vr));
     }
+    return sigs;
+  }, [data]);
+
+  const prepWizard = useTransactionsImportPrepWizard({
+    existingTransactionSignatures,
+    onAfterSuccessfulAppend: loadData,
+    folderReloadToken: importFolderReloadToken,
+  });
+
+  /** Dérivé des lignes : seule source de vérité (évite toute perte au moindre setData sur une autre cellule). */
+  const rowsExcludedFromAnomaly = useMemo(() => {
+    if (!data?.rows) return new Set<number>();
     const excluded = new Set<number>();
     data.rows.forEach((row, i) => {
       const v = (row[EXCLUDE_ANOMALY_COLUMN] ?? '').trim().toLowerCase();
       if (v === '1' || v === 'oui' || v === 'true' || v === 'yes') excluded.add(i);
     });
-    setRowsExcludedFromAnomaly(excluded);
+    return excluded;
   }, [data?.rows]);
 
   const dateColumn = useMemo(() => {
     return data?.headers.find((h) => /date/i.test(h)) ?? null;
   }, [data?.headers]);
 
-  /** En-têtes affichés dans le tableau (sans la colonne technique Exclure_anomalie). */
+  /** En-têtes affichés dans le tableau (sans colonnes techniques : Exclure_anomalie, Soutien_ignorer, Source). */
   const displayHeaders = useMemo(
-    () => (data?.headers ?? []).filter((h) => h !== EXCLUDE_ANOMALY_COLUMN),
+    () =>
+      (data?.headers ?? []).filter(
+        (h) =>
+          h !== EXCLUDE_ANOMALY_COLUMN &&
+          !/^soutien_ignorer$/i.test(h) &&
+          !/^source$/i.test(h)
+      ),
     [data?.headers]
   );
 
@@ -231,22 +282,40 @@ const TransactionsTable: React.FC = () => {
     };
   }, [data?.rows, dateColumn]);
 
-  const handleToggleSidebar = () => {
-    setSidebarCollapsed((c) => {
-      const next = !c;
-      try {
-        localStorage.setItem(STORAGE_KEY, String(next));
-      } catch {}
-      return next;
-    });
-  };
+  /** Aligné sur le rapport d’anomalies (index de ligne = même que dans le CSV). */
+  const transactionAnomalyByDataRowIndex = useMemo(() => {
+    if (!data?.rows) return new Map<number, string>();
+    const { anomalies } = detectAnomalies(data);
+    const map = new Map<number, string>();
+    for (const a of anomalies) {
+      map.set(a.rowIndex - 1, a.reasons.join(' ; '));
+    }
+    return map;
+  }, [data]);
 
-  const filteredRows =
-    data?.rows.filter((row) => {
+  const filteredRows = useMemo(() => {
+    if (!data?.rows) return [];
+    return data.rows.filter((row) => {
       const q = filterText.trim().toLowerCase();
+      const colSel =
+        !editMode && filterColumn === ANOMALY_FILTER_COLUMN_KEY ? '__all__' : filterColumn;
       if (q) {
-        const cols = filterColumn === '__all__' ? (data?.headers ?? []).filter((h) => h !== EXCLUDE_ANOMALY_COLUMN) : [filterColumn];
-        if (!cols.some((h) => (row[h] ?? '').toLowerCase().includes(q))) return false;
+        if (editMode && colSel === ANOMALY_FILTER_COLUMN_KEY) {
+          const idx = data.rows.findIndex((r) => r === row);
+          const text = idx >= 0 ? (transactionAnomalyByDataRowIndex.get(idx) ?? '') : '';
+          if (!text.toLowerCase().includes(q)) return false;
+        } else {
+          const cols =
+            colSel === '__all__'
+              ? (data.headers ?? []).filter(
+                  (h) =>
+                    h !== EXCLUDE_ANOMALY_COLUMN &&
+                    !/^soutien_ignorer$/i.test(h) &&
+                    !/^source$/i.test(h)
+                )
+              : [colSel];
+          if (!cols.some((h) => (row[h] ?? '').toLowerCase().includes(q))) return false;
+        }
       }
       if (dateColumn && minDate != null && maxDate != null) {
         const cellDate = parseDateFromCell(row[dateColumn] ?? '');
@@ -255,7 +324,17 @@ const TransactionsTable: React.FC = () => {
         if (t < minDate.getTime() || t > maxDate.getTime()) return false;
       }
       return true;
-    }) ?? [];
+    });
+  }, [
+    data,
+    filterText,
+    filterColumn,
+    editMode,
+    transactionAnomalyByDataRowIndex,
+    dateColumn,
+    minDate,
+    maxDate,
+  ]);
 
   const getCompareValue = (header: string, raw: string): number | string => {
     const s = (raw ?? '').trim();
@@ -298,7 +377,18 @@ const TransactionsTable: React.FC = () => {
     return s.toLowerCase();
   };
 
-  const sortedRows = (() => {
+  const sortedRows = useMemo(() => {
+    if (sortColumn === ANOMALY_SORT_COLUMN_KEY) {
+      if (!editMode || !data?.rows) return filteredRows;
+      return [...filteredRows].sort((a, b) => {
+        const ia = data.rows.findIndex((r) => r === a);
+        const ib = data.rows.findIndex((r) => r === b);
+        const ta = ia >= 0 ? (transactionAnomalyByDataRowIndex.get(ia) ?? '') : '';
+        const tb = ib >= 0 ? (transactionAnomalyByDataRowIndex.get(ib) ?? '') : '';
+        const cmp = ta.localeCompare(tb, undefined, { sensitivity: 'base' });
+        return sortDirection === 'asc' ? cmp : -cmp;
+      });
+    }
     if (!sortColumn || !data?.headers.includes(sortColumn)) return filteredRows;
     return [...filteredRows].sort((a, b) => {
       const va = getCompareValue(sortColumn, a[sortColumn] ?? '');
@@ -312,7 +402,81 @@ const TransactionsTable: React.FC = () => {
       else cmp = String(va).localeCompare(String(vb), undefined, { sensitivity: 'base' });
       return sortDirection === 'asc' ? cmp : -cmp;
     });
-  })();
+  }, [
+    filteredRows,
+    sortColumn,
+    sortDirection,
+    data?.headers,
+    data?.rows,
+    editMode,
+    transactionAnomalyByDataRowIndex,
+  ]);
+
+  const [editShowAnomaliesOnly, setEditShowAnomaliesOnly] = useState(false);
+  /** Lignes à garder visibles avec le filtre « anomalies seulement » après correction ; réinitialisé uniquement à la sortie du mode édition. */
+  const [anomalyFilterStickyIndices, setAnomalyFilterStickyIndices] = useState<Set<number>>(
+    () => new Set()
+  );
+  const prevAnomalyMapForFilterRef = useRef<Map<number, string>>(new Map());
+
+  useEffect(() => {
+    if (!editMode) setEditShowAnomaliesOnly(false);
+  }, [editMode]);
+
+  useEffect(() => {
+    if (!editMode && sortColumn === ANOMALY_SORT_COLUMN_KEY) {
+      setSortColumn('Index');
+    }
+  }, [editMode, sortColumn]);
+
+  useEffect(() => {
+    if (!editMode && filterColumn === ANOMALY_FILTER_COLUMN_KEY) {
+      setFilterColumn('__all__');
+    }
+  }, [editMode, filterColumn]);
+
+  useLayoutEffect(() => {
+    const curr = transactionAnomalyByDataRowIndex;
+    if (!editMode) {
+      setAnomalyFilterStickyIndices((s) => (s.size === 0 ? s : new Set()));
+      prevAnomalyMapForFilterRef.current = new Map(curr);
+      return;
+    }
+    if (!editShowAnomaliesOnly) {
+      prevAnomalyMapForFilterRef.current = new Map(curr);
+      return;
+    }
+    const prev = prevAnomalyMapForFilterRef.current;
+    setAnomalyFilterStickyIndices((sticky) => {
+      const next = new Set(sticky);
+      for (const idx of prev.keys()) {
+        if (prev.has(idx) && !curr.has(idx)) {
+          next.add(idx);
+        }
+      }
+      return next;
+    });
+    prevAnomalyMapForFilterRef.current = new Map(curr);
+  }, [transactionAnomalyByDataRowIndex, editMode, editShowAnomaliesOnly]);
+
+  const displayRows = useMemo(() => {
+    if (!editMode || !editShowAnomaliesOnly) return sortedRows;
+    return sortedRows.filter((row) => {
+      const dataRowIndex = data?.rows.findIndex((r) => r === row) ?? -1;
+      if (dataRowIndex < 0) return false;
+      return (
+        transactionAnomalyByDataRowIndex.has(dataRowIndex) ||
+        anomalyFilterStickyIndices.has(dataRowIndex)
+      );
+    });
+  }, [
+    editMode,
+    editShowAnomaliesOnly,
+    sortedRows,
+    data?.rows,
+    transactionAnomalyByDataRowIndex,
+    anomalyFilterStickyIndices,
+  ]);
 
   const handleSort = (header: string) => {
     if (sortColumn === header) {
@@ -320,52 +484,6 @@ const TransactionsTable: React.FC = () => {
     } else {
       setSortColumn(header);
       setSortDirection('asc');
-    }
-  };
-
-  const handleMergeImports = async () => {
-    const api = (window as unknown as { electronAPI?: { mergeImportTransactions: () => Promise<{ success: boolean; error?: string; mergedCount: number; anomalyCount: number; reportPath?: string }>; openImportReport: () => Promise<{ success: boolean; error?: string }>; writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> } }).electronAPI;
-    if (!api?.mergeImportTransactions) return;
-    setMergeLoading(true);
-    try {
-      const result = await api.mergeImportTransactions();
-      if (result.success) {
-        loadData();
-        const now = new Date().toISOString();
-        setMergeLastReportAt(now);
-        try {
-          localStorage.setItem(MERGE_LAST_REPORT_STORAGE_KEY, now);
-        } catch {}
-        if (result.mergedCount > 0 || result.anomalyCount > 0) {
-          setMergeStatus(
-            `${result.mergedCount} ligne(s) fusionnée(s). ${result.anomalyCount > 0 ? `${result.anomalyCount} anomalie(s) → ` : ''}Rapport dans Processed/merge_report.csv.`
-          );
-        } else {
-          setMergeStatus('Aucun fichier CSV dans le dossier Import.');
-        }
-      } else {
-        setMergeStatus(result.error ?? 'Erreur lors de la fusion.');
-      }
-    } finally {
-      setMergeLoading(false);
-    }
-  };
-
-  const handleOpenImportFolder = async () => {
-    const api = (window as unknown as { electronAPI?: { openImportFolder: () => Promise<{ success: boolean; error?: string }> } }).electronAPI;
-    if (!api?.openImportFolder) return;
-    const result = await api.openImportFolder();
-    if (!result.success && result.error) {
-      setMergeStatusState(result.error);
-    }
-  };
-
-  const handleOpenMergeReport = async () => {
-    const api = (window as unknown as { electronAPI?: { openImportReport: () => Promise<{ success: boolean; error?: string }> } }).electronAPI;
-    if (!api?.openImportReport) return;
-    const result = await api.openImportReport();
-    if (!result.success && result.error) {
-      setMergeStatusState(result.error);
     }
   };
 
@@ -378,19 +496,28 @@ const TransactionsTable: React.FC = () => {
     }
   };
 
-  const handleArchiveImportFolder = async () => {
+  const handleConfirmEmptyTransactionsImport = async () => {
+    setEmptyImportConfirmOpen(false);
     const api = (window as unknown as {
-      electronAPI?: { archiveImportFolder: () => Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }> };
+      electronAPI?: {
+        trashTransactionsImportFiles: () => Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }>;
+      };
     }).electronAPI;
-    if (!api?.archiveImportFolder) return;
+    if (!api?.trashTransactionsImportFiles) return;
     setArchiveMessage(null);
     setArchiveLoading(true);
     try {
-      const result = await api.archiveImportFolder();
+      const result = await api.trashTransactionsImportFiles();
       if (result.success) {
-        setArchiveMessage(result.message ?? (result.movedCount ? `${result.movedCount} fichier(s) archivé(s).` : 'Aucun fichier à archiver.'));
+        setArchiveMessage(
+          result.message ??
+            (result.movedCount
+              ? `${result.movedCount} fichier(s) déplacé(s) vers la corbeille.`
+              : 'Aucun fichier dans le dossier Import.')
+        );
+        setImportFolderReloadToken((k) => k + 1);
       } else {
-        setArchiveMessage(result.error ?? 'Erreur lors de l\'archivage.');
+        setArchiveMessage(result.error ?? 'Impossible de vider le dossier.');
       }
     } finally {
       setArchiveLoading(false);
@@ -436,7 +563,10 @@ const TransactionsTable: React.FC = () => {
   const handleImportCsvFile = async () => {
     const api = (window as unknown as {
       electronAPI?: {
-        selectFile: (opts?: { filters?: { name: string; extensions: string[] }[] }) => Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>;
+        selectFile: (opts?: {
+          filters?: { name: string; extensions: string[] }[];
+          allowMultiple?: boolean;
+        }) => Promise<{ success: boolean; path?: string; paths?: string[]; canceled?: boolean; error?: string }>;
         readExternalFile: (path: string) => Promise<{ success: boolean; data?: string; error?: string }>;
         writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
       };
@@ -447,34 +577,72 @@ const TransactionsTable: React.FC = () => {
     try {
       const selectResult = await api.selectFile({
         filters: [{ name: 'Fichiers CSV', extensions: ['csv'] }],
+        allowMultiple: true,
       });
-      if (selectResult.canceled || !selectResult.path) {
+      if (selectResult.canceled) {
         setImportFileMessage(null);
         return;
       }
-      const sourcePath = selectResult.path;
-      const readResult = await api.readExternalFile(sourcePath);
-      if (!readResult.success || readResult.data === undefined) {
-        setImportFileMessage(readResult.error ?? 'Impossible de lire le fichier.');
+      const paths =
+        selectResult.paths?.length ? selectResult.paths : selectResult.path ? [selectResult.path] : [];
+      if (paths.length === 0) {
+        setImportFileMessage(null);
         return;
       }
-      const fileName = sourcePath.replace(/^.*[/\\]/, '');
-      const destPath = transactionsImportFile(fileName);
-      const writeResult = await api.writeFile(destPath, readResult.data);
-      if (writeResult.success) {
-        setImportFileMessage(`Fichier copié dans Import : ${fileName}`);
-      } else {
-        setImportFileMessage(writeResult.error ?? 'Erreur lors de la copie.');
+      const copied: string[] = [];
+      for (const sourcePath of paths) {
+        const readResult = await api.readExternalFile(sourcePath);
+        if (!readResult.success || readResult.data === undefined) {
+          setImportFileMessage(readResult.error ?? 'Impossible de lire un fichier.');
+          return;
+        }
+        const fileName = sourcePath.replace(/^.*[/\\]/, '');
+        const destPath = transactionsImportFile(fileName);
+        const writeResult = await api.writeFile(destPath, readResult.data);
+        if (!writeResult.success) {
+          setImportFileMessage(writeResult.error ?? 'Erreur lors de la copie.');
+          return;
+        }
+        copied.push(fileName);
       }
+      setImportFileMessage(
+        copied.length === 1
+          ? `Fichier copié dans Import : ${copied[0]}`
+          : `${copied.length} fichiers copiés dans Import : ${copied.join(', ')}`
+      );
+      setImportFolderReloadToken((k) => k + 1);
     } finally {
       setImportFileLoading(false);
     }
   };
 
-  const handleToggleEditMode = () => {
-    setEditMode((prev) => !prev);
+  const performExitEditMode = useCallback(() => {
+    if (editSessionBaselineRef.current) {
+      setData(cloneSourceDataResult(editSessionBaselineRef.current));
+      editSessionBaselineRef.current = null;
+    }
+    setRowsToDelete(new Set());
+    setEditMode(false);
     setSaveMessage(null);
-    if (editMode) setRowsToDelete(new Set());
+    setEditExitConfirmOpen(false);
+  }, []);
+
+  const handleToggleEditMode = () => {
+    if (!editMode) {
+      if (data) editSessionBaselineRef.current = cloneSourceDataResult(data);
+      setEditMode(true);
+      setSaveMessage(null);
+    } else {
+      if (
+        data &&
+        editSessionBaselineRef.current &&
+        isTransactionsEditSessionDirty(data, editSessionBaselineRef.current, rowsToDelete)
+      ) {
+        setEditExitConfirmOpen(true);
+        return;
+      }
+      performExitEditMode();
+    }
   };
 
   const handleSaveSourceData = async () => {
@@ -499,10 +667,12 @@ const TransactionsTable: React.FC = () => {
       const rowsToKeep = rowsWithExclusion.filter((_, index) => !rowsToDelete.has(index));
       const withIndexHeader =
         headers.some((h) => /^index$/i.test(h)) ? headers : ['Index', ...headers];
-      const normalized = normalizeOrderAndIndex({
-        headers: withIndexHeader,
-        rows: rowsToKeep,
-      });
+      const normalized = normalizeOrderAndIndex(
+        stripSourceColumnFromSourceData({
+          headers: withIndexHeader,
+          rows: rowsToKeep,
+        })
+      );
       const csvContent = Papa.unparse(normalized.rows, {
         columns: normalized.headers,
         delimiter: ';',
@@ -510,13 +680,90 @@ const TransactionsTable: React.FC = () => {
       const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
       if (result.success) {
         setData(normalized);
+        editSessionBaselineRef.current = cloneSourceDataResult(normalized);
         setRowsToDelete(new Set());
-        setSaveMessage('Fichier source_data.csv enregistré.');
+        /* Comme à la sortie du mode édition : repartir d’un affichage aligné sur les données enregistrées
+         * (filtre « anomalies seulement » + lignes collantes après correction d’anomalie). */
+        setEditShowAnomaliesOnly(false);
+        setAnomalyFilterStickyIndices(new Set());
+        setEditExitConfirmOpen(false);
+        setSaveMessage('Fichier src_transaction_data.csv enregistré.');
       } else {
         setSaveMessage(result.error ?? 'Erreur lors de l\'enregistrement.');
       }
     } finally {
       setSaveLoading(false);
+    }
+  };
+
+  const handleRefreshSourceDataCsv = async () => {
+    if (editMode) {
+      setReorderChronoMessage(
+        'Quittez le mode édition pour rafraîchir le fichier (les modifications non enregistrées ne sont pas prises en compte).'
+      );
+      return;
+    }
+    setReorderChronoLoading(true);
+    setReorderChronoMessage(null);
+    try {
+      const fresh = await SourceDataCSVService.load();
+      if (!fresh?.headers?.length || !fresh?.rows?.length) {
+        setReorderChronoMessage(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
+        return;
+      }
+      const headers = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
+        ? fresh.headers
+        : [...fresh.headers, EXCLUDE_ANOMALY_COLUMN];
+      const rows = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
+        ? fresh.rows.map((r) => ({ ...r }))
+        : fresh.rows.map((r) => ({ ...r, [EXCLUDE_ANOMALY_COLUMN]: '' }));
+      const stripped = stripSourceColumnFromSourceData({ headers, rows });
+      const sorted = sortSourceDataByDateChronology(stripped);
+      const amountHeader = sorted.headers.find((h) => /^amount$/i.test(h)) ?? null;
+      const currencyHeader = sorted.headers.find((h) => /^currency$/i.test(h)) ?? null;
+      const amountGbpHeader = sorted.headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
+      if (!amountHeader || !currencyHeader || !amountGbpHeader) {
+        setReorderChronoMessage('Colonnes AMOUNT / CURRENCY / AMOUNT GBP introuvables.');
+        return;
+      }
+      let updated = 0;
+      const rowsOut = sorted.rows.map((row) => {
+        const next = { ...row };
+        const amountStr = (next[amountHeader] ?? '').trim().replace(',', '.');
+        const amount = parseFloat(amountStr);
+        const currency = (next[currencyHeader] ?? '').trim().toUpperCase();
+        if (!Number.isNaN(amount) && amount !== 0 && (currency === 'EUR' || currency === 'CHF')) {
+          const gbp = amountToGbp(amount, currency);
+          if (gbp !== null) {
+            next[amountGbpHeader] = formatAmountGbpForCsv(gbp);
+            updated++;
+          }
+        }
+        return next;
+      });
+      const refreshed: SourceDataResult = { headers: sorted.headers, rows: rowsOut };
+      const api = (window as unknown as {
+        electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
+      }).electronAPI;
+      if (!api?.writeFile) {
+        setReorderChronoMessage("Fonction d'écriture non disponible.");
+        return;
+      }
+      const csvContent = Papa.unparse(refreshed.rows, { columns: refreshed.headers, delimiter: ';' });
+      const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
+      if (result.success) {
+        setData(refreshed);
+        editSessionBaselineRef.current = cloneSourceDataResult(refreshed);
+        setReorderChronoMessage(
+          `${refreshed.rows.length} ligne(s) triées par date (index 1…${refreshed.rows.length}) ; ${updated} montant(s) GBP recalculé(s).`
+        );
+      } else {
+        setReorderChronoMessage(result.error ?? "Erreur lors de l'enregistrement.");
+      }
+    } catch (e) {
+      setReorderChronoMessage(e instanceof Error ? e.message : 'Erreur lors du rafraîchissement.');
+    } finally {
+      setReorderChronoLoading(false);
     }
   };
 
@@ -562,155 +809,322 @@ const TransactionsTable: React.FC = () => {
   }, []);
 
   const handleToggleExcludeAnomaly = useCallback((dataRowIndex: number) => {
-    setRowsExcludedFromAnomaly((prev) => {
-      const next = new Set(prev);
-      if (next.has(dataRowIndex)) next.delete(dataRowIndex);
-      else next.add(dataRowIndex);
+    setData((prev) => {
+      if (!prev) return prev;
+      const row = prev.rows[dataRowIndex];
+      if (!row) return prev;
+      const v = (row[EXCLUDE_ANOMALY_COLUMN] ?? '').trim().toLowerCase();
+      const currentlyExcluded =
+        v === '1' || v === 'oui' || v === 'true' || v === 'yes';
+      const nextExcluded = !currentlyExcluded;
+      const headers = prev.headers.includes(EXCLUDE_ANOMALY_COLUMN)
+        ? prev.headers
+        : [...prev.headers, EXCLUDE_ANOMALY_COLUMN];
+      return {
+        ...prev,
+        headers,
+        rows: prev.rows.map((r, i) =>
+          i === dataRowIndex
+            ? { ...r, [EXCLUDE_ANOMALY_COLUMN]: nextExcluded ? '1' : '' }
+            : r
+        ),
+      };
+    });
+  }, []);
+
+  const toggleImportModuleExpanded = useCallback(() => {
+    setImportModuleExpanded((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(TX_IMPORT_MODULE_EXPANDED_KEY, String(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAnomalyModuleExpanded = useCallback(() => {
+    setAnomalyModuleExpanded((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(TX_ANOMALY_MODULE_EXPANDED_KEY, String(next));
+      } catch {
+        /* ignore */
+      }
       return next;
     });
   }, []);
 
   return (
-    <div className="min-h-screen flex bg-gray-50">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggleCollapsed={handleToggleSidebar}
-      />
+    <>
       <main className="flex-1 flex flex-col min-w-0 p-4">
-        <div className="mb-4">
+        <div className="mb-4 space-y-4">
           <h1 className="text-2xl font-bold text-gray-800">Tableau des transactions</h1>
-          <div className="mt-2 space-y-4">
-            <div>
-              <h2 className="text-sm font-semibold text-gray-700 mb-2">Importation de données</h2>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleImportCsvFile}
-                  disabled={importFileLoading}
-                  className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  {importFileLoading ? 'Import en cours…' : 'Importer des nouvelles lignes'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOpenImportFolder}
-                  className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  Ouvrir le dossier d'importation
-                </button>
-                <button
-                  type="button"
-                  onClick={handleArchiveImportFolder}
-                  disabled={archiveLoading}
-                  className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                >
-                  {archiveLoading ? 'Archivage…' : 'Archiver les données importées'}
-                </button>
-              </div>
-            </div>
 
-            <hr className="border-gray-200" />
-
-            <div>
-              <h2 className="text-sm font-semibold text-gray-700 mb-2">Fusion des données importées</h2>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleMergeImports}
-                  disabled={mergeLoading}
-                  className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          <div className="bg-white rounded-lg shadow p-4 border border-gray-200">
+            <div
+              className="flex items-center justify-between gap-3 mb-0 cursor-pointer select-none"
+              onClick={toggleImportModuleExpanded}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleImportModuleExpanded();
+                }
+              }}
+              aria-expanded={importModuleExpanded}
+              aria-controls="transactions-import-module"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="inline-block transition-transform duration-200 text-gray-500 shrink-0"
+                  style={{ transform: importModuleExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+                  aria-hidden
                 >
-                  {mergeLoading ? 'Fusion en cours…' : 'Fusionner les imports'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOpenMergeReport}
-                  className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  Ouvrir le rapport de fusion
-                </button>
-              </div>
-              {(mergeStatus || mergeLastReportAt) && (
-                <div className="mt-2 space-y-0.5">
-                  {mergeStatus && (
-                    <p className="text-sm text-gray-600">{mergeStatus}</p>
-                  )}
-                  {mergeLastReportAt && (
-                    <p className="text-sm text-gray-500">{formatReportDate(mergeLastReportAt, 'Dernier rapport généré')}</p>
-                  )}
+                  ▼
+                </span>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-semibold text-gray-800">Import wizard</h2>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    {importModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;importation de données
+                  </p>
                 </div>
-              )}
-            </div>
-
-            <hr className="border-gray-200" />
-
-            <div>
-              <h2 className="text-sm font-semibold text-gray-700 mb-2">Détection d'anomalies</h2>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleDetectAnomalies}
-                  disabled={anomalyLoading || !data}
-                  className="rounded border border-amber-600 bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
-                >
-                  {anomalyLoading ? 'Analyse…' : 'Detecter des anomalies'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOpenAnomalyReport}
-                  className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  Ouvrir le rapport d'anomalies
-                </button>
-                <button
-                  type="button"
-                  onClick={handleToggleEditMode}
-                  className={`rounded border px-3 py-1.5 text-sm font-medium text-white ${
-                    editMode
-                      ? 'border-gray-500 bg-gray-500 hover:bg-gray-600'
-                      : 'border-red-600 bg-red-600 hover:bg-red-700'
-                  }`}
-                >
-                  {editMode ? 'Quitter le mode édition' : 'Mode édition'}
-                </button>
-                {editMode && (
-                  <button
-                    type="button"
-                    onClick={handleSaveSourceData}
-                    disabled={saveLoading || !data}
-                    className="rounded border border-green-600 bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
-                  >
-                    {saveLoading ? 'Enregistrement…' : 'Sauvegarder source_data.csv'}
-                  </button>
-                )}
               </div>
-              {editMode && saveMessage && (
-                <p className="mt-2 text-sm text-gray-600">{saveMessage}</p>
-              )}
-              {(anomalyMessage || anomalyLastReportAt) && (
-                <div className="mt-2 space-y-0.5">
-                  {anomalyMessage && (
-                    <p className="text-sm text-amber-700">{anomalyMessage}</p>
-                  )}
-                  {anomalyLastReportAt && (
-                    <p className="text-sm text-amber-600/80">{formatReportDate(anomalyLastReportAt, 'Dernier rapport d\'anomalies généré')}</p>
-                  )}
-                </div>
-              )}
             </div>
+          {importModuleExpanded && (
+            <div id="transactions-import-module" className="mt-3">
+              <div
+                className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
+                aria-label="Zone Import wizard"
+              >
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Préparation de l&apos;import</h3>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleImportCsvFile}
+                          disabled={importFileLoading}
+                          className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                        >
+                          {importFileLoading ? 'Import en cours…' : 'Importer des fichiers (CSV)'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void prepWizard.handleOpenImportFolder()}
+                          className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                        >
+                          Ouvrir le dossier d'importation
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEmptyImportConfirmOpen(true)}
+                          disabled={archiveLoading}
+                          className="rounded border border-red-600 bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                        >
+                          {archiveLoading ? 'Vidage…' : 'Vider le dossier d\'import'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void prepWizard.handleImportLinesToSource()}
+                          disabled={
+                            prepWizard.importLinesLoading ||
+                            prepWizard.importWizardLoading ||
+                            !prepWizard.mappingWizardActive ||
+                            !prepWizard.importWizardPreview?.list.length ||
+                            prepWizard.importPreviewImportableRows.length === 0
+                          }
+                          title={
+                            !prepWizard.mappingWizardActive
+                              ? 'Activez le mapping wizard pour préparer l’import vers src_transaction_data.csv'
+                              : prepWizard.importPreviewImportableRows.length === 0
+                                ? 'Aucune ligne importable (ignorées, invalides ou doublons) avec les réglages actuels'
+                                : undefined
+                          }
+                          className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {prepWizard.importLinesLoading ? 'Import…' : 'Importer les lignes'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <hr className="border-gray-200" />
+
+                    <TransactionsImportPrepSection
+                      {...prepWizard}
+                      sourceRowsForSuggestions={data?.rows ?? []}
+                      sourceHeadersForSuggestions={data?.headers ?? []}
+                    />
+                    <hr className="border-gray-200" />
+                  </div>
+                </div>
+              </div>
+          )}
+          </div>
+
+          <div className="bg-white rounded-lg shadow p-4 border border-gray-200">
+            <div
+              className="flex items-center justify-between gap-3 mb-0 cursor-pointer select-none"
+              onClick={toggleAnomalyModuleExpanded}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleAnomalyModuleExpanded();
+                }
+              }}
+              aria-expanded={anomalyModuleExpanded}
+              aria-controls="transactions-anomaly-module"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="inline-block transition-transform duration-200 text-gray-500 shrink-0"
+                  style={{ transform: anomalyModuleExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+                  aria-hidden
+                >
+                  ▼
+                </span>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-semibold text-gray-800">
+                    Détection d&apos;anomalies et mode édition
+                  </h2>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    {anomalyModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;édition des données existantes
+                  </p>
+                </div>
+              </div>
+            </div>
+            {anomalyModuleExpanded && (
+              <div id="transactions-anomaly-module" className="mt-3">
+                <div
+                  className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
+                  aria-label="Zone détection d’anomalies"
+                >
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleRefreshSourceDataCsv}
+                          disabled={reorderChronoLoading || !data || saveLoading}
+                          title={
+                            editMode
+                              ? 'Quittez le mode édition pour rafraîchir src_transaction_data.csv.'
+                              : 'Trie le fichier par date, réattribue les index et recalcule AMOUNT GBP.'
+                          }
+                          className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {reorderChronoLoading ? 'Rafraîchissement…' : 'Rafraîchir src_transaction_data.csv'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDetectAnomalies}
+                          disabled={anomalyLoading || !data}
+                          className="rounded border border-orange-600 bg-orange-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+                        >
+                          {anomalyLoading ? 'Analyse…' : 'Détecter des anomalies'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleOpenAnomalyReport}
+                          className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                        >
+                          Ouvrir le rapport d'anomalies
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAnomalyExceptionsModalOpen(true)}
+                          className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                        >
+                          Liste des exceptions
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleToggleEditMode}
+                          className={`rounded border px-3 py-1.5 text-sm font-medium text-white ${
+                            editMode
+                              ? 'border-gray-500 bg-gray-500 hover:bg-gray-600'
+                              : 'border-red-600 bg-red-600 hover:bg-red-700'
+                          }`}
+                        >
+                          {editMode ? 'Quitter le mode édition' : 'Mode édition'}
+                        </button>
+                        {editMode && (
+                          <button
+                            type="button"
+                            onClick={handleSaveSourceData}
+                            disabled={saveLoading || !data}
+                            className="rounded border border-green-600 bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                          >
+                            {saveLoading ? 'Enregistrement…' : 'Sauvegarder src_transaction_data.csv'}
+                          </button>
+                        )}
+                      </div>
+                      {reorderChronoMessage && (
+                        <p
+                          className={`mt-2 text-sm rounded border px-2 py-1 ${uiMessageClass(
+                            getUiMessageTone(reorderChronoMessage)
+                          )}`}
+                        >
+                          {reorderChronoMessage}
+                        </p>
+                      )}
+                      {editMode && saveMessage && (
+                        <p
+                          className={`mt-2 text-sm rounded border px-2 py-1 ${uiMessageClass(
+                            getUiMessageTone(saveMessage)
+                          )}`}
+                        >
+                          {saveMessage}
+                        </p>
+                      )}
+                      {(anomalyMessage || anomalyLastReportAt) && (
+                        <div className="mt-2 space-y-0.5">
+                          {anomalyMessage && (
+                            <p
+                              className={`text-sm rounded border px-2 py-1 ${uiMessageClass(
+                                getUiMessageTone(anomalyMessage)
+                              )}`}
+                            >
+                              {anomalyMessage}
+                            </p>
+                          )}
+                          {anomalyLastReportAt && (
+                            <p className="text-sm text-gray-600">
+                              {formatReportDate(anomalyLastReportAt, 'Dernier rapport d\'anomalies généré')}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+            )}
+          </div>
 
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {archiveMessage && (
-                <span className="text-sm text-gray-600">{archiveMessage}</span>
+                <span
+                  className={`text-sm rounded border px-2 py-1 ${uiMessageClass(
+                    getUiMessageTone(archiveMessage)
+                  )}`}
+                >
+                  {archiveMessage}
+                </span>
               )}
               {importFileMessage && (
-                <span className={`text-sm ${importFileMessage.startsWith('Fichier copié') ? 'text-green-600' : 'text-red-600'}`}>
+                <span
+                  className={`text-sm rounded border px-2 py-1 ${uiMessageClass(
+                    getUiMessageTone(importFileMessage)
+                  )}`}
+                >
                   {importFileMessage}
                 </span>
               )}
             </div>
           </div>
-        </div>
 
         {loading && (
           <div className="flex items-center justify-center py-12 text-gray-500">
@@ -738,6 +1152,9 @@ const TransactionsTable: React.FC = () => {
                   className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[120px]"
                 >
                   <option value="__all__">Toutes</option>
+                  {editMode && (
+                    <option value={ANOMALY_FILTER_COLUMN_KEY}>Anomalie</option>
+                  )}
                   {displayHeaders.map((h) => (
                     <option key={h} value={h}>
                       {h}
@@ -771,6 +1188,17 @@ const TransactionsTable: React.FC = () => {
                 {filteredRows.length} / {data.rows.length} ligne{data.rows.length !== 1 ? 's' : ''}
               </span>
               {editMode && (
+                <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={editShowAnomaliesOnly}
+                    onChange={(e) => setEditShowAnomaliesOnly(e.target.checked)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Uniquement les lignes avec anomalies
+                </label>
+              )}
+              {editMode && (
                 <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
               )}
             </div>
@@ -778,6 +1206,21 @@ const TransactionsTable: React.FC = () => {
               <table className="w-full border-collapse text-sm">
                 <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 z-10">
                   <tr>
+                    {editMode && (
+                      <th
+                        onClick={() => handleSort(ANOMALY_SORT_COLUMN_KEY)}
+                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-amber-50/80 min-w-[10rem] max-w-md align-bottom cursor-pointer select-none hover:bg-amber-100/80 transition-colors"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Anomalie
+                          {sortColumn === ANOMALY_SORT_COLUMN_KEY && (
+                            <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                              {sortDirection === 'asc' ? '↑' : '↓'}
+                            </span>
+                          )}
+                        </span>
+                      </th>
+                    )}
                     {displayHeaders.map((h) => (
                       <th
                         key={h}
@@ -807,10 +1250,12 @@ const TransactionsTable: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedRows.map((row, i) => {
+                  {displayRows.map((row, i) => {
                     const dataRowIndex = data ? data.rows.findIndex((r) => r === row) : -1;
                     const isMarkedForDelete = dataRowIndex >= 0 && rowsToDelete.has(dataRowIndex);
                     const isExcludedFromAnomaly = dataRowIndex >= 0 && rowsExcludedFromAnomaly.has(dataRowIndex);
+                    const anomalyText =
+                      dataRowIndex >= 0 ? transactionAnomalyByDataRowIndex.get(dataRowIndex) ?? '' : '';
                     return (
                       <tr
                         key={i}
@@ -822,6 +1267,14 @@ const TransactionsTable: React.FC = () => {
                               : 'hover:bg-gray-50'
                         }`}
                       >
+                        {editMode && (
+                          <td
+                            className="px-3 py-2 align-top bg-amber-50/40 text-xs text-amber-900 max-w-md break-words whitespace-pre-wrap"
+                            title={anomalyText || undefined}
+                          >
+                            {anomalyText || '—'}
+                          </td>
+                        )}
                         {displayHeaders.map((header) => {
                           const raw = row[header] ?? '';
                           const isDateColumn = /date/i.test(header);
@@ -841,6 +1294,18 @@ const TransactionsTable: React.FC = () => {
                                       ? accountLabelFromSource(raw) || raw
                                       : raw;
                           if (editMode && dataRowIndex >= 0 && !/^index$/i.test(header)) {
+                            if (/^projet$/i.test(header)) {
+                              return (
+                                <td key={header} className="px-1 py-0.5">
+                                  <ProjetSelectCell
+                                    rawId={raw}
+                                    projects={projects}
+                                    disabled={false}
+                                    onChange={(id) => handleCellChange(dataRowIndex, header, id)}
+                                  />
+                                </td>
+                              );
+                            }
                             const amountHeaderForRow = displayHeaders.find((h) => /^amount$/i.test(h));
                             const currencyHeaderForRow = displayHeaders.find((h) => /^currency$/i.test(h));
                             const effectiveCurrency = currencyHeaderForRow ? ((row[currencyHeaderForRow] ?? '').trim().toUpperCase() || 'EUR') : 'EUR';
@@ -863,6 +1328,16 @@ const TransactionsTable: React.FC = () => {
                                   aria-label={isAmountGbpReadOnly ? `${header} (calculé)` : `Éditer ${header}`}
                                   title={isAmountGbpReadOnly ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
                                 />
+                              </td>
+                            );
+                          }
+                          if (/^projet$/i.test(header)) {
+                            return (
+                              <td
+                                key={header}
+                                className={`px-3 py-2 whitespace-nowrap ${editMode && /^index$/i.test(header) ? 'bg-gray-100' : ''}`}
+                              >
+                                <ProjetDisplayCell rawId={raw} projects={projects} />
                               </td>
                             );
                           }
@@ -910,14 +1385,97 @@ const TransactionsTable: React.FC = () => {
               </table>
             </div>
             <div className="shrink-0 px-3 py-2 border-t border-gray-200 bg-gray-50 text-gray-500 text-xs">
-              {sortedRows.length} ligne{sortedRows.length !== 1 ? 's' : ''}
-              {filterText ? ` (filtré sur ${data.rows.length} au total)` : ''}
+              {displayRows.length} ligne{displayRows.length !== 1 ? 's' : ''}
+              {editMode && editShowAnomaliesOnly
+                ? ` (anomalies uniquement, ${sortedRows.length} après tri/filtre)`
+                : filterText
+                  ? ` (filtré sur ${data.rows.length} au total)`
+                  : ''}
             </div>
           </div>
         )}
 
       </main>
-    </div>
+      {emptyImportConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="transactions-empty-import-title"
+          onClick={() => setEmptyImportConfirmOpen(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="transactions-empty-import-title" className="text-lg font-semibold text-gray-900">
+              Vider le dossier d&apos;import ?
+            </h2>
+            <p className="text-sm text-gray-600">
+              Tous les fichiers du dossier Import (transactions) seront déplacés vers la corbeille du système. Vous pourrez les restaurer depuis la corbeille si besoin.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEmptyImportConfirmOpen(false)}
+                className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmEmptyTransactionsImport()}
+                className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Confirmer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {editExitConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="transactions-edit-exit-title"
+          onClick={() => setEditExitConfirmOpen(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="transactions-edit-exit-title" className="text-lg font-semibold text-gray-900">
+              Quitter sans sauvegarder ?
+            </h2>
+            <p className="text-sm text-gray-600">
+              Les modifications non enregistrées seront perdues.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditExitConfirmOpen(false)}
+                className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Retour
+              </button>
+              <button
+                type="button"
+                onClick={performExitEditMode}
+                className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Quitter
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <AnomalyExceptionsModal
+        open={anomalyExceptionsModalOpen}
+        onClose={() => setAnomalyExceptionsModalOpen(false)}
+        onAfterSave={loadData}
+      />
+    </>
   );
 };
 

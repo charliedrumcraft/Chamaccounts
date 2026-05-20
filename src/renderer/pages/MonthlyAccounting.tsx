@@ -1,30 +1,75 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Chart as ChartJS, ChartOptions, Filler, registerables } from 'chart.js';
 import { Line } from 'react-chartjs-2';
-import Sidebar from '../components/Layout/Sidebar';
 import { MONTHLY_ANOMALY_REPORT_PATH } from '@/shared/dataPaths';
-import { SourceDataCSVService, type SourceDataResult, SOURCE_DATA_PATH } from '../services/SourceDataCSVService';
+import {
+  SourceDataCSVService,
+  type SourceDataResult,
+  SOURCE_DATA_PATH,
+  normalizeOrderAndIndex,
+  stripSourceColumnFromSourceData,
+  sortSourceDataByDateChronology,
+} from '../services/SourceDataCSVService';
 import { EXCLUDE_ANOMALY_COLUMN, detectAnomalies } from '../services/AnomalyDetectionService';
 import { getSuggestions, getDateSuggestionsForMonth, completeDateForMonth, isTextSuggestibleColumn } from '../services/SuggestInputService';
 import { accountLabelFromSource } from '../constants/accountSourceLabels';
+import { resolveBalanceLineIdForTransactionType } from '../constants/annualBudgetTypeMapping';
+import { getYearSnapshot, type YearSnapshot } from '../services/annualBudgetStorage';
 import { formatDateDDMMYYYY, formatEur, formatFx, formatGbp, formatCurrency, formatAmountGbpForCsv } from '../utils/format';
 import { convertMovementsToDisplayCurrency, amountToGbp } from '../services/EffectiveExchangeRates';
 import type { CurrencySymbol } from '../services/EffectiveExchangeRates';
 import Papa from 'papaparse';
+import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
+import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
 
 ChartJS.register(...registerables, Filler);
 
-const STORAGE_KEY = 'monthly-accounting-sidebar-collapsed';
 const MONTH_STORAGE_KEY = 'monthly-accounting-selected-month';
 const CUMULATIVE_CHART_FILTERS_OPEN = 'monthly-accounting-cumulative-chart-filters-open';
 const CUMULATIVE_CHART_Y_AXIS_CURRENCY = 'monthly-accounting-cumulative-chart-y-axis-currency';
 const CUMULATIVE_CHART_HEIGHT_PX = 'monthly-accounting-cumulative-chart-height-px';
 const OVERVIEW_FILTERS_OPEN = 'monthly-accounting-overview-filters-open';
-const OVERVIEW_BAR_MODE = 'monthly-accounting-overview-bar-mode';
+const OVERVIEW_BAR_AVERAGE = 'monthly-accounting-overview-bar-average';
+const OVERVIEW_BAR_BUDGET = 'monthly-accounting-overview-bar-budget';
+/** @deprecated migré vers OVERVIEW_BAR_AVERAGE / OVERVIEW_BAR_BUDGET */
+const OVERVIEW_BAR_MODE_LEGACY = 'monthly-accounting-overview-bar-mode';
 const OVERVIEW_AVERAGE_PERIOD = 'monthly-accounting-overview-average-period';
+const SECTION_MONTHLY_CHART = 'monthly-accounting-section-chart-expanded';
+const SECTION_MONTHLY_OVERVIEW = 'monthly-accounting-section-overview-expanded';
+const SECTION_MONTHLY_TABLE = 'monthly-accounting-section-table-expanded';
 
-const OVERVIEW_BAR_MODES = ['none', 'average'] as const;
-type OverviewBarMode = (typeof OVERVIEW_BAR_MODES)[number];
+function loadMonthlySectionExpanded(key: string, defaultOpen = true): boolean {
+  try {
+    const s = localStorage.getItem(key);
+    if (s === 'false') return false;
+    if (s === 'true') return true;
+    return defaultOpen;
+  } catch {
+    return defaultOpen;
+  }
+}
+
+function saveMonthlySectionExpanded(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {}
+}
+
+function loadOverviewBarToggles(): { average: boolean; budget: boolean } {
+  try {
+    const a = localStorage.getItem(OVERVIEW_BAR_AVERAGE);
+    const b = localStorage.getItem(OVERVIEW_BAR_BUDGET);
+    if (a !== null || b !== null) {
+      return { average: a === 'true', budget: b === 'true' };
+    }
+    const legacy = localStorage.getItem(OVERVIEW_BAR_MODE_LEGACY);
+    if (legacy === 'average') return { average: true, budget: true };
+    return { average: false, budget: false };
+  } catch {
+    return { average: false, budget: false };
+  }
+}
 
 const AVERAGE_PERIOD_OPTIONS: { value: string; label: string }[] = [
   { value: '1', label: 'Dernier mois' },
@@ -35,6 +80,126 @@ const AVERAGE_PERIOD_OPTIONS: { value: string; label: string }[] = [
   { value: '36', label: '3 ans' },
   { value: '48', label: '4 ans' },
 ];
+
+/** Phrase complète pour l’infobulle « écart vs moyenne » (ex. « sur les 12 derniers mois »). */
+function phraseMoyenneSurPeriode(periodValue: string): string {
+  switch (periodValue) {
+    case '1':
+      return 'sur le dernier mois';
+    case '3':
+      return 'sur les 3 derniers mois';
+    case '6':
+      return 'sur les 6 derniers mois';
+    case '12':
+      return 'sur les 12 derniers mois';
+    case '24':
+      return 'sur les 2 ans';
+    case '36':
+      return 'sur les 3 ans';
+    case '48':
+      return 'sur les 4 ans';
+    default: {
+      const opt = AVERAGE_PERIOD_OPTIONS.find((o) => o.value === periodValue);
+      return opt ? `sur ${opt.label.toLowerCase()}` : '';
+    }
+  }
+}
+
+/**
+ * Couleur du montant d’écart (colonne Écart + infobulle barres).
+ * Sorties (`total-sorties`, ids `s-*`) : positif rouge, négatif vert.
+ * Entrées (`e-*`, `total-entrees`) et `balance` : positif vert, négatif rouge.
+ * Aligné sur `isSortiesRow` dans le bloc « Résultats et statistiques ».
+ */
+function overviewStatBarEcartAmountClass(diff: number, isSorties: boolean): string {
+  if (diff === 0) return '';
+  if (isSorties) return diff > 0 ? 'text-red-600' : 'text-green-600';
+  return diff > 0 ? 'text-green-600' : 'text-red-600';
+}
+
+/** Infobulle instantanée (pas d’attribut title du navigateur) pour les barres « résultats et statistiques ». */
+function OverviewStatBarTooltipBubble(props: {
+  variant: 'average' | 'budget';
+  diff: number;
+  currency: string;
+  periodPhrase?: string;
+  year?: number;
+  isSortiesRow: boolean;
+}) {
+  const { variant, diff, currency, periodPhrase, year, isSortiesRow: isSorties } = props;
+  const formatted = `${diff > 0 ? '+' : ''}${formatCurrency(diff, currency)}`;
+  const isZero = diff === 0;
+  const isAvg = variant === 'average';
+  const amountClass = overviewStatBarEcartAmountClass(diff, isSorties);
+  return (
+    <div className="relative">
+      <div
+        className={`min-w-[220px] max-w-[min(300px,calc(100vw-1.5rem))] rounded-xl border px-3.5 py-3 shadow-2xl ring-1 ring-white/10 ${
+          isAvg
+            ? 'border-sky-700/50 bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950'
+            : 'border-violet-700/50 bg-gradient-to-br from-slate-800 via-indigo-950/80 to-slate-950'
+        }`}
+      >
+        <div className="flex items-start gap-2.5">
+          <span
+            className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${
+              isAvg ? 'bg-sky-500/25 text-sky-200' : 'bg-violet-500/25 text-violet-200'
+            }`}
+            aria-hidden
+          >
+            {isAvg ? 'Moy.' : 'Prév.'}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+              {isAvg ? 'Comparaison à la moyenne' : 'Comparaison au budget'}
+            </p>
+            <p className="mt-1 text-[11px] leading-snug text-slate-400">
+              {isAvg && periodPhrase ? (
+                <>
+                  Moyenne calculée <span className="font-medium text-slate-300">{periodPhrase}</span>.
+                </>
+              ) : !isAvg && year != null ? (
+                <>
+                  Prévision mensuelle dérivée du budget annuel <span className="font-medium text-slate-300">{year}</span>.
+                </>
+              ) : (
+                '\u00a0'
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 border-t border-white/10 pt-3">
+          {isZero ? (
+            <p className="text-center text-sm font-semibold text-emerald-400/95">Écart nul</p>
+          ) : (
+            <p
+              className={`text-center text-xl font-bold tabular-nums tracking-tight drop-shadow-sm ${amountClass || 'text-white'}`}
+            >
+              {formatted}
+            </p>
+          )}
+          <p className="mt-2 text-center text-[11px] leading-relaxed text-slate-500">
+            {isAvg && periodPhrase
+              ? isZero
+                ? 'Réalisé du mois égal à cette référence.'
+                : 'Montant du mois par rapport à cette moyenne (hors mois courant dans le calcul).'
+              : !isAvg && year != null
+                ? isZero
+                  ? 'Réalisé aligné sur la prévision pour ce mois.'
+                  : 'Écart du mois par rapport à la prévision mensuelle budgétée.'
+                : null}
+          </p>
+        </div>
+      </div>
+      <div
+        className={`absolute left-1/2 top-full -translate-x-1/2 border-[8px] border-transparent ${
+          isAvg ? 'border-t-slate-950' : 'border-t-indigo-950'
+        }`}
+        aria-hidden
+      />
+    </div>
+  );
+}
 
 const Y_AXIS_CURRENCIES = [
   { value: '£', label: 'GBP (£)' },
@@ -69,6 +234,27 @@ function parseDateFromCell(raw: string): Date | null {
     return Number.isNaN(date.getTime()) ? null : date;
   }
   return null;
+}
+
+/** Formate une Date locale en JJ.MM.AAAA (aligné sur formatDateDDMMYYYY). */
+function formatDateObjDDMMYYYY(d: Date): string {
+  const j = String(d.getDate()).padStart(2, '0');
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  return `${j}.${mo}.${d.getFullYear()}`;
+}
+
+/** Forecast annuel (GBP) → part mensuelle, convertie dans la devise d’affichage. null si aucune ligne budgétée. */
+function monthlyForecastForTypeDisplay(
+  type: string,
+  snap: YearSnapshot | null,
+  displayCurrency: CurrencySymbol
+): number | null {
+  if (!snap) return null;
+  const lineId = resolveBalanceLineIdForTransactionType(type, snap.lineAssignedTypes);
+  if (!lineId) return null;
+  const annualGbp = snap.budgetValues[lineId] ?? 0;
+  const monthlyGbp = annualGbp / 12;
+  return convertMovementsToDisplayCurrency(monthlyGbp, displayCurrency);
 }
 
 /** Parse un montant depuis une cellule (virgule ou point décimal). */
@@ -138,48 +324,67 @@ function getCompareValue(header: string, raw: string): number | string {
   return s.toLowerCase();
 }
 
-/** Tri canonique : Date (ancienne → récente), puis Account, Type, Title (alphabétique). Réattribue Index 1, 2, 3, ... */
-function normalizeOrderAndIndex(source: SourceDataResult): SourceDataResult {
-  const headers = source.headers;
-  const dateCol = headers.find((h) => /date/i.test(h)) ?? null;
-  const accountCol = headers.find((h) => /^account$/i.test(h) || /compte/i.test(h)) ?? null;
-  const typeCol = headers.find((h) => /^type$/i.test(h)) ?? null;
-  const titleCol = headers.find((h) => /^title$/i.test(h)) ?? null;
-  const indexCol = headers.find((h) => /^index$/i.test(h)) ?? 'Index';
+function cloneSourceDataResult(source: SourceDataResult): SourceDataResult {
+  return {
+    headers: [...source.headers],
+    rows: source.rows.map((row) => ({ ...row })),
+  };
+}
 
-  const sorted = [...source.rows].sort((a, b) => {
-    const dA = dateCol ? parseDateFromCell(a[dateCol] ?? '') : null;
-    const dB = dateCol ? parseDateFromCell(b[dateCol] ?? '') : null;
-    const tA = dA ? dA.getTime() : Infinity;
-    const tB = dB ? dB.getTime() : Infinity;
-    if (tA !== tB) return tA - tB;
-    const accA = (accountCol ? (a[accountCol] ?? '') : '').trim().toLowerCase();
-    const accB = (accountCol ? (b[accountCol] ?? '') : '').trim().toLowerCase();
-    const cmpAcc = accA.localeCompare(accB, undefined, { sensitivity: 'base' });
-    if (cmpAcc !== 0) return cmpAcc;
-    const typeA = (typeCol ? (a[typeCol] ?? '') : '').trim().toLowerCase();
-    const typeB = (typeCol ? (b[typeCol] ?? '') : '').trim().toLowerCase();
-    const cmpType = typeA.localeCompare(typeB, undefined, { sensitivity: 'base' });
-    if (cmpType !== 0) return cmpType;
-    const titleA = (titleCol ? (a[titleCol] ?? '') : '').trim().toLowerCase();
-    const titleB = (titleCol ? (b[titleCol] ?? '') : '').trim().toLowerCase();
-    return titleA.localeCompare(titleB, undefined, { sensitivity: 'base' });
-  });
+function isSourceDataResultEqual(a: SourceDataResult, b: SourceDataResult): boolean {
+  if (a.headers.length !== b.headers.length) return false;
+  for (let i = 0; i < a.headers.length; i++) {
+    if (a.headers[i] !== b.headers[i]) return false;
+  }
+  if (a.rows.length !== b.rows.length) return false;
+  for (let i = 0; i < a.rows.length; i++) {
+    const ra = a.rows[i];
+    const rb = b.rows[i];
+    const keys = new Set([...Object.keys(ra), ...Object.keys(rb)]);
+    for (const k of keys) {
+      if ((ra[k] ?? '') !== (rb[k] ?? '')) return false;
+    }
+  }
+  return true;
+}
 
-  const firstDataRowIndex = 1;
-  const rows = sorted.map((row, i) => ({ ...row, [indexCol]: String(firstDataRowIndex + i) }));
-  return { ...source, rows };
+function numberSetsEqual(a: Set<number>, b: Set<number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
+function newRowDraftsEqual(a: Record<string, string>[], b: Record<string, string>[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false;
+  }
+  return true;
+}
+
+type MonthlyEditSessionSnapshot = {
+  data: SourceDataResult;
+  rowsToDelete: Set<number>;
+  rowsExcludedFromAnomaly: Set<number>;
+  newRowDrafts: Record<string, string>[];
+};
+
+function isMonthlyEditSessionDirty(
+  data: SourceDataResult | null,
+  rowsToDelete: Set<number>,
+  rowsExcludedFromAnomaly: Set<number>,
+  newRowDrafts: Record<string, string>[],
+  baseline: MonthlyEditSessionSnapshot | null
+): boolean {
+  if (!data || !baseline) return false;
+  if (!numberSetsEqual(rowsToDelete, baseline.rowsToDelete)) return true;
+  if (!numberSetsEqual(rowsExcludedFromAnomaly, baseline.rowsExcludedFromAnomaly)) return true;
+  if (!newRowDraftsEqual(newRowDrafts, baseline.newRowDrafts)) return true;
+  return !isSourceDataResultEqual(data, baseline.data);
 }
 
 const MonthlyAccounting: React.FC = () => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
-
+  const projects = useProjectsFromStorage();
   const [data, setData] = useState<SourceDataResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -197,10 +402,19 @@ const MonthlyAccounting: React.FC = () => {
   const [editMode, setEditMode] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [reorderChronoLoading, setReorderChronoLoading] = useState(false);
+  const [reorderChronoMessage, setReorderChronoMessage] = useState<string | null>(null);
+  const editSessionBaselineRef = useRef<MonthlyEditSessionSnapshot | null>(null);
+  const [editExitConfirmOpen, setEditExitConfirmOpen] = useState(false);
   const [rowsToDelete, setRowsToDelete] = useState<Set<number>>(() => new Set());
   const [rowsExcludedFromAnomaly, setRowsExcludedFromAnomaly] = useState<Set<number>>(() => new Set());
   /** Ligne(s) vide(s) en mode édition pour ajouter de nouvelles entrées (non enregistrées tant que vides ou jusqu'au clic Sauvegarder). */
   const [newRowDrafts, setNewRowDrafts] = useState<Record<string, string>[]>(() => [{}]);
+  const [editShowAnomaliesOnly, setEditShowAnomaliesOnly] = useState(false);
+  const [anomalyFilterStickyIndices, setAnomalyFilterStickyIndices] = useState<Set<number>>(
+    () => new Set()
+  );
+  const prevMonthlyAnomalyMapForFilterRef = useRef<Map<number, string>>(new Map());
   /** Panneau paramètres du graphique cumulé (ouvert/fermé). */
   const [cumulativeChartFiltersOpen, setCumulativeChartFiltersOpen] = useState(() => {
     try {
@@ -234,14 +448,12 @@ const MonthlyAccounting: React.FC = () => {
       return true;
     }
   });
-  const [overviewBarMode, setOverviewBarMode] = useState<OverviewBarMode>(() => {
-    try {
-      const v = localStorage.getItem(OVERVIEW_BAR_MODE);
-      return (OVERVIEW_BAR_MODES as readonly string[]).includes(v ?? '') ? (v as OverviewBarMode) : 'none';
-    } catch {
-      return 'none';
-    }
-  });
+  const [overviewBarAverageEnabled, setOverviewBarAverageEnabled] = useState(
+    () => loadOverviewBarToggles().average
+  );
+  const [overviewBarBudgetEnabled, setOverviewBarBudgetEnabled] = useState(
+    () => loadOverviewBarToggles().budget
+  );
   const [overviewAveragePeriod, setOverviewAveragePeriod] = useState<string>(() => {
     try {
       const v = localStorage.getItem(OVERVIEW_AVERAGE_PERIOD);
@@ -251,7 +463,31 @@ const MonthlyAccounting: React.FC = () => {
       return '3';
     }
   });
+  const [overviewStatBarTooltip, setOverviewStatBarTooltip] = useState<{
+    left: number;
+    top: number;
+    content: React.ReactNode;
+  } | null>(null);
+  const [sectionChartExpanded, setSectionChartExpanded] = useState(() =>
+    loadMonthlySectionExpanded(SECTION_MONTHLY_CHART, true)
+  );
+  const [sectionOverviewExpanded, setSectionOverviewExpanded] = useState(() =>
+    loadMonthlySectionExpanded(SECTION_MONTHLY_OVERVIEW, true)
+  );
+  const [sectionTableExpanded, setSectionTableExpanded] = useState(() =>
+    loadMonthlySectionExpanded(SECTION_MONTHLY_TABLE, true)
+  );
   const chartTooltipRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setOverviewStatBarTooltip(null);
+  }, [selectedMonth, sectionOverviewExpanded]);
+
+  useEffect(() => {
+    const clear = () => setOverviewStatBarTooltip(null);
+    document.addEventListener('scroll', clear, true);
+    return () => document.removeEventListener('scroll', clear, true);
+  }, []);
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -292,9 +528,33 @@ const MonthlyAccounting: React.FC = () => {
     [data?.headers]
   );
 
+  const normalizeHeaderKey = useCallback((header: string) => {
+    return header
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_')
+      .replace(/_+/g, '_');
+  }, []);
+
+  const isHiddenMonthlyColumn = useCallback(
+    (header: string) => {
+      const key = normalizeHeaderKey(header);
+      if (key === 'soutien_ignorer') return true;
+      if (key === 'projet') return editMode;
+      return false;
+    },
+    [normalizeHeaderKey, editMode]
+  );
+
   const displayHeaders = useMemo(
-    () => (data?.headers ?? []).filter((h) => h !== EXCLUDE_ANOMALY_COLUMN),
-    [data?.headers]
+    () =>
+      (data?.headers ?? []).filter(
+        (h) =>
+          h !== EXCLUDE_ANOMALY_COLUMN &&
+          !/^source$/i.test(h) &&
+          !isHiddenMonthlyColumn(h)
+      ),
+    [data?.headers, isHiddenMonthlyColumn]
   );
 
   /** Mois présents dans les données (année-mois), du plus récent au plus ancien. */
@@ -328,8 +588,11 @@ const MonthlyAccounting: React.FC = () => {
     return list.sort((a, b) => b.localeCompare(a));
   }, [availableMonths, nextMonth]);
 
-  /** Initialiser selectedMonth au premier mois sélectionnable si vide ou invalide. */
+  /** Initialiser selectedMonth au premier mois sélectionnable si vide ou invalide (après chargement des données). */
   useEffect(() => {
+    // Tant que les données ne sont pas chargées, `selectableMonths` ne reflète qu’un mois par défaut (ex. mois courant) :
+    // appliquer la correction ici écraserait le mois lu dans localStorage à chaque retour sur la page.
+    if (loading) return;
     if (selectableMonths.length === 0) return;
     const valid = selectableMonths.includes(selectedMonth);
     if (!selectedMonth || !valid) {
@@ -339,7 +602,7 @@ const MonthlyAccounting: React.FC = () => {
         localStorage.setItem(MONTH_STORAGE_KEY, next);
       } catch {}
     }
-  }, [selectableMonths, selectedMonth]);
+  }, [selectableMonths, selectedMonth, loading]);
 
   const handleMonthChange = (value: string) => {
     setSelectedMonth(value);
@@ -395,6 +658,69 @@ const MonthlyAccounting: React.FC = () => {
     });
   }, [rowsForMonth, sortColumn, sortDirection, displayHeaders]);
 
+  /** Anomalies pour le mois courant (clé = index dans data.rows, comme le rapport CSV). */
+  const monthlyAnomalyByDataRowIndex = useMemo(() => {
+    if (!data?.headers?.length || rowsForMonth.length === 0) return new Map<number, string>();
+    const monthData: SourceDataResult = {
+      headers: data.headers,
+      rows: rowsForMonth,
+      rowIndicesInSource: rowsForMonthIndicesInSource,
+    };
+    const { anomalies } = detectAnomalies(monthData);
+    const map = new Map<number, string>();
+    for (const a of anomalies) {
+      map.set(a.rowIndex - 1, a.reasons.join(' ; '));
+    }
+    return map;
+  }, [data?.headers, rowsForMonth, rowsForMonthIndicesInSource]);
+
+  useEffect(() => {
+    if (!editMode) setEditShowAnomaliesOnly(false);
+  }, [editMode]);
+
+  useLayoutEffect(() => {
+    const curr = monthlyAnomalyByDataRowIndex;
+    if (!editMode) {
+      setAnomalyFilterStickyIndices((s) => (s.size === 0 ? s : new Set()));
+      prevMonthlyAnomalyMapForFilterRef.current = new Map(curr);
+      return;
+    }
+    if (!editShowAnomaliesOnly) {
+      prevMonthlyAnomalyMapForFilterRef.current = new Map(curr);
+      return;
+    }
+    const prev = prevMonthlyAnomalyMapForFilterRef.current;
+    setAnomalyFilterStickyIndices((sticky) => {
+      const next = new Set(sticky);
+      for (const idx of prev.keys()) {
+        if (prev.has(idx) && !curr.has(idx)) {
+          next.add(idx);
+        }
+      }
+      return next;
+    });
+    prevMonthlyAnomalyMapForFilterRef.current = new Map(curr);
+  }, [monthlyAnomalyByDataRowIndex, editMode, editShowAnomaliesOnly]);
+
+  const displayRows = useMemo(() => {
+    if (!editMode || !editShowAnomaliesOnly) return sortedRows;
+    return sortedRows.filter((row) => {
+      const dataRowIndex = data?.rows.findIndex((r) => r === row) ?? -1;
+      if (dataRowIndex < 0) return false;
+      return (
+        monthlyAnomalyByDataRowIndex.has(dataRowIndex) ||
+        anomalyFilterStickyIndices.has(dataRowIndex)
+      );
+    });
+  }, [
+    editMode,
+    editShowAnomaliesOnly,
+    sortedRows,
+    data?.rows,
+    monthlyAnomalyByDataRowIndex,
+    anomalyFilterStickyIndices,
+  ]);
+
   /** Colonne AMOUNT GBP (négatif = dépense, positif = revenu) et Title pour le graphique cumulé. */
   const amountCol = useMemo(
     () => data?.headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null,
@@ -409,7 +735,7 @@ const MonthlyAccounting: React.FC = () => {
     [data?.headers]
   );
 
-  /** Aperçu global du mois : totaux entrées/sorties/balance et cumuls par type. */
+  /** Résultats et statistiques du mois : totaux entrées/sorties/balance et cumuls par type. */
   const overviewData = useMemo(() => {
     if (!selectedMonth || !amountCol) return null;
     const c = cumulativeChartYAxisCurrency as CurrencySymbol;
@@ -439,6 +765,36 @@ const MonthlyAccounting: React.FC = () => {
       byTypeEntrées: Object.entries(byTypeEntrées).sort((a, b) => b[1] - a[1]),
     };
   }, [selectedMonth, rowsForMonth, amountCol, typeCol, cumulativeChartYAxisCurrency]);
+
+  /** Dernière date de transaction parmi les lignes du mois (résultats et statistiques). */
+  const overviewLastTransactionDate = useMemo(() => {
+    if (!dateColumn || rowsForMonth.length === 0) return null;
+    let max: Date | null = null;
+    for (const row of rowsForMonth) {
+      const d = parseDateFromCell(row[dateColumn] ?? '');
+      if (!d) continue;
+      if (!max || d.getTime() > max.getTime()) max = d;
+    }
+    return max;
+  }, [dateColumn, rowsForMonth]);
+
+  const [budgetSnapshot, setBudgetSnapshot] = useState<YearSnapshot | null>(null);
+  useEffect(() => {
+    const y = selectedMonth ? parseInt(selectedMonth.split('-')[0], 10) : NaN;
+    if (Number.isNaN(y)) {
+      setBudgetSnapshot(null);
+      return;
+    }
+    setBudgetSnapshot(getYearSnapshot(y));
+  }, [selectedMonth]);
+  useEffect(() => {
+    const handler = () => {
+      const y = selectedMonth ? parseInt(selectedMonth.split('-')[0], 10) : NaN;
+      if (!Number.isNaN(y)) setBudgetSnapshot(getYearSnapshot(y));
+    };
+    window.addEventListener('annual-budget-snapshot-changed', handler);
+    return () => window.removeEventListener('annual-budget-snapshot-changed', handler);
+  }, [selectedMonth]);
 
   /** Totaux par mois (et par type) pour calcul des moyennes. */
   const monthlyTotals = useMemo(() => {
@@ -471,7 +827,7 @@ const MonthlyAccounting: React.FC = () => {
 
   /** Référence pour les barres (moyenne des N mois passés, hors mois courant), totaux et par type. */
   const overviewAverageReference = useMemo(() => {
-    if (!selectedMonth || overviewBarMode !== 'average') return null;
+    if (!selectedMonth || !overviewBarAverageEnabled) return null;
     const n = parseInt(overviewAveragePeriod, 10);
     if (!Number.isFinite(n) || n < 1) return null;
     const [y, m] = selectedMonth.split('-').map(Number);
@@ -517,10 +873,10 @@ const MonthlyAccounting: React.FC = () => {
       byTypeSortiesAvg,
       byTypeEntréesAvg,
     };
-  }, [selectedMonth, overviewBarMode, overviewAveragePeriod, monthlyTotals]);
+  }, [selectedMonth, overviewBarAverageEnabled, overviewAveragePeriod, monthlyTotals]);
 
-  /** Référence (moyenne) pour afficher les barres. */
-  const overviewReference = overviewBarMode === 'average' ? overviewAverageReference : null;
+  /** Référence (moyenne) pour afficher les barres « moyenne des mois passés ». */
+  const overviewReference = overviewBarAverageEnabled ? overviewAverageReference : null;
 
   /** Données pour le graphique de suivi cumulé : par jour du mois, cumul des sorties et des entrées. */
   const cumulativeChartData = useMemo(() => {
@@ -697,16 +1053,6 @@ const MonthlyAccounting: React.FC = () => {
     }
   };
 
-  const handleToggleSidebar = () => {
-    setSidebarCollapsed((c) => {
-      const next = !c;
-      try {
-        localStorage.setItem(STORAGE_KEY, String(next));
-      } catch {}
-      return next;
-    });
-  };
-
   const selectedMonthLabel = useMemo(() => {
     if (!selectedMonth) return '';
     const [y, m] = selectedMonth.split('-').map(Number);
@@ -758,12 +1104,51 @@ const MonthlyAccounting: React.FC = () => {
     }
   };
 
-  const handleToggleEditMode = () => {
-    setEditMode((prev) => !prev);
-    setSaveMessage(null);
-    if (editMode) {
+  const performExitEditMode = useCallback(() => {
+    if (editSessionBaselineRef.current) {
+      const b = editSessionBaselineRef.current;
+      setData(cloneSourceDataResult(b.data));
+      setRowsToDelete(new Set(b.rowsToDelete));
+      setRowsExcludedFromAnomaly(new Set(b.rowsExcludedFromAnomaly));
+      setNewRowDrafts(b.newRowDrafts.map((d) => ({ ...d })));
+      editSessionBaselineRef.current = null;
+    } else {
       setRowsToDelete(new Set());
       setNewRowDrafts([{}]);
+    }
+    setEditMode(false);
+    setSaveMessage(null);
+    setEditExitConfirmOpen(false);
+  }, []);
+
+  const handleToggleEditMode = () => {
+    if (!editMode) {
+      if (data) {
+        editSessionBaselineRef.current = {
+          data: cloneSourceDataResult(data),
+          rowsToDelete: new Set(rowsToDelete),
+          rowsExcludedFromAnomaly: new Set(rowsExcludedFromAnomaly),
+          newRowDrafts: newRowDrafts.map((d) => ({ ...d })),
+        };
+      }
+      setEditMode(true);
+      setSaveMessage(null);
+    } else {
+      if (
+        data &&
+        editSessionBaselineRef.current &&
+        isMonthlyEditSessionDirty(
+          data,
+          rowsToDelete,
+          rowsExcludedFromAnomaly,
+          newRowDrafts,
+          editSessionBaselineRef.current
+        )
+      ) {
+        setEditExitConfirmOpen(true);
+        return;
+      }
+      performExitEditMode();
     }
   };
 
@@ -799,10 +1184,12 @@ const MonthlyAccounting: React.FC = () => {
       }
       const withIndexHeader =
         headers.some((h) => /^index$/i.test(h)) ? headers : ['Index', ...headers];
-      const normalized = normalizeOrderAndIndex({
-        headers: withIndexHeader,
-        rows: rowsToKeep,
-      });
+      const normalized = normalizeOrderAndIndex(
+        stripSourceColumnFromSourceData({
+          headers: withIndexHeader,
+          rows: rowsToKeep,
+        })
+      );
       const csvContent = Papa.unparse(normalized.rows, {
         columns: normalized.headers,
         delimiter: ';',
@@ -812,7 +1199,17 @@ const MonthlyAccounting: React.FC = () => {
         setData(normalized);
         setRowsToDelete(new Set());
         setNewRowDrafts([{}]);
-        setSaveMessage('Fichier source_data.csv enregistré.');
+        setRowsExcludedFromAnomaly(new Set());
+        setEditShowAnomaliesOnly(false);
+        setAnomalyFilterStickyIndices(new Set());
+        setEditExitConfirmOpen(false);
+        editSessionBaselineRef.current = {
+          data: cloneSourceDataResult(normalized),
+          rowsToDelete: new Set(),
+          rowsExcludedFromAnomaly: new Set(),
+          newRowDrafts: [{}],
+        };
+        setSaveMessage('Fichier src_transaction_data.csv enregistré.');
       } else {
         setSaveMessage(result.error ?? "Erreur lors de l'enregistrement.");
       }
@@ -820,6 +1217,76 @@ const MonthlyAccounting: React.FC = () => {
       setSaveLoading(false);
     }
   };
+
+  const handleRefreshSourceDataCsv = useCallback(async () => {
+    if (editMode) {
+      setReorderChronoMessage(
+        'Quittez le mode édition pour rafraîchir le fichier (les brouillons non enregistrés ne sont pas pris en compte).'
+      );
+      return;
+    }
+    setReorderChronoLoading(true);
+    setReorderChronoMessage(null);
+    try {
+      const fresh = await SourceDataCSVService.load();
+      if (!fresh?.headers?.length || !fresh?.rows?.length) {
+        setReorderChronoMessage(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
+        return;
+      }
+      const headers = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
+        ? fresh.headers
+        : [...fresh.headers, EXCLUDE_ANOMALY_COLUMN];
+      const rows = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
+        ? fresh.rows.map((r) => ({ ...r }))
+        : fresh.rows.map((r) => ({ ...r, [EXCLUDE_ANOMALY_COLUMN]: '' }));
+      const stripped = stripSourceColumnFromSourceData({ headers, rows });
+      const sorted = sortSourceDataByDateChronology(stripped);
+      const amountHeader = sorted.headers.find((h) => /^amount$/i.test(h)) ?? null;
+      const currencyHeader = sorted.headers.find((h) => /^currency$/i.test(h)) ?? null;
+      const amountGbpHeader = sorted.headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
+      if (!amountHeader || !currencyHeader || !amountGbpHeader) {
+        setReorderChronoMessage('Colonnes AMOUNT / CURRENCY / AMOUNT GBP introuvables.');
+        return;
+      }
+      let updated = 0;
+      const rowsOut = sorted.rows.map((row) => {
+        const next = { ...row };
+        const amountStr = (next[amountHeader] ?? '').trim().replace(',', '.');
+        const amount = parseFloat(amountStr);
+        const currency = (next[currencyHeader] ?? '').trim().toUpperCase();
+        if (!Number.isNaN(amount) && amount !== 0 && (currency === 'EUR' || currency === 'CHF')) {
+          const gbp = amountToGbp(amount, currency);
+          if (gbp !== null) {
+            next[amountGbpHeader] = formatAmountGbpForCsv(gbp);
+            updated++;
+          }
+        }
+        return next;
+      });
+      const refreshed: SourceDataResult = { headers: sorted.headers, rows: rowsOut };
+      const api = (window as unknown as {
+        electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
+      }).electronAPI;
+      if (!api?.writeFile) {
+        setReorderChronoMessage("Fonction d'écriture non disponible.");
+        return;
+      }
+      const csvContent = Papa.unparse(refreshed.rows, { columns: refreshed.headers, delimiter: ';' });
+      const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
+      if (result.success) {
+        setData(refreshed);
+        setReorderChronoMessage(
+          `${refreshed.rows.length} ligne(s) triées par date (index 1…${refreshed.rows.length}) ; ${updated} montant(s) GBP recalculé(s).`
+        );
+      } else {
+        setReorderChronoMessage(result.error ?? "Erreur lors de l'enregistrement.");
+      }
+    } catch (e) {
+      setReorderChronoMessage(e instanceof Error ? e.message : 'Erreur lors du rafraîchissement.');
+    } finally {
+      setReorderChronoLoading(false);
+    }
+  }, [editMode]);
 
   const handleCellChange = useCallback(
     (dataRowIndex: number, header: string, value: string) => {
@@ -863,6 +1330,27 @@ const MonthlyAccounting: React.FC = () => {
   }, []);
 
   const handleToggleExcludeAnomaly = useCallback((dataRowIndex: number) => {
+    setData((prev) => {
+      if (!prev) return prev;
+      const row = prev.rows[dataRowIndex];
+      if (!row) return prev;
+      const v = (row[EXCLUDE_ANOMALY_COLUMN] ?? '').trim().toLowerCase();
+      const currentlyExcluded =
+        v === '1' || v === 'oui' || v === 'true' || v === 'yes';
+      const nextExcluded = !currentlyExcluded;
+      const headers = prev.headers.includes(EXCLUDE_ANOMALY_COLUMN)
+        ? prev.headers
+        : [...prev.headers, EXCLUDE_ANOMALY_COLUMN];
+      return {
+        ...prev,
+        headers,
+        rows: prev.rows.map((r, i) =>
+          i === dataRowIndex
+            ? { ...r, [EXCLUDE_ANOMALY_COLUMN]: nextExcluded ? '1' : '' }
+            : r
+        ),
+      };
+    });
     setRowsExcludedFromAnomaly((prev) => {
       const next = new Set(prev);
       if (next.has(dataRowIndex)) next.delete(dataRowIndex);
@@ -917,11 +1405,7 @@ const MonthlyAccounting: React.FC = () => {
   }, [displayHeaders]);
 
   return (
-    <div className="min-h-screen flex bg-gray-50">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggleCollapsed={handleToggleSidebar}
-      />
+    <>
       <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4 flex flex-wrap items-center gap-4">
           <h1 className="text-2xl font-bold text-gray-800">Comptabilité mensuelle</h1>
@@ -973,117 +1457,159 @@ const MonthlyAccounting: React.FC = () => {
         )}
 
         {data && !loading && selectableMonths.length > 0 && selectedMonth && cumulativeChartDataDisplay && (
-          <div className="mb-4 flex gap-4 items-stretch">
-            {cumulativeChartFiltersOpen && (
-              <div className="flex-shrink-0 flex flex-col min-h-0 w-[200px]">
-                <div className="flex-1 flex flex-col min-h-0 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCumulativeChartFiltersOpen(false);
-                      try {
-                        localStorage.setItem(CUMULATIVE_CHART_FILTERS_OPEN, 'false');
-                      } catch {}
-                    }}
-                    className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
-                  >
-                    Paramètres
-                    <span className="text-gray-500">▼</span>
-                  </button>
-                  <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-hidden">
-                    <div className="flex-shrink-0">
-                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                        Devise de l&apos;axe vertical
-                      </label>
-                      <select
-                        value={cumulativeChartYAxisCurrency}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          if (v === '£' || v === '€' || v === 'CHF') {
-                            setCumulativeChartYAxisCurrency(v);
-                            try {
-                              localStorage.setItem(CUMULATIVE_CHART_Y_AXIS_CURRENCY, v);
-                            } catch {}
-                          }
-                        }}
-                        className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
-                      >
-                        {Y_AXIS_CURRENCIES.map(({ value, label }) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex-shrink-0">
-                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                        Hauteur du graphique
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={200}
-                          max={800}
-                          step={10}
-                          value={cumulativeChartHeightPx}
-                          onChange={(e) => {
-                            const v = parseInt(e.target.value, 10);
-                            if (Number.isFinite(v)) {
-                              setCumulativeChartHeightPx(v);
-                              try {
-                                localStorage.setItem(CUMULATIVE_CHART_HEIGHT_PX, String(v));
-                              } catch {}
-                            }
-                          }}
-                          className="flex-1 h-2 rounded-lg appearance-none cursor-pointer bg-gray-200 accent-blue-600"
-                        />
-                        <span className="text-sm text-gray-700 tabular-nums w-10">
-                          {cumulativeChartHeightPx} px
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-            <div className="flex-1 min-w-0 bg-white rounded-lg shadow border border-gray-200 p-4">
-              <div className="flex items-center justify-between gap-3 mb-3">
-                <h2 className="text-sm font-semibold text-gray-700">Suivi des mouvements (cumulé sur le mois)</h2>
+          <section
+            className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6"
+            style={{ minHeight: sectionChartExpanded ? Math.max(200, cumulativeChartHeightPx + 48) : undefined }}
+          >
+            <header
+              className={`bg-gradient-to-br from-slate-50 to-white ${
+                sectionChartExpanded ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+              }`}
+            >
+              <div className="flex items-stretch">
                 <button
                   type="button"
+                  className="flex-1 min-w-0 px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
                   onClick={() => {
-                    setCumulativeChartFiltersOpen((o) => {
-                      const next = !o;
-                      try {
-                        localStorage.setItem(CUMULATIVE_CHART_FILTERS_OPEN, String(next));
-                      } catch {}
+                    setSectionChartExpanded((e) => {
+                      const next = !e;
+                      saveMonthlySectionExpanded(SECTION_MONTHLY_CHART, next);
                       return next;
                     });
                   }}
-                  title="Paramètres"
-                  className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
-                    cumulativeChartFiltersOpen
-                      ? 'bg-gray-200 border-gray-300 text-gray-800'
-                      : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
-                  }`}
+                  aria-expanded={sectionChartExpanded}
                 >
-                  <svg
-                    className="w-5 h-5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
+                  <span
+                    className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                      sectionChartExpanded ? 'rotate-90' : ''
+                    }`}
+                    aria-hidden
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                    />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
+                    ▶
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                      Graphique cumulé
+                    </span>
+                    <span className="block text-sm text-gray-500 mt-1.5">
+                      Suivi des mouvements sur le mois sélectionné
+                    </span>
+                  </span>
                 </button>
+                <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCumulativeChartFiltersOpen((o) => {
+                        const next = !o;
+                        try {
+                          localStorage.setItem(CUMULATIVE_CHART_FILTERS_OPEN, String(next));
+                        } catch {}
+                        return next;
+                      });
+                    }}
+                    title="Paramètres"
+                    className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
+                      cumulativeChartFiltersOpen
+                        ? 'bg-gray-200 border-gray-300 text-gray-800'
+                        : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                    }`}
+                  >
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                      />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </button>
+                </div>
               </div>
-              <div className="relative" style={{ height: cumulativeChartHeightPx }}>
+            </header>
+            {sectionChartExpanded && (
+              <div className="px-4 pb-4 pt-3">
+                <div className="flex gap-4 items-stretch">
+                  {cumulativeChartFiltersOpen && (
+                    <div className="flex-shrink-0 flex flex-col min-h-0 w-[200px]">
+                      <div className="flex-1 flex flex-col min-h-0 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCumulativeChartFiltersOpen(false);
+                            try {
+                              localStorage.setItem(CUMULATIVE_CHART_FILTERS_OPEN, 'false');
+                            } catch {}
+                          }}
+                          className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
+                        >
+                          Paramètres
+                          <span className="text-gray-500">▼</span>
+                        </button>
+                        <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-hidden">
+                          <div className="flex-shrink-0">
+                            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                              Devise de l&apos;axe vertical
+                            </label>
+                            <select
+                              value={cumulativeChartYAxisCurrency}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v === '£' || v === '€' || v === 'CHF') {
+                                  setCumulativeChartYAxisCurrency(v);
+                                  try {
+                                    localStorage.setItem(CUMULATIVE_CHART_Y_AXIS_CURRENCY, v);
+                                  } catch {}
+                                }
+                              }}
+                              className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
+                            >
+                              {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                                <option key={value} value={value}>
+                                  {label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex-shrink-0">
+                            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                              Hauteur du graphique
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="range"
+                                min={200}
+                                max={800}
+                                step={10}
+                                value={cumulativeChartHeightPx}
+                                onChange={(e) => {
+                                  const v = parseInt(e.target.value, 10);
+                                  if (Number.isFinite(v)) {
+                                    setCumulativeChartHeightPx(v);
+                                    try {
+                                      localStorage.setItem(CUMULATIVE_CHART_HEIGHT_PX, String(v));
+                                    } catch {}
+                                  }
+                                }}
+                                className="flex-1 h-2 rounded-lg appearance-none cursor-pointer bg-gray-200 accent-blue-600"
+                              />
+                              <span className="text-sm text-gray-700 tabular-nums w-10">
+                                {cumulativeChartHeightPx} px
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0 flex flex-col min-h-0">
+                    <div className="relative" style={{ height: cumulativeChartHeightPx }}>
                 <div
                   ref={chartTooltipRef}
                   className="absolute z-50 px-3 py-2 text-sm bg-gray-900/60 text-gray-100 rounded-lg shadow-lg border border-gray-700/80 min-w-[280px] max-w-[min(360px,90vw)] whitespace-normal backdrop-blur-sm"
@@ -1161,14 +1687,94 @@ const MonthlyAccounting: React.FC = () => {
                     },
                   } as ChartOptions<'line'>}
                 />
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            )}
+          </section>
         )}
 
         {data && !loading && selectedMonth && overviewData && (
-          <div className="mb-4 flex gap-4 items-stretch">
-            {overviewFiltersOpen && (
+          <section className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6">
+            <header
+              className={`bg-gradient-to-br from-slate-50 to-white ${
+                sectionOverviewExpanded ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+              }`}
+            >
+              <div className="flex items-stretch">
+                <button
+                  type="button"
+                  className="flex-1 min-w-0 px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
+                  onClick={() => {
+                    setSectionOverviewExpanded((e) => {
+                      const next = !e;
+                      saveMonthlySectionExpanded(SECTION_MONTHLY_OVERVIEW, next);
+                      return next;
+                    });
+                  }}
+                  aria-expanded={sectionOverviewExpanded}
+                >
+                  <span
+                    className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                      sectionOverviewExpanded ? 'rotate-90' : ''
+                    }`}
+                    aria-hidden
+                  >
+                    ▶
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                      Résultats et statistiques
+                    </span>
+                    <span className="block text-sm text-gray-500 mt-1.5">
+                      {overviewLastTransactionDate
+                        ? `Résultat au ${formatDateObjDDMMYYYY(overviewLastTransactionDate)}`
+                        : 'Résultat (aucune transaction ce mois-ci)'}
+                    </span>
+                  </span>
+                </button>
+                <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOverviewFiltersOpen((o) => {
+                        const next = !o;
+                        try {
+                          localStorage.setItem(OVERVIEW_FILTERS_OPEN, String(next));
+                        } catch {}
+                        return next;
+                      });
+                    }}
+                    title="Paramètres"
+                    className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
+                      overviewFiltersOpen
+                        ? 'bg-gray-200 border-gray-300 text-gray-800'
+                        : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                    }`}
+                  >
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                      />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </header>
+            {sectionOverviewExpanded && (
+              <div className="px-4 pb-4 pt-3">
+                <div className="flex gap-4 items-stretch">
+                  {overviewFiltersOpen && (
               <div className="flex-shrink-0 flex flex-col min-h-0 w-[200px]">
                 <div className="flex-1 flex flex-col min-h-0 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
                   <button
@@ -1189,24 +1795,44 @@ const MonthlyAccounting: React.FC = () => {
                       <span className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
                         Barres de remplissement
                       </span>
-                      <select
-                        value={overviewBarMode}
-                        onChange={(e) => {
-                          const v = e.target.value as OverviewBarMode;
-                          if ((OVERVIEW_BAR_MODES as readonly string[]).includes(v)) {
-                            setOverviewBarMode(v);
-                            try {
-                              localStorage.setItem(OVERVIEW_BAR_MODE, v);
-                            } catch {}
-                          }
-                        }}
-                        className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
-                      >
-                        <option value="none">Désactivées</option>
-                        <option value="average">Moyenne des mois passés</option>
-                      </select>
+                      <div className="flex flex-col gap-2.5">
+                        <label className="flex items-start gap-2 cursor-pointer text-sm text-gray-800">
+                          <input
+                            type="checkbox"
+                            checked={overviewBarAverageEnabled}
+                            onChange={(e) => {
+                              const on = e.target.checked;
+                              setOverviewBarAverageEnabled(on);
+                              try {
+                                localStorage.setItem(OVERVIEW_BAR_AVERAGE, String(on));
+                              } catch {}
+                            }}
+                            className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>Moyenne des mois passés</span>
+                        </label>
+                        <label className="flex items-start gap-2 cursor-pointer text-sm text-gray-800">
+                          <input
+                            type="checkbox"
+                            checked={overviewBarBudgetEnabled}
+                            onChange={(e) => {
+                              const on = e.target.checked;
+                              setOverviewBarBudgetEnabled(on);
+                              try {
+                                localStorage.setItem(OVERVIEW_BAR_BUDGET, String(on));
+                              } catch {}
+                            }}
+                            className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>Budget annuel (prévision mensuelle)</span>
+                        </label>
+                      </div>
+                      <div className="border-t border-gray-200 mt-3 pt-3" aria-hidden />
+                      <p className="text-xs italic text-gray-600 leading-snug">
+                        Les prévisions mensuelles par type sont calculées sur la base des données fournies par l'utilisateur dans le budget annuel.
+                      </p>
                     </div>
-                    {overviewBarMode === 'average' && (
+                    {overviewBarAverageEnabled && (
                       <div>
                         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
                           Période
@@ -1234,47 +1860,13 @@ const MonthlyAccounting: React.FC = () => {
                 </div>
               </div>
             )}
-            <div className="flex-1 min-w-0 bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
-              <div className="flex items-center justify-between gap-3 px-4 pt-4 pb-2 border-b border-gray-200">
-                <h2 className="text-lg font-semibold text-gray-800">Aperçu global</h2>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOverviewFiltersOpen((o) => {
-                      const next = !o;
-                      try {
-                        localStorage.setItem(OVERVIEW_FILTERS_OPEN, String(next));
-                      } catch {}
-                      return next;
-                    });
-                  }}
-                  title="Paramètres"
-                  className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
-                    overviewFiltersOpen
-                      ? 'bg-gray-200 border-gray-300 text-gray-800'
-                      : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
-                  }`}
-                >
-                  <svg
-                    className="w-5 h-5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                    />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </button>
-              </div>
+                  <div className="flex-1 min-w-0 min-h-0 overflow-x-auto">
               <div className="px-4 py-4 flex gap-4">
                 {(() => {
                   const ref = overviewReference;
-                  const showBars = overviewBarMode === 'average' && ref;
+                  const hasAverage = overviewBarAverageEnabled;
+                  const hasBudget = overviewBarBudgetEnabled;
+                  const showBarSection = hasAverage || hasBudget;
                   const refE = ref?.entrées ?? 0;
                   const refS = ref?.sorties ?? 0;
                   const refB = ref?.balance ?? 0;
@@ -1283,7 +1875,54 @@ const MonthlyAccounting: React.FC = () => {
                   const scaleMaxS = Math.max(overviewData.totalSorties, refS, 1);
                   const scaleMaxE = Math.max(overviewData.totalEntrées, refE, 1);
                   const scaleMaxB = Math.max(Math.abs(overviewData.balance), Math.abs(refB), 1);
-                  type Row = { id: string; leftLabel: string; leftValue: string; leftValueClass?: string; isTitle?: boolean; isTotal?: boolean; barValue?: number; barMax?: number; barRefPercent?: number; barOk?: boolean; barColor?: 'red' | 'green' | 'amber'; targetValue?: number; exceedsRef?: boolean; /** différence cumulée - moyenne (pour affichage à droite) */ diff?: number };
+                  const c = cumulativeChartYAxisCurrency as CurrencySymbol;
+                  /** Somme signée (affichage total prévision sorties, souvent négatif). */
+                  const sumMonthlyBudgetSorties = overviewData.byTypeSorties.reduce((sum, [t]) => {
+                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                    return sum + (m ?? 0);
+                  }, 0);
+                  const sumMonthlyBudgetEntrees = overviewData.byTypeEntrées.reduce((sum, [t]) => {
+                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                    return sum + (m ?? 0);
+                  }, 0);
+                  /** Magnitudes pour comparer réel vs prévision et la balance budgétée (écarts, barres). */
+                  const sumMonthlyBudgetSortiesMag = overviewData.byTypeSorties.reduce((sum, [t]) => {
+                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                    return sum + (m != null ? Math.abs(m) : 0);
+                  }, 0);
+                  const sumMonthlyBudgetEntreesMag = overviewData.byTypeEntrées.reduce((sum, [t]) => {
+                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                    return sum + (m != null ? Math.abs(m) : 0);
+                  }, 0);
+                  const refNetBudget = sumMonthlyBudgetEntreesMag - sumMonthlyBudgetSortiesMag;
+                  const scaleMaxBudgetS = Math.max(overviewData.totalSorties, sumMonthlyBudgetSortiesMag, 1);
+                  const scaleMaxBudgetE = Math.max(overviewData.totalEntrées, sumMonthlyBudgetEntreesMag, 1);
+                  const scaleMaxBudgetB = Math.max(Math.abs(overviewData.balance), Math.abs(refNetBudget), 1);
+                  const viewYear = selectedMonth ? parseInt(selectedMonth.split('-')[0], 10) : NaN;
+                  const periodeMoyennePhrase = phraseMoyenneSurPeriode(overviewAveragePeriod);
+                  type Row = {
+                    id: string;
+                    leftLabel: string;
+                    leftValue: string;
+                    leftValueClass?: string;
+                    isTitle?: boolean;
+                    isTotal?: boolean;
+                    barValue?: number;
+                    barMax?: number;
+                    barRefPercent?: number;
+                    barOk?: boolean;
+                    barColor?: 'red' | 'green' | 'amber';
+                    targetValue?: number;
+                    exceedsRef?: boolean;
+                    /** cumul − moyenne (sorties : positif = excès de dépense vs moyenne) */
+                    diff?: number;
+                    budgetBarValue?: number;
+                    budgetBarMax?: number;
+                    budgetBarRefPercent?: number;
+                    budgetExceedsRef?: boolean;
+                    budgetTargetValue?: number | null;
+                    budgetDiff?: number | null;
+                  };
                   const rows: Row[] = [
                     { id: 'h-sorties', leftLabel: 'Sorties', leftValue: '', isTitle: true },
                     ...overviewData.byTypeSorties.map(([type, amount]) => {
@@ -1291,6 +1930,24 @@ const MonthlyAccounting: React.FC = () => {
                       const barMax = Math.max(amount, avg, 1);
                       const barRefPercent = avg > 0 && avg <= barMax ? (avg / barMax) * 100 : undefined;
                       const barOk = amount <= avg;
+                      const monthlyB = monthlyForecastForTypeDisplay(type, budgetSnapshot, c);
+                      const prevSortiesMag = monthlyB != null ? Math.abs(monthlyB) : null;
+                      let budgetBarValue: number | undefined;
+                      let budgetBarMax: number | undefined;
+                      let budgetBarRefPercent: number | undefined;
+                      let budgetExceedsRef: boolean | undefined;
+                      let budgetTargetValue: number | null | undefined;
+                      let budgetDiff: number | null | undefined;
+                      if (monthlyB != null && prevSortiesMag != null) {
+                        const bm = Math.max(amount, prevSortiesMag, 1);
+                        budgetBarValue = amount;
+                        budgetBarMax = bm;
+                        budgetBarRefPercent =
+                          prevSortiesMag > 0 && prevSortiesMag <= bm ? (prevSortiesMag / bm) * 100 : undefined;
+                        budgetExceedsRef = amount > prevSortiesMag;
+                        budgetTargetValue = monthlyB;
+                        budgetDiff = amount - prevSortiesMag;
+                      }
                       return {
                         id: `s-${type}`,
                         leftLabel: type,
@@ -1301,9 +1958,15 @@ const MonthlyAccounting: React.FC = () => {
                         barRefPercent,
                         barOk,
                         barColor: (barOk ? 'green' : 'red') as Row['barColor'],
-                        targetValue: avg > 0 ? avg : undefined,
+                        targetValue: avg > 0 ? -avg : undefined,
                         exceedsRef: amount > avg,
                         diff: amount - avg,
+                        budgetBarValue,
+                        budgetBarMax,
+                        budgetBarRefPercent,
+                        budgetExceedsRef,
+                        budgetTargetValue,
+                        budgetDiff,
                       };
                     }),
                     {
@@ -1317,9 +1980,18 @@ const MonthlyAccounting: React.FC = () => {
                       barRefPercent: refS > 0 && refS <= scaleMaxS ? (refS / scaleMaxS) * 100 : undefined,
                       barOk: overviewData.totalSorties <= refS,
                       barColor: overviewData.totalSorties <= refS ? 'green' : 'red',
-                      targetValue: refS,
+                      targetValue: refS > 0 ? -refS : undefined,
                       exceedsRef: overviewData.totalSorties > refS,
                       diff: overviewData.totalSorties - refS,
+                      budgetBarValue: overviewData.totalSorties,
+                      budgetBarMax: scaleMaxBudgetS,
+                      budgetBarRefPercent:
+                        sumMonthlyBudgetSortiesMag > 0 && sumMonthlyBudgetSortiesMag <= scaleMaxBudgetS
+                          ? (sumMonthlyBudgetSortiesMag / scaleMaxBudgetS) * 100
+                          : undefined,
+                      budgetExceedsRef: overviewData.totalSorties > sumMonthlyBudgetSortiesMag,
+                      budgetTargetValue: sumMonthlyBudgetSorties,
+                      budgetDiff: overviewData.totalSorties - sumMonthlyBudgetSortiesMag,
                     },
                     { id: 'h-entrees', leftLabel: 'Entrées', leftValue: '', isTitle: true },
                     ...overviewData.byTypeEntrées.map(([type, amount]) => {
@@ -1327,6 +1999,24 @@ const MonthlyAccounting: React.FC = () => {
                       const barMax = Math.max(amount, avg, 1);
                       const barRefPercent = avg > 0 && avg <= barMax ? (avg / barMax) * 100 : undefined;
                       const barOk = amount >= avg;
+                      const monthlyB = monthlyForecastForTypeDisplay(type, budgetSnapshot, c);
+                      const prevEntreesMag = monthlyB != null ? Math.abs(monthlyB) : null;
+                      let budgetBarValue: number | undefined;
+                      let budgetBarMax: number | undefined;
+                      let budgetBarRefPercent: number | undefined;
+                      let budgetExceedsRef: boolean | undefined;
+                      let budgetTargetValue: number | null | undefined;
+                      let budgetDiff: number | null | undefined;
+                      if (monthlyB != null && prevEntreesMag != null) {
+                        const bm = Math.max(amount, prevEntreesMag, 1);
+                        budgetBarValue = amount;
+                        budgetBarMax = bm;
+                        budgetBarRefPercent =
+                          prevEntreesMag > 0 && prevEntreesMag <= bm ? (prevEntreesMag / bm) * 100 : undefined;
+                        budgetExceedsRef = amount > prevEntreesMag;
+                        budgetTargetValue = monthlyB;
+                        budgetDiff = amount - prevEntreesMag;
+                      }
                       return {
                         id: `e-${type}`,
                         leftLabel: type,
@@ -1340,6 +2030,12 @@ const MonthlyAccounting: React.FC = () => {
                         targetValue: avg > 0 ? avg : undefined,
                         exceedsRef: amount > avg,
                         diff: amount - avg,
+                        budgetBarValue,
+                        budgetBarMax,
+                        budgetBarRefPercent,
+                        budgetExceedsRef,
+                        budgetTargetValue,
+                        budgetDiff,
                       };
                     }),
                     {
@@ -1356,6 +2052,15 @@ const MonthlyAccounting: React.FC = () => {
                       targetValue: refE,
                       exceedsRef: overviewData.totalEntrées > refE,
                       diff: overviewData.totalEntrées - refE,
+                      budgetBarValue: overviewData.totalEntrées,
+                      budgetBarMax: scaleMaxBudgetE,
+                      budgetBarRefPercent:
+                        sumMonthlyBudgetEntreesMag > 0 && sumMonthlyBudgetEntreesMag <= scaleMaxBudgetE
+                          ? (sumMonthlyBudgetEntreesMag / scaleMaxBudgetE) * 100
+                          : undefined,
+                      budgetExceedsRef: overviewData.totalEntrées > sumMonthlyBudgetEntreesMag,
+                      budgetTargetValue: sumMonthlyBudgetEntrees,
+                      budgetDiff: overviewData.totalEntrées - sumMonthlyBudgetEntreesMag,
                     },
                     {
                       id: 'balance',
@@ -1371,9 +2076,19 @@ const MonthlyAccounting: React.FC = () => {
                       targetValue: refB,
                       exceedsRef: overviewData.balance > refB,
                       diff: overviewData.balance - refB,
+                      budgetBarValue: Math.abs(overviewData.balance),
+                      budgetBarMax: scaleMaxBudgetB,
+                      budgetBarRefPercent:
+                        Math.abs(refNetBudget) > 0 && Math.abs(refNetBudget) <= scaleMaxBudgetB
+                          ? (Math.abs(refNetBudget) / scaleMaxBudgetB) * 100
+                          : undefined,
+                      budgetExceedsRef: overviewData.balance > refNetBudget,
+                      budgetTargetValue: refNetBudget,
+                      budgetDiff: overviewData.balance - refNetBudget,
                     },
                   ];
                   const BAR_FIXED_WIDTH_PX = 180;
+                  /** true uniquement pour les lignes sorties (pas entrées ni balance). */
                   const isSortiesRow = (id: string) => id === 'total-sorties' || id.startsWith('s-');
                   return (
                     <div className="flex flex-col gap-0 w-full">
@@ -1387,69 +2102,262 @@ const MonthlyAccounting: React.FC = () => {
                             <span className={`truncate ${r.isTitle ? '' : 'text-gray-700'}`} title={r.leftLabel}>{r.leftLabel}</span>
                             {!r.isTitle && <span className={`tabular-nums flex-shrink-0 ${r.leftValueClass ?? 'text-gray-800'}`}>{r.leftValue}</span>}
                           </div>
-                          {/* Barre (largeur fixe) + à droite : moyenne puis différence colorée */}
-                          {showBars ? (
+                          {/* Barres : moyenne (optionnel) + budget annuel (optionnel) */}
+                          {showBarSection ? (
                             r.isTitle ? (
-                              <div className="flex-1 min-w-0" />
+                              r.id === 'h-sorties' ? (
+                                <>
+                                  {hasAverage && (
+                                    <>
+                                      <div
+                                        className="flex-shrink-0 self-center"
+                                        style={{ width: BAR_FIXED_WIDTH_PX }}
+                                        aria-hidden
+                                      />
+                                      <div className="flex items-center gap-3 flex-shrink-0 self-center text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                        <span className="whitespace-nowrap w-20 text-right">Moyenne</span>
+                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                      </div>
+                                    </>
+                                  )}
+                                  {hasBudget && (
+                                    <div
+                                      className={`flex items-center gap-3 flex-shrink-0 self-center ${hasAverage ? 'border-l border-gray-200 pl-3 ml-1' : ''}`}
+                                    >
+                                      <div className="flex-shrink-0" style={{ width: BAR_FIXED_WIDTH_PX }} aria-hidden />
+                                      <div className="flex items-center gap-3 flex-shrink-0 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                        <span className="whitespace-nowrap w-20 text-right">Prév. mens.</span>
+                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
+                              ) : r.id === 'h-entrees' ? (
+                                <>
+                                  {hasAverage && (
+                                    <>
+                                      <div
+                                        className="flex-shrink-0 self-center"
+                                        style={{ width: BAR_FIXED_WIDTH_PX }}
+                                        aria-hidden
+                                      />
+                                      <div
+                                        className="flex items-center gap-3 flex-shrink-0 self-center text-xs font-semibold uppercase tracking-wide invisible pointer-events-none select-none"
+                                        aria-hidden
+                                      >
+                                        <span className="whitespace-nowrap w-20 text-right">Moyenne</span>
+                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                      </div>
+                                    </>
+                                  )}
+                                  {hasBudget && (
+                                    <div
+                                      className={`flex items-center gap-3 flex-shrink-0 self-center ${hasAverage ? 'border-l border-gray-200 pl-3 ml-1' : ''}`}
+                                    >
+                                      <div className="flex-shrink-0" style={{ width: BAR_FIXED_WIDTH_PX }} aria-hidden />
+                                      <div
+                                        className="flex items-center gap-3 flex-shrink-0 text-xs font-semibold uppercase tracking-wide invisible pointer-events-none select-none"
+                                        aria-hidden
+                                      >
+                                        <span className="whitespace-nowrap w-20 text-right">Prév. mens.</span>
+                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                <div className="flex-1 min-w-0" />
+                              )
                             ) : r.barValue != null && r.barMax != null ? (
                               <>
-                                <div
-                                  className="h-6 bg-gray-200 overflow-hidden relative flex-shrink-0"
-                                  style={{ width: BAR_FIXED_WIDTH_PX }}
-                                >
-                                  {(() => {
-                                    const valuePercent = Math.min(100, (r.barValue / r.barMax) * 100);
-                                    const refPercent = r.barRefPercent ?? 0;
-                                    const isSorties = isSortiesRow(r.id);
-                                    const hatchRed = 'repeating-linear-gradient(135deg, rgba(185,28,28,0.45) 0px, rgba(185,28,28,0.45) 2px, transparent 2px, transparent 6px)';
-                                    const hatchGreen = 'repeating-linear-gradient(135deg, rgba(22,163,74,0.5) 0px, rgba(22,163,74,0.5) 2px, transparent 2px, transparent 6px)';
-                                    return (
-                                      <>
-                                        {!r.exceedsRef ? (
-                                          <>
-                                            <div className="absolute inset-y-0 left-0 bg-blue-400" style={{ width: `${valuePercent}%` }} />
-                                            {valuePercent < refPercent && (
-                                              <div
-                                                className="absolute inset-y-0 left-0"
-                                                style={{ left: `${valuePercent}%`, width: `${refPercent - valuePercent}%`, background: isSorties ? hatchGreen : hatchRed }}
-                                              />
-                                            )}
-                                          </>
-                                        ) : (
-                                          <>
-                                            <div className="absolute inset-y-0 left-0 bg-blue-400" style={{ width: `${refPercent}%` }} />
-                                            <div
-                                              className="absolute inset-y-0 left-0"
-                                              style={{ left: `${refPercent}%`, width: `${valuePercent - refPercent}%`, background: isSorties ? hatchRed : hatchGreen }}
+                                {hasAverage && (
+                                  <>
+                                    <div
+                                      className="relative flex-shrink-0 cursor-help"
+                                      style={{ width: BAR_FIXED_WIDTH_PX }}
+                                      onMouseEnter={(e) => {
+                                        if (!hasAverage || r.diff == null || !periodeMoyennePhrase) return;
+                                        const rect = e.currentTarget.getBoundingClientRect();
+                                        setOverviewStatBarTooltip({
+                                          left: rect.left + rect.width / 2,
+                                          top: rect.top,
+                                          content: (
+                                            <OverviewStatBarTooltipBubble
+                                              variant="average"
+                                              diff={r.diff}
+                                              currency={cumulativeChartYAxisCurrency}
+                                              periodPhrase={periodeMoyennePhrase}
+                                              isSortiesRow={isSortiesRow(r.id)}
                                             />
-                                          </>
-                                        )}
-                                      </>
-                                    );
-                                  })()}
-                                </div>
-                                <div className="flex items-center gap-3 flex-shrink-0 text-sm">
-                                  {r.targetValue != null && (
-                                    <span className="text-gray-600 tabular-nums whitespace-nowrap w-20 text-right">
-                                      {formatCurrency(r.targetValue, cumulativeChartYAxisCurrency)}
-                                    </span>
-                                  )}
-                                  {r.diff != null && r.diff !== 0 && (
-                                    <span
-                                      className={`tabular-nums whitespace-nowrap font-medium ${
-                                        isSortiesRow(r.id)
-                                          ? r.diff > 0
-                                            ? 'text-red-600'
-                                            : 'text-green-600'
-                                          : r.diff > 0
-                                            ? 'text-green-600'
-                                            : 'text-red-600'
-                                      }`}
+                                          ),
+                                        });
+                                      }}
+                                      onMouseLeave={() => setOverviewStatBarTooltip(null)}
                                     >
-                                      {r.diff > 0 ? '+' : ''}{formatCurrency(r.diff, cumulativeChartYAxisCurrency)}
-                                    </span>
-                                  )}
-                                </div>
+                                      <div className="h-6 bg-gray-200 overflow-hidden relative">
+                                        {(() => {
+                                          const valuePercent = Math.min(100, (r.barValue! / r.barMax!) * 100);
+                                          const refPercent = r.barRefPercent ?? 0;
+                                          const isSorties = isSortiesRow(r.id);
+                                          const hatchRed =
+                                            'repeating-linear-gradient(135deg, rgba(185,28,28,0.45) 0px, rgba(185,28,28,0.45) 2px, transparent 2px, transparent 6px)';
+                                          const hatchGreen =
+                                            'repeating-linear-gradient(135deg, rgba(22,163,74,0.5) 0px, rgba(22,163,74,0.5) 2px, transparent 2px, transparent 6px)';
+                                          return (
+                                            <>
+                                              {!r.exceedsRef ? (
+                                                <>
+                                                  <div className="absolute inset-y-0 left-0 bg-blue-400" style={{ width: `${valuePercent}%` }} />
+                                                  {valuePercent < refPercent && (
+                                                    <div
+                                                      className="absolute inset-y-0 left-0"
+                                                      style={{
+                                                        left: `${valuePercent}%`,
+                                                        width: `${refPercent - valuePercent}%`,
+                                                        background: isSorties ? hatchGreen : hatchRed,
+                                                      }}
+                                                    />
+                                                  )}
+                                                </>
+                                              ) : (
+                                                <>
+                                                  <div className="absolute inset-y-0 left-0 bg-blue-400" style={{ width: `${refPercent}%` }} />
+                                                  <div
+                                                    className="absolute inset-y-0 left-0"
+                                                    style={{
+                                                      left: `${refPercent}%`,
+                                                      width: `${valuePercent - refPercent}%`,
+                                                      background: isSorties ? hatchRed : hatchGreen,
+                                                    }}
+                                                  />
+                                                </>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-3 flex-shrink-0 text-sm">
+                                      <span className="inline-block text-gray-600 tabular-nums whitespace-nowrap w-20 text-right">
+                                        {r.targetValue != null
+                                          ? formatCurrency(r.targetValue, cumulativeChartYAxisCurrency)
+                                          : '\u00a0'}
+                                      </span>
+                                      <span
+                                        className={`inline-block tabular-nums whitespace-nowrap w-24 text-right font-medium ${
+                                          r.diff != null && r.diff !== 0
+                                            ? overviewStatBarEcartAmountClass(r.diff, isSortiesRow(r.id))
+                                            : ''
+                                        }`}
+                                      >
+                                        {r.diff != null && r.diff !== 0
+                                          ? `${r.diff > 0 ? '+' : ''}${formatCurrency(r.diff, cumulativeChartYAxisCurrency)}`
+                                          : '\u00a0'}
+                                      </span>
+                                    </div>
+                                  </>
+                                )}
+                                {hasBudget && (
+                                  <div
+                                    className={`flex items-center gap-3 flex-shrink-0 ${hasAverage ? 'border-l border-gray-200 pl-3 ml-1' : ''}`}
+                                  >
+                                    {r.budgetBarValue != null && r.budgetBarMax != null ? (
+                                      <>
+                                        <div
+                                          className="relative flex-shrink-0 cursor-help"
+                                          style={{ width: BAR_FIXED_WIDTH_PX }}
+                                          onMouseEnter={(e) => {
+                                            if (!hasBudget || r.budgetDiff == null || Number.isNaN(viewYear)) return;
+                                            const rect = e.currentTarget.getBoundingClientRect();
+                                            setOverviewStatBarTooltip({
+                                              left: rect.left + rect.width / 2,
+                                              top: rect.top,
+                                              content: (
+                                                <OverviewStatBarTooltipBubble
+                                                  variant="budget"
+                                                  diff={r.budgetDiff}
+                                                  currency={cumulativeChartYAxisCurrency}
+                                                  year={viewYear}
+                                                  isSortiesRow={isSortiesRow(r.id)}
+                                                />
+                                              ),
+                                            });
+                                          }}
+                                          onMouseLeave={() => setOverviewStatBarTooltip(null)}
+                                        >
+                                          <div className="h-6 bg-gray-200 overflow-hidden relative">
+                                            {(() => {
+                                              const valuePercent = Math.min(100, (r.budgetBarValue / r.budgetBarMax) * 100);
+                                              const refPercent = r.budgetBarRefPercent ?? 0;
+                                              const isSorties = isSortiesRow(r.id);
+                                              const hatchRed =
+                                                'repeating-linear-gradient(135deg, rgba(185,28,28,0.45) 0px, rgba(185,28,28,0.45) 2px, transparent 2px, transparent 6px)';
+                                              const hatchGreen =
+                                                'repeating-linear-gradient(135deg, rgba(22,163,74,0.5) 0px, rgba(22,163,74,0.5) 2px, transparent 2px, transparent 6px)';
+                                              return (
+                                                <>
+                                                  {!r.budgetExceedsRef ? (
+                                                    <>
+                                                      <div className="absolute inset-y-0 left-0 bg-blue-400" style={{ width: `${valuePercent}%` }} />
+                                                      {valuePercent < refPercent && (
+                                                        <div
+                                                          className="absolute inset-y-0 left-0"
+                                                          style={{
+                                                            left: `${valuePercent}%`,
+                                                            width: `${refPercent - valuePercent}%`,
+                                                            background: isSorties ? hatchGreen : hatchRed,
+                                                          }}
+                                                        />
+                                                      )}
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <div className="absolute inset-y-0 left-0 bg-blue-400" style={{ width: `${refPercent}%` }} />
+                                                      <div
+                                                        className="absolute inset-y-0 left-0"
+                                                        style={{
+                                                          left: `${refPercent}%`,
+                                                          width: `${valuePercent - refPercent}%`,
+                                                          background: isSorties ? hatchRed : hatchGreen,
+                                                        }}
+                                                      />
+                                                    </>
+                                                  )}
+                                                </>
+                                              );
+                                            })()}
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-3 flex-shrink-0 text-sm">
+                                          <span className="inline-block text-gray-600 tabular-nums whitespace-nowrap w-20 text-right">
+                                            {r.budgetTargetValue != null
+                                              ? formatCurrency(r.budgetTargetValue, cumulativeChartYAxisCurrency)
+                                              : '\u00a0'}
+                                          </span>
+                                          <span
+                                            className={`inline-block tabular-nums whitespace-nowrap w-24 text-right font-medium ${
+                                              r.budgetDiff != null && r.budgetDiff !== 0
+                                                ? overviewStatBarEcartAmountClass(r.budgetDiff, isSortiesRow(r.id))
+                                                : ''
+                                            }`}
+                                          >
+                                            {r.budgetDiff != null && r.budgetDiff !== 0
+                                              ? `${r.budgetDiff > 0 ? '+' : ''}${formatCurrency(r.budgetDiff, cumulativeChartYAxisCurrency)}`
+                                              : '\u00a0'}
+                                          </span>
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <div className="h-6 bg-gray-100 flex-shrink-0" style={{ width: BAR_FIXED_WIDTH_PX }} aria-hidden />
+                                        <div className="flex items-center gap-3 flex-shrink-0 text-sm">
+                                          <span className="inline-block w-20 text-right text-gray-400 tabular-nums">{'\u00a0'}</span>
+                                          <span className="inline-block w-24 text-right tabular-nums">{'\u00a0'}</span>
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
                               </>
                             ) : (
                               <div className="flex-1 min-w-0" />
@@ -1461,15 +2369,52 @@ const MonthlyAccounting: React.FC = () => {
                   );
                 })()}
               </div>
-            </div>
-          </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {data && !loading && (
-          <div className="flex flex-col flex-1 min-h-0 bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
-            <h2 className="shrink-0 text-lg font-semibold text-gray-800 px-4 pt-4 pb-2 border-b border-gray-200">
-              Tableau des transactions
-            </h2>
+          <section className="flex flex-col flex-1 min-h-0 rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6">
+            <header
+              className={`bg-gradient-to-br from-slate-50 to-white shrink-0 ${
+                sectionTableExpanded ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+              }`}
+            >
+              <button
+                type="button"
+                className="w-full px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
+                onClick={() => {
+                  setSectionTableExpanded((e) => {
+                    const next = !e;
+                    saveMonthlySectionExpanded(SECTION_MONTHLY_TABLE, next);
+                    return next;
+                  });
+                }}
+                aria-expanded={sectionTableExpanded}
+              >
+                <span
+                  className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                    sectionTableExpanded ? 'rotate-90' : ''
+                  }`}
+                  aria-hidden
+                >
+                  ▶
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                    Tableau des transactions
+                  </span>
+                  <span className="block text-sm text-gray-500 mt-1.5">
+                    Édition, anomalies et tri sur le mois affiché
+                  </span>
+                </span>
+              </button>
+            </header>
+            {sectionTableExpanded && (
+              <div className="flex flex-col flex-1 min-h-0 overflow-hidden border-t border-gray-100">
             {selectableMonths.length === 0 ? (
               <div className="p-6 text-gray-600">
                 Aucune donnée de transaction avec date trouvée.
@@ -1482,6 +2427,19 @@ const MonthlyAccounting: React.FC = () => {
                       Détection d&apos;anomalies sur les {rowsForMonth.length} ligne(s) du mois ({selectedMonthLabel}). Le rapport écrase monthly_anomaly_report.csv à chaque exécution.
                     </p>
                     <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleRefreshSourceDataCsv}
+                        disabled={reorderChronoLoading || !data || saveLoading}
+                        title={
+                          editMode
+                            ? 'Quittez le mode édition pour rafraîchir src_transaction_data.csv.'
+                            : 'Trie le fichier par date, réattribue les index et recalcule AMOUNT GBP.'
+                        }
+                        className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {reorderChronoLoading ? 'Rafraîchissement…' : 'Rafraîchir src_transaction_data.csv'}
+                      </button>
                       <button
                         type="button"
                         onClick={handleDetectAnomalies}
@@ -1515,10 +2473,13 @@ const MonthlyAccounting: React.FC = () => {
                           disabled={saveLoading || !data}
                           className="rounded border border-green-600 bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                         >
-                          {saveLoading ? 'Enregistrement…' : 'Sauvegarder source_data.csv'}
+                          {saveLoading ? 'Enregistrement…' : 'Sauvegarder src_transaction_data.csv'}
                         </button>
                       )}
                     </div>
+                    {reorderChronoMessage && (
+                      <p className="mt-2 text-sm text-gray-700">{reorderChronoMessage}</p>
+                    )}
                     {(editMode && saveMessage) && (
                       <p className="mt-2 text-sm text-gray-600">{saveMessage}</p>
                     )}
@@ -1528,6 +2489,17 @@ const MonthlyAccounting: React.FC = () => {
                   </div>
                 )}
                 <div className="shrink-0 px-4 py-2 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center gap-3">
+                  {editMode && (
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={editShowAnomaliesOnly}
+                        onChange={(e) => setEditShowAnomaliesOnly(e.target.checked)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Uniquement les lignes avec anomalies
+                    </label>
+                  )}
                   {editMode && (
                     <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
                   )}
@@ -1540,7 +2512,15 @@ const MonthlyAccounting: React.FC = () => {
                           <th
                             key={h}
                             onClick={() => handleSort(h)}
-                            className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors"
+                            className={`text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors ${
+                              /^(titres?|titles?)$/i.test(h)
+                                ? 'min-w-[18rem]'
+                                : /^(types?)$/i.test(h)
+                                  ? 'min-w-[calc(8.25ch+1rem+2px)]'
+                                  : /date/i.test(h)
+                                    ? 'min-w-[calc(10ch+1rem+2px)]'
+                                  : ''
+                            }`}
                           >
                             <span className="inline-flex items-center gap-1">
                               {h}
@@ -1553,12 +2533,12 @@ const MonthlyAccounting: React.FC = () => {
                           </th>
                         ))}
                         {editMode && (
-                          <th className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
+                          <th className="text-left font-semibold text-gray-700 px-0.5 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
                             Dupliquer
                           </th>
                         )}
                         {editMode && (
-                          <th className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
+                          <th className="text-left font-semibold text-gray-700 px-1 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
                             Exclure Anomalie
                           </th>
                         )}
@@ -1570,7 +2550,7 @@ const MonthlyAccounting: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {sortedRows.map((row, i) => {
+                      {displayRows.map((row, i) => {
                         const dataRowIndex = data ? data.rows.findIndex((r) => r === row) : -1;
                         const isMarkedForDelete = dataRowIndex >= 0 && rowsToDelete.has(dataRowIndex);
                         const isExcludedFromAnomaly = dataRowIndex >= 0 && rowsExcludedFromAnomaly.has(dataRowIndex);
@@ -1591,6 +2571,9 @@ const MonthlyAccounting: React.FC = () => {
                               const isAmountColumn = /^amount$/i.test(header);
                               const isCurrencyColumn = /^currency$/i.test(header);
                               const isAmountGbpColumn = /^amount\s*gbp$/i.test(header);
+                              const isWideEntryColumn = /^(titres?|titles?)$/i.test(header);
+                              const isTypeColumn = /^(types?)$/i.test(header);
+                              const isDateEntryColumn = /date/i.test(header);
                               const isAccountColumn = /^account$/i.test(header) || /compte/i.test(header);
                               const display = isDateColumn
                                 ? formatDateDDMMYYYY(raw)
@@ -1604,6 +2587,18 @@ const MonthlyAccounting: React.FC = () => {
                                           ? accountLabelFromSource(raw) || raw
                                           : raw;
                               if (editMode && dataRowIndex >= 0 && !/^index$/i.test(header)) {
+                                if (/^projet$/i.test(header)) {
+                                  return (
+                                    <td key={header} className="px-1 py-0.5">
+                                      <ProjetSelectCell
+                                        rawId={raw}
+                                        projects={projects}
+                                        disabled={saveLoading}
+                                        onChange={(id) => handleCellChange(dataRowIndex, header, id)}
+                                      />
+                                    </td>
+                                  );
+                                }
                                 const amountHeaderForRow = displayHeaders.find((h) => /^amount$/i.test(h));
                                 const currencyHeaderForRow = displayHeaders.find((h) => /^currency$/i.test(h));
                                 const effectiveCurrency = currencyHeaderForRow ? ((row[currencyHeaderForRow] ?? '').trim().toUpperCase() || 'EUR') : 'EUR';
@@ -1615,6 +2610,42 @@ const MonthlyAccounting: React.FC = () => {
                                     const a = parseFloat((row[amountHeaderForRow] ?? '').toString().replace(',', '.'));
                                     return !Number.isNaN(a) && a !== 0 && (effectiveCurrency === 'EUR' || effectiveCurrency === 'CHF');
                                   })();
+                                const useSuggestions = isTextSuggestibleColumn(header);
+                                const suggestions = useSuggestions && data?.rows
+                                  ? getSuggestions(data.rows, header, raw, 10)
+                                  : [];
+                                const dateSuggestions = isDateEntryColumn && selectedMonth
+                                  ? getDateSuggestionsForMonth(selectedMonth, raw)
+                                  : [];
+                                const listId = `suggest-existing-${dataRowIndex}-${header.replace(/\s/g, '-')}`;
+                                const dateListId = `suggest-existing-date-${dataRowIndex}-${header.replace(/\s/g, '-')}`;
+                                const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+                                  if (e.key !== 'Tab' || e.shiftKey) return;
+                                  const focusNext = () => {
+                                    setTimeout(() => {
+                                      const td = (e.target as HTMLElement).closest('td');
+                                      const nextInput = td?.nextElementSibling?.querySelector('input');
+                                      (nextInput as HTMLInputElement)?.focus();
+                                    }, 0);
+                                  };
+                                  if (isDateEntryColumn && selectedMonth) {
+                                    const completed = completeDateForMonth(raw, selectedMonth);
+                                    if (completed) {
+                                      e.preventDefault();
+                                      handleCellChange(dataRowIndex, header, completed);
+                                      focusNext();
+                                    }
+                                    return;
+                                  }
+                                  if (useSuggestions && suggestions.length > 0) {
+                                    const first = suggestions[0].value;
+                                    if (raw.trim() !== first) {
+                                      e.preventDefault();
+                                      handleCellChange(dataRowIndex, header, first);
+                                      focusNext();
+                                    }
+                                  }
+                                };
                                 return (
                                   <td key={header} className="px-1 py-0.5">
                                     <input
@@ -1622,10 +2653,36 @@ const MonthlyAccounting: React.FC = () => {
                                       value={raw}
                                       readOnly={!!isAmountGbpReadOnly}
                                       onChange={(e) => handleCellChange(dataRowIndex, header, e.target.value)}
-                                      className={`w-full min-w-[4rem] rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
+                                      onKeyDown={handleKeyDown}
+                                      list={useSuggestions ? listId : isDateEntryColumn && dateSuggestions.length > 0 ? dateListId : undefined}
+                                      className={`w-full ${isWideEntryColumn ? 'min-w-[18rem]' : isTypeColumn ? 'min-w-[calc(8.25ch+1rem+2px)]' : isDateEntryColumn ? 'min-w-[calc(10ch+1rem+2px)]' : 'min-w-[4rem]'} rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
                                       aria-label={isAmountGbpReadOnly ? `${header} (calculé)` : `Éditer ${header}`}
                                       title={isAmountGbpReadOnly ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
                                     />
+                                    {useSuggestions && suggestions.length > 0 && (
+                                      <datalist id={listId}>
+                                        {suggestions.map((s) => (
+                                          <option key={`${s.value}-${s.count}`} value={s.value} />
+                                        ))}
+                                      </datalist>
+                                    )}
+                                    {isDateEntryColumn && dateSuggestions.length > 0 && (
+                                      <datalist id={dateListId}>
+                                        {dateSuggestions.map((dateStr) => (
+                                          <option key={dateStr} value={dateStr} />
+                                        ))}
+                                      </datalist>
+                                    )}
+                                  </td>
+                                );
+                              }
+                              if (/^projet$/i.test(header)) {
+                                return (
+                                  <td
+                                    key={header}
+                                    className={`px-3 py-2 whitespace-nowrap ${editMode && /^index$/i.test(header) ? 'bg-gray-100' : ''}`}
+                                  >
+                                    <ProjetDisplayCell rawId={raw} projects={projects} />
                                   </td>
                                 );
                               }
@@ -1639,11 +2696,11 @@ const MonthlyAccounting: React.FC = () => {
                               );
                             })}
                             {editMode && dataRowIndex >= 0 && (
-                              <td className="px-3 py-2 whitespace-nowrap bg-gray-50">
+                              <td className="px-0.5 py-2 whitespace-nowrap bg-gray-50">
                                 <button
                                   type="button"
                                   onClick={() => handleDuplicateRow(row)}
-                                  className="rounded border border-blue-600 bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                                  className="rounded border border-blue-600 bg-blue-600 px-1 py-1 text-xs font-medium text-white hover:bg-blue-700"
                                   title="Dupliquer la ligne en bas du tableau"
                                 >
                                   Dupliquer
@@ -1651,7 +2708,7 @@ const MonthlyAccounting: React.FC = () => {
                               </td>
                             )}
                             {editMode && dataRowIndex >= 0 && (
-                              <td className="px-3 py-2 whitespace-nowrap bg-gray-50">
+                              <td className="pl-0 pr-1 py-2 whitespace-nowrap bg-gray-50">
                                 <button
                                   type="button"
                                   onClick={() => handleToggleExcludeAnomaly(dataRowIndex)}
@@ -1692,9 +2749,24 @@ const MonthlyAccounting: React.FC = () => {
                                 </td>
                               );
                             }
+                            if (/^projet$/i.test(header)) {
+                              return (
+                                <td key={header} className="px-1 py-0.5">
+                                  <ProjetSelectCell
+                                    rawId={raw}
+                                    projects={projects}
+                                    disabled={saveLoading}
+                                    onChange={(id) => handleNewRowDraftChange(draftIndex, header, id)}
+                                  />
+                                </td>
+                              );
+                            }
                             const draftAmountHeader = displayHeaders.find((h) => /^amount$/i.test(h));
                             const draftCurrencyHeader = displayHeaders.find((h) => /^currency$/i.test(h));
                             const isAmountGbpColumnDraft = /^amount\s*gbp$/i.test(header);
+                            const isWideEntryColumnDraft = /^(titres?|titles?)$/i.test(header);
+                            const isTypeColumnDraft = /^(types?)$/i.test(header);
+                            const isDateEntryColumnDraft = /date/i.test(header);
                             const effectiveCurrencyDraft = draftCurrencyHeader ? ((draft[draftCurrencyHeader] ?? '').trim().toUpperCase() || 'EUR') : 'EUR';
                             const isAmountGbpReadOnlyDraft =
                               isAmountGbpColumnDraft &&
@@ -1751,7 +2823,7 @@ const MonthlyAccounting: React.FC = () => {
                                   onKeyDown={handleKeyDown}
                                   placeholder="Nouvelle ligne…"
                                   list={useSuggestions ? listId : isDateColumn && dateSuggestions.length > 0 ? dateListId : undefined}
-                                  className={`w-full min-w-[4rem] rounded border px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isAmountGbpReadOnlyDraft ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-dashed border-gray-400'}`}
+                                  className={`w-full ${isWideEntryColumnDraft ? 'min-w-[18rem]' : isTypeColumnDraft ? 'min-w-[calc(8.25ch+1rem+2px)]' : isDateEntryColumnDraft ? 'min-w-[calc(10ch+1rem+2px)]' : 'min-w-[4rem]'} rounded border px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isAmountGbpReadOnlyDraft ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-dashed border-gray-400'}`}
                                   aria-label={isAmountGbpReadOnlyDraft ? `${header} (calculé)` : `Nouvelle ligne — ${header}`}
                                   title={isAmountGbpReadOnlyDraft ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
                                 />
@@ -1774,19 +2846,19 @@ const MonthlyAccounting: React.FC = () => {
                           })}
                           {editMode && (
                             <>
-                              <td className="px-3 py-2 whitespace-nowrap bg-gray-50">
+                              <td className="px-0.5 py-2 whitespace-nowrap bg-gray-50">
                                 {draftIndex === newRowDrafts.length - 1 ? (
                                   <button
                                     type="button"
                                     onClick={handleAddNewDraftRow}
-                                    className="rounded border border-blue-600 bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                                    className="rounded border border-blue-600 bg-blue-600 px-1.5 py-1 text-xs font-medium text-white hover:bg-blue-700"
                                     title="Ajouter une nouvelle ligne vide en dessous"
                                   >
-                                    Ajouter Nouvelle ligne
+                                    + Ligne
                                   </button>
                                 ) : null}
                               </td>
-                              <td className="px-3 py-2 whitespace-nowrap bg-gray-50" />
+                              <td className="pl-0 pr-1 py-2 whitespace-nowrap bg-gray-50" />
                               <td className="px-3 py-2 whitespace-nowrap bg-gray-50" />
                             </>
                           )}
@@ -1797,14 +2869,70 @@ const MonthlyAccounting: React.FC = () => {
                 </div>
                 <div className="shrink-0 px-3 py-2 border-t border-gray-200 bg-gray-50 text-gray-500 text-xs">
                   {selectedMonthLabel && `${selectedMonthLabel} — `}
-                  {sortedRows.length} ligne{sortedRows.length !== 1 ? 's' : ''}
+                  {displayRows.length} ligne{displayRows.length !== 1 ? 's' : ''}
+                  {editMode && editShowAnomaliesOnly
+                    ? ` (anomalies uniquement, ${sortedRows.length} après tri)`
+                    : ''}
                 </div>
               </>
             )}
-          </div>
+              </div>
+            )}
+          </section>
         )}
+      {overviewStatBarTooltip != null &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[10000]"
+            style={{
+              left: overviewStatBarTooltip.left,
+              top: overviewStatBarTooltip.top,
+              transform: 'translate(-50%, calc(-100% - 10px))',
+            }}
+          >
+            {overviewStatBarTooltip.content}
+          </div>,
+          document.body
+        )}
+      {editExitConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="monthly-edit-exit-title"
+          onClick={() => setEditExitConfirmOpen(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="monthly-edit-exit-title" className="text-lg font-semibold text-gray-900">
+              Quitter sans sauvegarder ?
+            </h2>
+            <p className="text-sm text-gray-600">
+              Les modifications non enregistrées seront perdues.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditExitConfirmOpen(false)}
+                className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Retour
+              </button>
+              <button
+                type="button"
+                onClick={performExitEditMode}
+                className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                Quitter
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </main>
-    </div>
+    </>
   );
 };
 

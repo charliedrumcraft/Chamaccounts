@@ -11,6 +11,21 @@ export const formatCurrency = (amount: number, currency: string = '£'): string 
   return `${sign}${currency}${formatted}`;
 };
 
+/** Affichage tableau des soldes : aligné sur la devise choisie en Paramètres (pas de conversion). */
+export function formatBalanceAmountForUi(
+  amount: number,
+  fiat: 'EUR' | 'GBP' | 'CHF'
+): string {
+  if (fiat === 'CHF') {
+    const abs = Math.abs(amount);
+    const [intPart, decPart] = abs.toFixed(2).split('.');
+    const withThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `${amount < 0 ? '-' : ''}${withThousands}.${decPart} CHF`;
+  }
+  const sym = fiat === 'GBP' ? '£' : '€';
+  return formatCurrency(amount, sym);
+}
+
 /**
  * Formate un montant en euros (ex. "200" → "€200.00").
  */

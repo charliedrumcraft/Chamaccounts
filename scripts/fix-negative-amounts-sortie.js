@@ -1,5 +1,5 @@
 /**
- * Corrige source_data.csv : pour chaque ligne dont TYPE est un type "sortie",
+ * Corrige src_transaction_data.csv : pour chaque ligne dont TYPE est un type "sortie",
  * si AMOUNT ou AMOUNT GBP est positif, le remplace par sa valeur négative.
  * Préserve le format (virgule décimale).
  */
@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CSV_PATH = path.join(__dirname, '../data/TransactionsData/Processed/source_data.csv');
+const CSV_PATH = path.join(__dirname, '../data/TransactionsData/Processed/src_transaction_data.csv');
 
 const SORTIE_TYPES = new Set([
   'Rent', 'Council', 'Comm', 'Electricity', 'Water', 'Service', 'SLCdebit',

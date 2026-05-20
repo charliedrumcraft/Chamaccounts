@@ -2,7 +2,17 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import noUiSlider from 'nouislider';
 import type { API } from 'nouislider';
 import 'nouislider/dist/nouislider.css';
-import { format, isValid, startOfMonth, endOfMonth, addMonths, isBefore } from 'date-fns';
+import {
+  format,
+  isValid,
+  startOfMonth,
+  endOfMonth,
+  addMonths,
+  isBefore,
+  startOfYear,
+  endOfYear,
+  addYears,
+} from 'date-fns';
 import { fr } from 'date-fns/locale';
 
 const safeFormat = (ts: number, fmt: string): string => {
@@ -21,6 +31,12 @@ interface DateRangeSliderProps {
   syncLabel?: string;
   syncChecked?: boolean;
   onSyncChange?: (checked: boolean) => void;
+  /** Mode années civiles : pas mensuels mais du 1er janv. au 31 déc. */
+  fullYearsMode?: boolean;
+  /** Si fourni, affiche la case « année complète » et appelle au changement. */
+  onFullYearsModeChange?: (enabled: boolean) => void;
+  /** Libellé optionnel pour la case années complètes. */
+  fullYearsLabel?: string;
 }
 
 /** Liste des timestamps des 1ers du mois entre minDate et maxDate (inclus). */
@@ -38,12 +54,36 @@ function getMonthlyTimestamps(minDate: Date, maxDate: Date): number[] {
   return out;
 }
 
+/** Liste des timestamps des 1er janvier pour chaque année couverte par [minDate, maxDate]. */
+function getYearlyTimestamps(minDate: Date, maxDate: Date): number[] {
+  const minTs = startOfYear(minDate).getTime();
+  const maxTs = startOfYear(maxDate).getTime();
+  if (minTs > maxTs) return [];
+  const out: number[] = [];
+  let t = minTs;
+  while (t <= maxTs) {
+    out.push(t);
+    t = addYears(new Date(t), 1).getTime();
+  }
+  return out;
+}
+
 /** Index du mois contenant date (ou 0 / length-1 si en dehors). */
 function dateToMonthIndex(date: Date, monthlyTimestamps: number[]): number {
   if (monthlyTimestamps.length === 0) return 0;
   const ts = startOfMonth(date).getTime();
   const idx = monthlyTimestamps.findIndex((t) => t > ts);
   if (idx === -1) return monthlyTimestamps.length - 1;
+  if (idx === 0) return 0;
+  return idx - 1;
+}
+
+/** Index de l’année civile contenant date (ticks = 1er janvier). */
+function dateToYearIndex(date: Date, yearlyTimestamps: number[]): number {
+  if (yearlyTimestamps.length === 0) return 0;
+  const ts = startOfYear(date).getTime();
+  const idx = yearlyTimestamps.findIndex((t) => t > ts);
+  if (idx === -1) return yearlyTimestamps.length - 1;
   if (idx === 0) return 0;
   return idx - 1;
 }
@@ -57,16 +97,61 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
   syncLabel,
   syncChecked = false,
   onSyncChange,
+  fullYearsMode = false,
+  onFullYearsModeChange,
+  fullYearsLabel = 'Années complètes (1er janv. – 31 déc.)',
 }) => {
   const sliderRef = useRef<HTMLDivElement>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   const [slider, setSlider] = useState<API | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [cursorLabel, setCursorLabel] = useState<{ which: 'start' | 'end'; text: string } | null>(null);
+
+  const controlledStartTs =
+    controlledStartDate && isValid(controlledStartDate) ? controlledStartDate.getTime() : undefined;
+  const controlledEndTs =
+    controlledEndDate && isValid(controlledEndDate) ? controlledEndDate.getTime() : undefined;
 
   const monthlyTimestamps = useMemo(
     () => getMonthlyTimestamps(minDate, maxDate),
     [minDate, maxDate]
   );
+
+  const yearlyTimestamps = useMemo(
+    () => getYearlyTimestamps(minDate, maxDate),
+    [minDate, maxDate]
+  );
+
+  const tickTimestamps = fullYearsMode ? yearlyTimestamps : monthlyTimestamps;
+
+  const dateToTickIndex = (date: Date): number =>
+    fullYearsMode ? dateToYearIndex(date, yearlyTimestamps) : dateToMonthIndex(date, monthlyTimestamps);
+
+  const shiftFullYearRange = (deltaYears: -1 | 1) => {
+    if (!fullYearsMode || yearlyTimestamps.length === 0) return;
+    const maxIdx = yearlyTimestamps.length - 1;
+    const startIdx = dateToYearIndex(controlledStartDate ?? minDate, yearlyTimestamps);
+    const endIdx = dateToYearIndex(controlledEndDate ?? maxDate, yearlyTimestamps);
+    const newStartIdx = startIdx + deltaYears;
+    const newEndIdx = endIdx + deltaYears;
+    if (newStartIdx < 0 || newEndIdx > maxIdx || newStartIdx > newEndIdx) return;
+    const t0 = yearlyTimestamps[newStartIdx];
+    const t1 = yearlyTimestamps[newEndIdx];
+    onChangeRef.current(new Date(t0), endOfYear(new Date(t1)));
+  };
+
+  const fullYearStartIdx =
+    fullYearsMode && yearlyTimestamps.length > 0
+      ? dateToYearIndex(controlledStartDate ?? minDate, yearlyTimestamps)
+      : 0;
+  const fullYearEndIdx =
+    fullYearsMode && yearlyTimestamps.length > 0
+      ? dateToYearIndex(controlledEndDate ?? maxDate, yearlyTimestamps)
+      : 0;
+  const maxYearIdx = yearlyTimestamps.length > 0 ? yearlyTimestamps.length - 1 : 0;
+  const canShiftFullYearBack = fullYearsMode && fullYearStartIdx > 0;
+  const canShiftFullYearForward = fullYearsMode && fullYearEndIdx < maxYearIdx;
 
   useEffect(() => {
     const checkDarkMode = () => {
@@ -103,6 +188,12 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
         box-shadow: 0 2px 6px rgba(58, 128, 210, 0.4);
         transition: all 0.3s ease;
       }
+      .noUi-connect.noUi-draggable {
+        cursor: grab;
+      }
+      .noUi-target.noUi-state-drag .noUi-connect.noUi-draggable {
+        cursor: grabbing;
+      }
       .noUi-handle {
         width: 20px !important;
         height: 20px !important;
@@ -132,35 +223,42 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
   }, [isDarkMode]);
 
   useEffect(() => {
-    if (!sliderRef.current || monthlyTimestamps.length === 0) return;
-    if ((sliderRef.current as unknown as { noUiSlider?: API }).noUiSlider) {
-      setSlider((sliderRef.current as unknown as { noUiSlider: API }).noUiSlider);
-      return;
+    const el = sliderRef.current;
+    if (!el || tickTimestamps.length === 0) return;
+    const existing = (el as unknown as { noUiSlider?: API }).noUiSlider;
+    if (existing) {
+      try {
+        existing.destroy();
+      } catch {
+        // déjà détruit
+      }
     }
-    const maxIdx = monthlyTimestamps.length - 1;
-    const startIdx = Math.min(
-      dateToMonthIndex(controlledStartDate ?? minDate, monthlyTimestamps),
-      maxIdx
-    );
-    const endIdx = Math.min(
-      Math.max(startIdx, dateToMonthIndex(controlledEndDate ?? maxDate, monthlyTimestamps)),
-      maxIdx
-    );
 
-    const sliderInstance = noUiSlider.create(sliderRef.current, {
+    const maxIdx = tickTimestamps.length - 1;
+    const startIdx = Math.min(dateToTickIndex(controlledStartDate ?? minDate), maxIdx);
+    const endIdx = Math.min(Math.max(startIdx, dateToTickIndex(controlledEndDate ?? maxDate)), maxIdx);
+
+    const sliderInstance = noUiSlider.create(el, {
       start: [startIdx, endIdx],
       connect: true,
       range: { min: 0, max: maxIdx },
       step: 1,
       tooltips: false,
+      /** `drag` : glisser la barre entre les poignées déplace toute la plage (écart conservé). `tap` : clic sur la piste. */
+      behaviour: 'drag-tap',
     });
 
     sliderInstance.on('start', (_values: (number | string)[], handleNumber: number) => {
       const values = sliderInstance.get() as (number | string)[];
       const idx = Number(values[handleNumber]);
-      const ts = monthlyTimestamps[idx] ?? monthlyTimestamps[0];
-      const which = handleNumber === 0 ? 'start' as const : 'end' as const;
-      const dateForLabel = handleNumber === 0 ? new Date(ts) : endOfMonth(new Date(ts));
+      const ts = tickTimestamps[idx] ?? tickTimestamps[0];
+      const which = handleNumber === 0 ? ('start' as const) : ('end' as const);
+      const dateForLabel =
+        handleNumber === 0
+          ? new Date(ts)
+          : fullYearsMode
+            ? endOfYear(new Date(ts))
+            : endOfMonth(new Date(ts));
       const text = safeFormat(dateForLabel.getTime(), 'd MMM yyyy');
       if (text) setCursorLabel({ which, text });
     });
@@ -168,9 +266,14 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
     sliderInstance.on('update', (_values: (number | string)[], handleNumber: number) => {
       const values = sliderInstance.get() as (number | string)[];
       const idx = Number(values[handleNumber]);
-      const ts = monthlyTimestamps[idx] ?? monthlyTimestamps[0];
-      const which = handleNumber === 0 ? 'start' as const : 'end' as const;
-      const dateForLabel = handleNumber === 0 ? new Date(ts) : endOfMonth(new Date(ts));
+      const ts = tickTimestamps[idx] ?? tickTimestamps[0];
+      const which = handleNumber === 0 ? ('start' as const) : ('end' as const);
+      const dateForLabel =
+        handleNumber === 0
+          ? new Date(ts)
+          : fullYearsMode
+            ? endOfYear(new Date(ts))
+            : endOfMonth(new Date(ts));
       const text = safeFormat(dateForLabel.getTime(), 'd MMM yyyy');
       if (!text) return;
       setCursorLabel((prev) => {
@@ -186,9 +289,11 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
     sliderInstance.on('change', (values) => {
       const i0 = Number(values[0]);
       const i1 = Number(values[1]);
-      const start = new Date(monthlyTimestamps[i0] ?? monthlyTimestamps[0]);
-      const end = endOfMonth(new Date(monthlyTimestamps[i1] ?? monthlyTimestamps[maxIdx]));
-      onChange(start, end);
+      const t0 = tickTimestamps[i0] ?? tickTimestamps[0];
+      const t1 = tickTimestamps[i1] ?? tickTimestamps[maxIdx];
+      const start = new Date(t0);
+      const end = fullYearsMode ? endOfYear(new Date(t1)) : endOfMonth(new Date(t1));
+      onChangeRef.current(start, end);
     });
     setSlider(sliderInstance);
 
@@ -202,35 +307,89 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
       }
       setSlider(null);
     };
-  }, [monthlyTimestamps]);
+  }, [tickTimestamps, fullYearsMode]);
 
   useEffect(() => {
-    if (!slider || monthlyTimestamps.length === 0 || !controlledStartDate || !controlledEndDate) return;
-    const startIdx = dateToMonthIndex(controlledStartDate, monthlyTimestamps);
-    const endIdx = dateToMonthIndex(controlledEndDate, monthlyTimestamps);
-    const maxIdx = monthlyTimestamps.length - 1;
+    if (
+      !slider ||
+      tickTimestamps.length === 0 ||
+      controlledStartTs === undefined ||
+      controlledEndTs === undefined
+    ) {
+      return;
+    }
+    const startIdx = dateToTickIndex(new Date(controlledStartTs));
+    const endIdx = dateToTickIndex(new Date(controlledEndTs));
+    const maxIdx = tickTimestamps.length - 1;
     const safeStart = Math.min(Math.max(0, startIdx), maxIdx);
     const safeEnd = Math.min(Math.max(safeStart, endIdx), maxIdx);
-    const current = slider.get() as number[];
-    if (current[0] !== safeStart || current[1] !== safeEnd) {
+    const raw = slider.get() as (number | string)[];
+    const cur0 = Number(raw[0]);
+    const cur1 = Number(raw[1]);
+    if (cur0 !== safeStart || cur1 !== safeEnd) {
       slider.set([safeStart, safeEnd], false);
     }
-  }, [slider, monthlyTimestamps, controlledStartDate, controlledEndDate]);
+  }, [slider, tickTimestamps, fullYearsMode, controlledStartTs, controlledEndTs]);
 
   return (
     <div className="p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-md w-full overflow-hidden">
       <div className="px-2">
-        {syncLabel != null && (
-          <div className="flex items-center justify-end mb-2">
-            <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={syncChecked}
-                onChange={(e) => onSyncChange?.(e.target.checked)}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span>{syncLabel}</span>
-            </label>
+        {(onFullYearsModeChange != null || syncLabel != null) && (
+          <div
+            className={`mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 ${
+              syncLabel != null && onFullYearsModeChange == null ? 'justify-end' : 'justify-between'
+            }`}
+          >
+            {onFullYearsModeChange != null && (
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+                <label className="flex min-w-0 flex-1 items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={fullYearsMode}
+                    onChange={(e) => onFullYearsModeChange(e.target.checked)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                  />
+                  <span className="min-w-0">{fullYearsLabel}</span>
+                </label>
+                {fullYearsMode && (
+                  <div
+                    className="flex shrink-0 items-center gap-0.5"
+                    role="group"
+                    aria-label="Décaler la plage d’une année"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => shiftFullYearRange(-1)}
+                      disabled={!canShiftFullYearBack}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 bg-gray-50 text-base font-semibold leading-none text-gray-700 shadow-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                      aria-label="Année précédente"
+                    >
+                      -
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => shiftFullYearRange(1)}
+                      disabled={!canShiftFullYearForward}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 bg-gray-50 text-base font-semibold leading-none text-gray-700 shadow-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                      aria-label="Année suivante"
+                    >
+                      +
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {syncLabel != null && (
+              <label className="flex min-w-0 max-w-full items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer select-none shrink-0">
+                <input
+                  type="checkbox"
+                  checked={syncChecked}
+                  onChange={(e) => onSyncChange?.(e.target.checked)}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                />
+                <span className="min-w-0">{syncLabel}</span>
+              </label>
+            )}
           </div>
         )}
         <div

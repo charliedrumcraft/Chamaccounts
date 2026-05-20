@@ -1,10 +1,9 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import AccountBalanceLineChart, {
   linearRegression,
 } from '../components/Dashboard/AccountBalanceLineChart';
 import AccountBalanceStockChart from '../components/Dashboard/AccountBalanceStockChart';
 import DateRangeSlider from '../components/Common/DateRangeSlider';
-import Sidebar from '../components/Layout/Sidebar';
 import { ACCOUNT_BALANCE_PROCESSED_DIR } from '@/shared/dataPaths';
 import { AccountBalanceCSVService } from '../services/AccountBalanceCSVService';
 import { SourceDataCSVService, type SourceDataResult } from '../services/SourceDataCSVService';
@@ -25,7 +24,8 @@ import MovementsMonthlyChart, {
 import MovementsBalanceHorizontalBar from '../components/Dashboard/MovementsBalanceHorizontalBar';
 import YearlySummaryChart from '../components/Dashboard/YearlySummaryChart';
 import { formatCurrency } from '../utils/format';
-import { eachMonthOfInterval, startOfMonth, endOfMonth, format } from 'date-fns';
+import { eachMonthOfInterval, startOfMonth, endOfMonth, startOfYear, endOfYear, format } from 'date-fns';
+import { getSuggestions } from '../services/SuggestInputService';
 
 const Y_AXIS_CURRENCIES = [
   { value: '£', label: 'GBP (£)' },
@@ -33,14 +33,84 @@ const Y_AXIS_CURRENCIES = [
   { value: 'CHF', label: 'CHF' },
 ] as const;
 
+/** Préfixe id `datalist` filtres Tableaux — suffixer par l’index de ligne. */
+const TABLES_FILTER_DL_TITLE_PREFIX = 'dashboard-tables-filter-dl-title-';
+const TABLES_FILTER_DL_TYPE_PREFIX = 'dashboard-tables-filter-dl-type-';
+const TABLES_FILTER_DL_ACCOUNT_PREFIX = 'dashboard-tables-filter-dl-account-';
+
+/** Recale [start,end] sur les index couvrant des années civiles complètes (données mensuelles). */
+function snapRangeIndicesToFullYears(ds: Date[], range: [number, number]): [number, number] {
+  if (ds.length === 0) return range;
+  const lo = Math.min(range[0], range[1]);
+  const hi = Math.max(range[0], range[1]);
+  const startTs = startOfYear(ds[lo] ?? ds[0]).getTime();
+  const endTs = endOfYear(ds[hi] ?? ds[ds.length - 1]).getTime();
+  let startIdx = ds.findIndex((d) => d.getTime() >= startTs);
+  if (startIdx === -1) startIdx = ds.length - 1;
+  let endIdx = 0;
+  for (let i = 0; i < ds.length; i++) {
+    if (ds[i].getTime() <= endTs) endIdx = i;
+  }
+  if (startIdx > endIdx) endIdx = startIdx;
+  return [startIdx, endIdx];
+}
+
+/** Une ligne de filtre = un critère (OU entre lignes via « + Ligne »). */
+function tablesFilterCriteriaFromLines(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+function cellMatchesTablesFilterCriteria(cell: string, criteria: string[]): boolean {
+  if (criteria.length === 0) return true;
+  const h = cell.toLowerCase();
+  return criteria.some((c) => h.includes(c.toLowerCase()));
+}
+
+/** Texte passé à l’autocomplete (ligne entière). */
+function tablesFilterSuggestPrefix(rawLine: string): string {
+  return rawLine.trim();
+}
+
+/** Remplace la ligne par la valeur suggérée (titres / types / comptes). */
+function applyTablesFilterSuggestionToLine(_line: string, suggestionValue: string): string {
+  return suggestionValue.trim();
+}
+
+/** Charge une liste de filtres texte (JSON ou ancienne chaîne seule). */
+function loadTablesFilterLineList(key: string): string[] {
+  return loadDashboardPref(
+    key,
+    (s) => {
+      if (s === null) return null;
+      if (s === '') return [''];
+      try {
+        const p = JSON.parse(s);
+        if (Array.isArray(p) && p.every((x) => typeof x === 'string')) {
+          return p.length > 0 ? p : [''];
+        }
+      } catch {
+        return [s];
+      }
+      return null;
+    },
+    ['']
+  );
+}
+
 const DASHBOARD_STORAGE_KEYS = {
-  sidebarCollapsed: 'dashboard-sidebar-collapsed',
   chartHeight: 'dashboard-chart-height',
   chartFiltersOpen: 'dashboard-chart-filters-open',
   chartRange: 'dashboard-chart-range',
   movementsRange: 'dashboard-movements-range',
   chartSyncsWithMovements: 'dashboard-chart-syncs-with-movements',
   movementsSyncsWithChart: 'dashboard-movements-syncs-with-chart',
+  /** Curseurs de période : sélection par années civiles complètes (1er janv. – 31 déc.). */
+  dateRangeSliderFullYears: 'dashboard-date-range-slider-full-years',
   /** Devise du bloc Évolution des soldes */
   chartYAxisCurrency: 'dashboard-chart-y-axis-currency',
   /** Devise du bloc Suivi des mouvements */
@@ -98,12 +168,28 @@ const DASHBOARD_STORAGE_KEYS = {
   vueGlobaleShowSummaryTable: 'dashboard-vue-globale-show-summary-table',
   /** Blocs principaux dépliés (clé = id bloc, true = ouvert) */
   sectionsExpanded: 'dashboard-sections-expanded',
+  /** Plage dates du bloc Tableaux et filtres */
+  tablesRange: 'dashboard-tables-range',
+  /** Panneau paramètres du bloc Tableaux et filtres ouvert/fermé */
+  tablesFiltersOpen: 'dashboard-tables-filters-open',
+  tablesSyncsWithChart: 'dashboard-tables-syncs-with-chart',
+  tablesSyncsWithMovements: 'dashboard-tables-syncs-with-movements',
+  tablesYAxisCurrency: 'dashboard-tables-y-axis-currency',
+  /** Hauteur max (px) du tableau des transactions */
+  tablesTransactionsMaxHeight: 'dashboard-tables-transactions-max-height',
+  /** Filtres exacts multi-lignes : JSON string[] (clés inchangées ; ancienne valeur texte brute migrée) */
+  tablesTitleExactQuery: 'dashboard-tables-title-exact-query',
+  tablesTypeExactQuery: 'dashboard-tables-type-exact-query',
+  tablesAccountExactQuery: 'dashboard-tables-account-exact-query',
+  tablesShowEntrées: 'dashboard-tables-show-entrees',
+  tablesShowSorties: 'dashboard-tables-show-sorties',
 } as const;
 
 const SECTION_IDS = {
   evolutionSoldes: 'evolutionSoldes',
   suiviMouvements: 'suiviMouvements',
   evolutionComparee: 'evolutionComparee',
+  tableauxFiltres: 'tableauxFiltres',
   vueGlobale: 'vueGlobale',
 } as const;
 
@@ -163,14 +249,102 @@ function parseAmountCell(raw: string): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
-const Dashboard: React.FC = () => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(DASHBOARD_STORAGE_KEYS.sidebarCollapsed) === 'true';
-    } catch {
-      return false;
+type DashboardTablesBlocSortDir = 'asc' | 'desc';
+
+type DashboardTablesBlocTxSortCol = 'index' | 'date' | 'title' | 'type' | 'account' | 'amount';
+
+type DashboardTablesBlocTypeInSortCol = 'type' | 'entrées';
+type DashboardTablesBlocTypeOutSortCol = 'type' | 'sorties';
+type DashboardTablesBlocAccountSortCol = 'account' | 'entrées' | 'sorties' | 'balance';
+
+function dashboardTablesBlocCompareNum(a: number, b: number, dir: DashboardTablesBlocSortDir): number {
+  const c = a - b;
+  return dir === 'asc' ? c : -c;
+}
+
+function dashboardTablesBlocCompareStr(a: string, b: string, dir: DashboardTablesBlocSortDir): number {
+  const c = a.localeCompare(b, undefined, { sensitivity: 'base' });
+  return dir === 'asc' ? c : -c;
+}
+
+function dashboardTablesBlocAriaSort<T extends string>(
+  activeCol: T,
+  col: T,
+  dir: DashboardTablesBlocSortDir
+): 'ascending' | 'descending' | 'none' {
+  return activeCol === col ? (dir === 'asc' ? 'ascending' : 'descending') : 'none';
+}
+
+/** Agrégats Types / comptes / totaux à partir des lignes du tableau (bloc Tableaux et filtres). */
+function buildTablesDashboardAggregatesFromRows(
+  rows: { typeLabel: string; accountKey: string; amountGbp: number }[]
+) {
+  const entréesByType: Record<string, number> = {};
+  const sortiesByType: Record<string, number> = {};
+  const entréesByAccount: Record<string, number> = {};
+  const sortiesByAccount: Record<string, number> = {};
+  let totalEntrées = 0;
+  let totalSorties = 0;
+
+  for (const row of rows) {
+    const v = row.amountGbp;
+    const isEntrée = v > 0;
+    const isSortie = v < 0;
+    if (!isEntrée && !isSortie) continue;
+    const abs = Math.abs(v);
+    if (isEntrée) {
+      entréesByType[row.typeLabel] = (entréesByType[row.typeLabel] ?? 0) + v;
+      entréesByAccount[row.accountKey] = (entréesByAccount[row.accountKey] ?? 0) + v;
+      totalEntrées += v;
     }
+    if (isSortie) {
+      sortiesByType[row.typeLabel] = (sortiesByType[row.typeLabel] ?? 0) + abs;
+      sortiesByAccount[row.accountKey] = (sortiesByAccount[row.accountKey] ?? 0) + abs;
+      totalSorties += abs;
+    }
+  }
+
+  const typeKeysEntrées = Object.keys(entréesByType)
+    .filter((t) => (entréesByType[t] ?? 0) > 0)
+    .sort((a, b) => (entréesByType[b] ?? 0) - (entréesByType[a] ?? 0));
+  const summaryByTypeEntrées = typeKeysEntrées.map((type) => ({
+    type,
+    entrées: entréesByType[type] ?? 0,
+  }));
+
+  const typeKeysSorties = Object.keys(sortiesByType)
+    .filter((t) => (sortiesByType[t] ?? 0) > 0)
+    .sort((a, b) => (sortiesByType[b] ?? 0) - (sortiesByType[a] ?? 0));
+  const summaryByTypeSorties = typeKeysSorties.map((type) => ({
+    type,
+    sorties: sortiesByType[type] ?? 0,
+  }));
+
+  const accountKeysSorted = Array.from(
+    new Set([...Object.keys(entréesByAccount), ...Object.keys(sortiesByAccount)])
+  ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const summaryByAccount = accountKeysSorted.map((accountKey) => {
+    const e = entréesByAccount[accountKey] ?? 0;
+    const s = sortiesByAccount[accountKey] ?? 0;
+    return {
+      account: accountLabelFromSource(accountKey) || accountKey,
+      entrées: e,
+      sorties: s,
+      balance: e - s,
+    };
   });
+
+  return {
+    summaryByTypeEntrées,
+    summaryByTypeSorties,
+    summaryByAccount,
+    totalEntrées,
+    totalSorties,
+    balance: totalEntrées - totalSorties,
+  };
+}
+
+const Dashboard: React.FC = () => {
   const [accountBalanceChartData, setAccountBalanceChartData] = useState<{
     periods: string[];
     dates: Date[];
@@ -223,6 +397,13 @@ const Dashboard: React.FC = () => {
       false
     )
   );
+  const [dateRangeSliderFullYears, setDateRangeSliderFullYears] = useState(() =>
+    loadDashboardPref(
+      DASHBOARD_STORAGE_KEYS.dateRangeSliderFullYears,
+      (s) => (s === 'true' ? true : s === 'false' ? false : null),
+      false
+    )
+  );
   /** Devise du bloc Évolution des soldes (EffectiveExchangeRates utilisé pour la conversion). */
   const [chartYAxisCurrency, setChartYAxisCurrency] = useState<string>(() =>
     loadDashboardPref(DASHBOARD_STORAGE_KEYS.chartYAxisCurrency, (s) => s || null, '£')
@@ -258,6 +439,71 @@ const Dashboard: React.FC = () => {
       return Number.isNaN(n) || n < 300 || n > 1000 ? null : n;
     }, 300)
   );
+  const [tablesRange, setTablesRange] = useState<[number, number]>([0, 0]);
+  const [tablesFiltersOpen, setTablesFiltersOpen] = useState(() =>
+    loadDashboardPref(
+      DASHBOARD_STORAGE_KEYS.tablesFiltersOpen,
+      (s) => s === 'true' || s === 'false' ? s === 'true' : null,
+      true
+    )
+  );
+  const [tablesSyncsWithChart, setTablesSyncsWithChart] = useState(() =>
+    loadDashboardPref(
+      DASHBOARD_STORAGE_KEYS.tablesSyncsWithChart,
+      (s) => s === 'true' || s === 'false' ? s === 'true' : null,
+      false
+    )
+  );
+  const [tablesSyncsWithMovements, setTablesSyncsWithMovements] = useState(() =>
+    loadDashboardPref(
+      DASHBOARD_STORAGE_KEYS.tablesSyncsWithMovements,
+      (s) => s === 'true' || s === 'false' ? s === 'true' : null,
+      false
+    )
+  );
+  const [tablesYAxisCurrency, setTablesYAxisCurrency] = useState<string>(() =>
+    loadDashboardPref(DASHBOARD_STORAGE_KEYS.tablesYAxisCurrency, (s) => s || null, '£')
+  );
+  const [tablesTransactionsMaxHeight, setTablesTransactionsMaxHeight] = useState(() =>
+    loadDashboardPref(DASHBOARD_STORAGE_KEYS.tablesTransactionsMaxHeight, (s) => {
+      const n = parseInt(s, 10);
+      return Number.isNaN(n) || n < 200 || n > 900 ? null : n;
+    }, 360)
+  );
+  const [tablesTitleExactQueries, setTablesTitleExactQueries] = useState<string[]>(() =>
+    loadTablesFilterLineList(DASHBOARD_STORAGE_KEYS.tablesTitleExactQuery)
+  );
+  const [tablesTypeExactQueries, setTablesTypeExactQueries] = useState<string[]>(() =>
+    loadTablesFilterLineList(DASHBOARD_STORAGE_KEYS.tablesTypeExactQuery)
+  );
+  const [tablesAccountExactQueries, setTablesAccountExactQueries] = useState<string[]>(() =>
+    loadTablesFilterLineList(DASHBOARD_STORAGE_KEYS.tablesAccountExactQuery)
+  );
+  const [tablesShowEntrées, setTablesShowEntrées] = useState(() =>
+    loadDashboardPref(DASHBOARD_STORAGE_KEYS.tablesShowEntrées, (s) => s === 'true' || s === 'false' ? s === 'true' : null, true)
+  );
+  const [tablesShowSorties, setTablesShowSorties] = useState(() =>
+    loadDashboardPref(DASHBOARD_STORAGE_KEYS.tablesShowSorties, (s) => s === 'true' || s === 'false' ? s === 'true' : null, true)
+  );
+  /** Tri colonnes du bloc Tableaux et filtres (clic en-tête). */
+  const [tablesBlocTxSort, setTablesBlocTxSort] = useState<{
+    col: DashboardTablesBlocTxSortCol;
+    dir: DashboardTablesBlocSortDir;
+  }>({ col: 'date', dir: 'desc' });
+  const [tablesBlocTypeInSort, setTablesBlocTypeInSort] = useState<{
+    col: DashboardTablesBlocTypeInSortCol;
+    dir: DashboardTablesBlocSortDir;
+  }>({ col: 'entrées', dir: 'desc' });
+  const [tablesBlocTypeOutSort, setTablesBlocTypeOutSort] = useState<{
+    col: DashboardTablesBlocTypeOutSortCol;
+    dir: DashboardTablesBlocSortDir;
+  }>({ col: 'sorties', dir: 'desc' });
+  const [tablesBlocAccountSort, setTablesBlocAccountSort] = useState<{
+    col: DashboardTablesBlocAccountSortCol;
+    dir: DashboardTablesBlocSortDir;
+  }>({ col: 'account', dir: 'asc' });
+  /** Lignes cochées : si non vide, les sommes Types / comptes / totaux ne portent que sur ces lignes. */
+  const [tablesBlocSelectedRowKeys, setTablesBlocSelectedRowKeys] = useState<Set<string>>(() => new Set());
   /** Panneau paramètres du bloc Suivi annuel ouvert/fermé. */
   const [vueGlobaleFiltersOpen, setVueGlobaleFiltersOpen] = useState(() =>
     loadDashboardPref(
@@ -345,6 +591,7 @@ const Dashboard: React.FC = () => {
     evolutionSoldes: true,
     suiviMouvements: true,
     evolutionComparee: true,
+    tableauxFiltres: true,
     vueGlobale: true,
   };
   const [sectionsExpanded, setSectionsExpanded] = useState<Record<SectionId, boolean>>(() =>
@@ -476,18 +723,18 @@ const Dashboard: React.FC = () => {
     let cancelled = false;
     setMovementsDataLoading(true);
     setMovementsDataError(null);
-    SourceDataCSVService.load()
+    SourceDataCSVService.loadMergedWithSupport()
       .then((result) => {
         if (!cancelled) {
           setSourceData(result ?? null);
           if (!result) {
-            setMovementsDataError('Fichier source_data.csv absent ou vide.');
+            setMovementsDataError('Aucune donnée transaction (src + support).');
           }
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setMovementsDataError(err?.message ?? 'Erreur chargement source_data.csv');
+          setMovementsDataError(err?.message ?? 'Erreur chargement src_transaction_data.csv');
         }
       })
       .finally(() => {
@@ -577,6 +824,83 @@ const Dashboard: React.FC = () => {
     setMovementsCompareRangeA((prev) => (prev[1] !== 0 ? prev : loadRange(DASHBOARD_STORAGE_KEYS.movementsCompareRangeA)));
     setMovementsCompareRangeB((prev) => (prev[1] !== 0 ? prev : loadRange(DASHBOARD_STORAGE_KEYS.movementsCompareRangeB)));
   }, [accountBalanceChartData?.periods?.length]);
+
+  useEffect(() => {
+    if (!accountBalanceChartData?.periods?.length) return;
+    const n = accountBalanceChartData.periods.length;
+    setTablesRange((prev) => {
+      if (prev[1] !== 0) return prev;
+      const saved = loadDashboardPref(
+        DASHBOARD_STORAGE_KEYS.tablesRange,
+        (s) => {
+          try {
+            const [a, b] = JSON.parse(s);
+            if (typeof a === 'number' && typeof b === 'number') return [a, b] as [number, number];
+          } catch {}
+          return null;
+        },
+        null
+      );
+      if (saved) {
+        const start = Math.max(0, Math.min(saved[0], n - 1));
+        const end = Math.max(0, Math.min(saved[1], n - 1));
+        const startIdx = Math.min(start, end);
+        const endIdx = Math.max(start, end);
+        return [startIdx, endIdx];
+      }
+      return [0, n - 1];
+    });
+  }, [accountBalanceChartData?.periods?.length]);
+
+  useEffect(() => {
+    if (!tablesSyncsWithChart) return;
+    if (!accountBalanceChartData?.periods?.length) return;
+    setTablesRange(chartRange);
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(chartRange));
+  }, [chartRange, tablesSyncsWithChart, accountBalanceChartData?.periods?.length]);
+
+  useEffect(() => {
+    if (!tablesSyncsWithMovements) return;
+    if (!accountBalanceChartData?.periods?.length) return;
+    setTablesRange(movementsRange);
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(movementsRange));
+  }, [movementsRange, tablesSyncsWithMovements, accountBalanceChartData?.periods?.length]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesSyncsWithChart, String(tablesSyncsWithChart));
+  }, [tablesSyncsWithChart]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesSyncsWithMovements, String(tablesSyncsWithMovements));
+  }, [tablesSyncsWithMovements]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesYAxisCurrency, tablesYAxisCurrency);
+  }, [tablesYAxisCurrency]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesTransactionsMaxHeight, String(tablesTransactionsMaxHeight));
+  }, [tablesTransactionsMaxHeight]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesTitleExactQuery, JSON.stringify(tablesTitleExactQueries));
+  }, [tablesTitleExactQueries]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesTypeExactQuery, JSON.stringify(tablesTypeExactQueries));
+  }, [tablesTypeExactQueries]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesAccountExactQuery, JSON.stringify(tablesAccountExactQueries));
+  }, [tablesAccountExactQueries]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesShowEntrées, String(tablesShowEntrées));
+  }, [tablesShowEntrées]);
+
+  useEffect(() => {
+    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesShowSorties, String(tablesShowSorties));
+  }, [tablesShowSorties]);
 
   useEffect(() => {
     saveDashboardPref(DASHBOARD_STORAGE_KEYS.trendLines, JSON.stringify(trendLinesByAccount));
@@ -732,31 +1056,49 @@ const Dashboard: React.FC = () => {
     return byCode;
   }, [filteredChartData]);
 
-  const handleToggleSidebar = () => {
-    setSidebarCollapsed((c) => {
-      const next = !c;
-      saveDashboardPref(DASHBOARD_STORAGE_KEYS.sidebarCollapsed, String(next));
-      return next;
-    });
-  };
-
   const dates = accountBalanceChartData?.dates ?? [];
   const minDate = dates[0] ?? new Date();
   const maxDate = dates[dates.length - 1] ?? new Date();
   const sliderStartDate = dates[chartRange[0]] ?? minDate;
   const sliderEndDate = dates[chartRange[1]] ?? maxDate;
-  const movementsStartDate = dates[movementsRange[0]] ?? minDate;
-  const movementsEndDate = endOfMonth(dates[movementsRange[1]] ?? maxDate);
-  const movementsCompareStartDateA = dates[movementsCompareRangeA[0]] ?? minDate;
-  const movementsCompareEndDateA = endOfMonth(dates[movementsCompareRangeA[1]] ?? maxDate);
-  const movementsCompareStartDateB = dates[movementsCompareRangeB[0]] ?? minDate;
-  const movementsCompareEndDateB = endOfMonth(dates[movementsCompareRangeB[1]] ?? maxDate);
+  const chartSliderStartForUi = dateRangeSliderFullYears ? startOfYear(sliderStartDate) : sliderStartDate;
+  const chartSliderEndForUi = dateRangeSliderFullYears ? endOfYear(sliderEndDate) : sliderEndDate;
+  const movementsStartDate = dateRangeSliderFullYears
+    ? startOfYear(dates[movementsRange[0]] ?? minDate)
+    : (dates[movementsRange[0]] ?? minDate);
+  const movementsEndDate = dateRangeSliderFullYears
+    ? endOfYear(dates[movementsRange[1]] ?? maxDate)
+    : endOfMonth(dates[movementsRange[1]] ?? maxDate);
+  const movementsCompareStartDateA = dateRangeSliderFullYears
+    ? startOfYear(dates[movementsCompareRangeA[0]] ?? minDate)
+    : (dates[movementsCompareRangeA[0]] ?? minDate);
+  const movementsCompareEndDateA = dateRangeSliderFullYears
+    ? endOfYear(dates[movementsCompareRangeA[1]] ?? maxDate)
+    : endOfMonth(dates[movementsCompareRangeA[1]] ?? maxDate);
+  const movementsCompareStartDateB = dateRangeSliderFullYears
+    ? startOfYear(dates[movementsCompareRangeB[0]] ?? minDate)
+    : (dates[movementsCompareRangeB[0]] ?? minDate);
+  const movementsCompareEndDateB = dateRangeSliderFullYears
+    ? endOfYear(dates[movementsCompareRangeB[1]] ?? maxDate)
+    : endOfMonth(dates[movementsCompareRangeB[1]] ?? maxDate);
+  const tablesStartDate = dateRangeSliderFullYears
+    ? startOfYear(dates[tablesRange[0]] ?? minDate)
+    : (dates[tablesRange[0]] ?? minDate);
+  const tablesEndDate = dateRangeSliderFullYears
+    ? endOfYear(dates[tablesRange[1]] ?? maxDate)
+    : endOfMonth(dates[tablesRange[1]] ?? maxDate);
+  const tablesSliderStartDate = tablesStartDate;
+  const tablesSliderEndDate = tablesEndDate;
 
   /** Colonnes source_data utilisées pour le tableau mouvements (AMOUNT GBP : négatif = dépense, positif = revenu) */
   const movementsColumns = useMemo(() => {
     if (!sourceData?.headers?.length) return null;
     const headers = sourceData.headers;
-    const dateCol = headers.find((h) => /date/i.test(h)) ?? null;
+    const dateCol =
+      headers.find((h) => /^date$/i.test((h ?? '').trim())) ??
+      headers.find((h) => /^date\b/i.test((h ?? '').trim())) ??
+      headers.find((h) => /date/i.test(h)) ??
+      null;
     const amountCol = headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
     const typeCol =
       headers.find((h) => /type|catégorie|category|cat$/i.test(h)) ??
@@ -764,8 +1106,38 @@ const Dashboard: React.FC = () => {
       null;
     const accountCol =
       headers.find((h) => /^account$/i.test(h) || /compte/i.test(h)) ?? null;
-    return { dateCol, amountCol, typeCol, accountCol };
+    const titleCol = headers.find((h) => /^title$/i.test(h)) ?? null;
+    return { dateCol, amountCol, typeCol, accountCol, titleCol };
   }, [sourceData?.headers]);
+
+  const tablesFilterSuggestionRows = useMemo(
+    () => (sourceData?.rows as Record<string, string>[]) ?? [],
+    [sourceData?.rows]
+  );
+
+  const tablesTitleFilterSuggestionsList = useMemo(() => {
+    const h = movementsColumns?.titleCol;
+    if (!h || tablesFilterSuggestionRows.length === 0) return tablesTitleExactQueries.map(() => []);
+    return tablesTitleExactQueries.map((q) =>
+      getSuggestions(tablesFilterSuggestionRows, h, tablesFilterSuggestPrefix(q), 10)
+    );
+  }, [tablesFilterSuggestionRows, movementsColumns?.titleCol, tablesTitleExactQueries]);
+
+  const tablesTypeFilterSuggestionsList = useMemo(() => {
+    const h = movementsColumns?.typeCol;
+    if (!h || tablesFilterSuggestionRows.length === 0) return tablesTypeExactQueries.map(() => []);
+    return tablesTypeExactQueries.map((q) =>
+      getSuggestions(tablesFilterSuggestionRows, h, tablesFilterSuggestPrefix(q), 10)
+    );
+  }, [tablesFilterSuggestionRows, movementsColumns?.typeCol, tablesTypeExactQueries]);
+
+  const tablesAccountFilterSuggestionsList = useMemo(() => {
+    const h = movementsColumns?.accountCol;
+    if (!h || tablesFilterSuggestionRows.length === 0) return tablesAccountExactQueries.map(() => []);
+    return tablesAccountExactQueries.map((q) =>
+      getSuggestions(tablesFilterSuggestionRows, h, tablesFilterSuggestPrefix(q), 10)
+    );
+  }, [tablesFilterSuggestionRows, movementsColumns?.accountCol, tablesAccountExactQueries]);
 
   /** Entrées/sorties agrégées par type sur la plage du slider mouvements */
   const movementsTableData = useMemo(() => {
@@ -778,11 +1150,23 @@ const Dashboard: React.FC = () => {
     const entréesByType: Record<string, number> = {};
     let totalSorties = 0;
     let totalEntrées = 0;
+    if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) {
+      return {
+        sortiesByType: {},
+        entréesByType: {},
+        totalSorties: 0,
+        totalEntrées: 0,
+        types: [],
+        typesWithSorties: [],
+        typesWithEntrées: [],
+        rowCount: 0,
+      };
+    }
     for (const row of sourceData.rows) {
       const cellDate = parseDateFromCell(row[dateCol] ?? '');
       if (!cellDate) continue;
       const t = cellDate.getTime();
-      if (t < startTs || t > endTs) continue;
+      if (!Number.isFinite(t) || t < startTs || t > endTs) continue;
       const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
       const v = parseAmountCell(row[amountCol] ?? '');
       if (v < 0) {
@@ -825,6 +1209,273 @@ const Dashboard: React.FC = () => {
     movementsStartDate,
     movementsEndDate,
   ]);
+
+  /** Lignes du tableau transactions (bloc Tableaux et filtres), avant agrégation. */
+  const tablesDashboardRowsBase = useMemo(() => {
+    if (!sourceData?.rows?.length || !movementsColumns) return null;
+    const { dateCol, amountCol, typeCol, accountCol, titleCol } = movementsColumns;
+    if (!dateCol || !amountCol) return null;
+    const startTs = tablesStartDate.getTime();
+    const endTs = tablesEndDate.getTime();
+    if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) return null;
+    const indexHeader = sourceData.headers.find((h) => /^index$/i.test(h)) ?? 'Index';
+
+    type RowAcc = {
+      sourceRowIndex: number;
+      txIndex: number;
+      cellDate: Date;
+      v: number;
+      title: string;
+      typeLabel: string;
+      accountKey: string;
+      rawAccount: string;
+    };
+
+    const candidates: RowAcc[] = [];
+
+    for (let ri = 0; ri < sourceData.rows.length; ri++) {
+      const row = sourceData.rows[ri];
+      const cellDate = parseDateFromCell(row[dateCol] ?? '');
+      if (!cellDate) continue;
+      const tt = cellDate.getTime();
+      if (!Number.isFinite(tt) || tt < startTs || tt > endTs) continue;
+      const v = parseAmountCell(row[amountCol] ?? '');
+      if (v === 0) continue;
+      const title = (titleCol ? (row[titleCol] ?? '').trim() : '') || '—';
+      const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
+      const rawAccount = (accountCol ? (row[accountCol] ?? '').trim() : '') || 'Sans compte';
+      const accountKey =
+        rawAccount === 'Sans compte' ? 'Sans compte' : (canonicalAccountFromSource(rawAccount) || rawAccount);
+      const idxParsed = parseInt(String(row[indexHeader] ?? '').trim(), 10);
+      const txIndex = Number.isFinite(idxParsed) ? idxParsed : ri + 1;
+      candidates.push({ sourceRowIndex: ri, txIndex, cellDate, v, title, typeLabel, accountKey, rawAccount });
+    }
+
+    const rowsOut: {
+      rowKey: string;
+      sourceRowIndex: number;
+      txIndex: number;
+      sortTs: number;
+      dateLabel: string;
+      title: string;
+      typeLabel: string;
+      accountKey: string;
+      accountLabel: string;
+      amountGbp: number;
+      sens: 'entrée' | 'sortie';
+    }[] = [];
+
+    const titleCriteria = tablesFilterCriteriaFromLines(tablesTitleExactQueries);
+    const typeCriteria = tablesFilterCriteriaFromLines(tablesTypeExactQueries);
+    const accountCriteria = tablesFilterCriteriaFromLines(tablesAccountExactQueries);
+
+    for (const c of candidates) {
+      if (!cellMatchesTablesFilterCriteria(c.title, titleCriteria)) continue;
+      if (!cellMatchesTablesFilterCriteria(c.typeLabel, typeCriteria)) continue;
+      if (!cellMatchesTablesFilterCriteria(c.rawAccount, accountCriteria)) continue;
+      const isEntrée = c.v > 0;
+      const isSortie = c.v < 0;
+      if (!tablesShowEntrées && isEntrée) continue;
+      if (!tablesShowSorties && isSortie) continue;
+
+      rowsOut.push({
+        rowKey: `tx-${c.sourceRowIndex}`,
+        sourceRowIndex: c.sourceRowIndex,
+        txIndex: c.txIndex,
+        sortTs: c.cellDate.getTime(),
+        dateLabel: format(c.cellDate, 'dd/MM/yyyy'),
+        title: c.title,
+        typeLabel: c.typeLabel,
+        accountKey: c.accountKey,
+        accountLabel: accountLabelFromSource(c.accountKey) || c.accountKey,
+        amountGbp: c.v,
+        sens: isEntrée ? 'entrée' : 'sortie',
+      });
+    }
+
+    rowsOut.sort((a, b) => b.sortTs - a.sortTs);
+    return { rows: rowsOut };
+  }, [
+    sourceData?.rows,
+    sourceData?.headers,
+    movementsColumns,
+    tablesStartDate,
+    tablesEndDate,
+    tablesTitleExactQueries,
+    tablesTypeExactQueries,
+    tablesAccountExactQueries,
+    tablesShowEntrées,
+    tablesShowSorties,
+  ]);
+
+  const tablesDashboardRowsKey = useMemo(
+    () => tablesDashboardRowsBase?.rows.map((r) => r.rowKey).join('\0') ?? '',
+    [tablesDashboardRowsBase]
+  );
+
+  useEffect(() => {
+    if (!tablesDashboardRowsBase?.rows.length) {
+      setTablesBlocSelectedRowKeys((prev) => (prev.size === 0 ? prev : new Set()));
+      return;
+    }
+    const valid = new Set(tablesDashboardRowsBase.rows.map((r) => r.rowKey));
+    setTablesBlocSelectedRowKeys((prev) => {
+      const next = new Set<string>();
+      for (const k of prev) {
+        if (valid.has(k)) next.add(k);
+      }
+      if (next.size === prev.size) {
+        for (const k of prev) {
+          if (!next.has(k)) return next;
+        }
+        return prev;
+      }
+      return next;
+    });
+  }, [tablesDashboardRowsKey, tablesDashboardRowsBase]);
+
+  const tablesBlocRowsForAggregates = useMemo(() => {
+    const rows = tablesDashboardRowsBase?.rows ?? [];
+    if (tablesBlocSelectedRowKeys.size === 0) return rows;
+    return rows.filter((r) => tablesBlocSelectedRowKeys.has(r.rowKey));
+  }, [tablesDashboardRowsBase, tablesBlocSelectedRowKeys]);
+
+  const tablesDashboardAggregates = useMemo(
+    () => buildTablesDashboardAggregatesFromRows(tablesBlocRowsForAggregates),
+    [tablesBlocRowsForAggregates]
+  );
+
+  /** Tableau des transactions + agrégations (bloc Tableaux et filtres) */
+  const tablesDashboardData = useMemo(() => {
+    if (!tablesDashboardRowsBase) return null;
+    return {
+      rows: tablesDashboardRowsBase.rows,
+      ...tablesDashboardAggregates,
+    };
+  }, [tablesDashboardRowsBase, tablesDashboardAggregates]);
+
+  const tablesBlocSortedTxRows = useMemo(() => {
+    if (!tablesDashboardData) return [];
+    const { col, dir } = tablesBlocTxSort;
+    const rows = [...tablesDashboardData.rows];
+    rows.sort((a, b) => {
+      let c = 0;
+      switch (col) {
+        case 'index':
+          c = dashboardTablesBlocCompareNum(a.txIndex, b.txIndex, dir);
+          break;
+        case 'date':
+          c = dashboardTablesBlocCompareNum(a.sortTs, b.sortTs, dir);
+          break;
+        case 'title':
+          c = dashboardTablesBlocCompareStr(a.title, b.title, dir);
+          break;
+        case 'type':
+          c = dashboardTablesBlocCompareStr(a.typeLabel, b.typeLabel, dir);
+          break;
+        case 'account':
+          c = dashboardTablesBlocCompareStr(a.accountLabel, b.accountLabel, dir);
+          break;
+        case 'amount':
+          c = dashboardTablesBlocCompareNum(a.amountGbp, b.amountGbp, dir);
+          break;
+        default:
+          break;
+      }
+      if (c !== 0) return c;
+      const byTs = b.sortTs - a.sortTs;
+      if (byTs !== 0) return byTs;
+      return a.sourceRowIndex - b.sourceRowIndex;
+    });
+    return rows;
+  }, [tablesDashboardData, tablesBlocTxSort]);
+
+  const tablesBlocTxTableHeaderCheckboxRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const el = tablesBlocTxTableHeaderCheckboxRef.current;
+    if (!el) return;
+    const keys = tablesBlocSortedTxRows.map((r) => r.rowKey);
+    const selectedAmongVisible = keys.filter((k) => tablesBlocSelectedRowKeys.has(k)).length;
+    el.indeterminate = keys.length > 0 && selectedAmongVisible > 0 && selectedAmongVisible < keys.length;
+  }, [tablesBlocSortedTxRows, tablesBlocSelectedRowKeys]);
+
+  const toggleTablesBlocRowSelected = useCallback((rowKey: string) => {
+    setTablesBlocSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  }, []);
+
+  const toggleTablesBlocSelectAllVisible = useCallback(() => {
+    setTablesBlocSelectedRowKeys((prev) => {
+      const keys = tablesBlocSortedTxRows.map((r) => r.rowKey);
+      if (keys.length === 0) return new Set();
+      const allSelected = keys.every((k) => prev.has(k));
+      if (allSelected) return new Set();
+      return new Set(keys);
+    });
+  }, [tablesBlocSortedTxRows]);
+
+  const tablesBlocSortedTypeEntrées = useMemo(() => {
+    if (!tablesDashboardData) return [];
+    const { col, dir } = tablesBlocTypeInSort;
+    const arr = [...tablesDashboardData.summaryByTypeEntrées];
+    arr.sort((a, b) => {
+      const c =
+        col === 'type'
+          ? dashboardTablesBlocCompareStr(a.type, b.type, dir)
+          : dashboardTablesBlocCompareNum(a.entrées, b.entrées, dir);
+      if (c !== 0) return c;
+      return a.type.localeCompare(b.type, undefined, { sensitivity: 'base' });
+    });
+    return arr;
+  }, [tablesDashboardData, tablesBlocTypeInSort]);
+
+  const tablesBlocSortedTypeSorties = useMemo(() => {
+    if (!tablesDashboardData) return [];
+    const { col, dir } = tablesBlocTypeOutSort;
+    const arr = [...tablesDashboardData.summaryByTypeSorties];
+    arr.sort((a, b) => {
+      const c =
+        col === 'type'
+          ? dashboardTablesBlocCompareStr(a.type, b.type, dir)
+          : dashboardTablesBlocCompareNum(a.sorties, b.sorties, dir);
+      if (c !== 0) return c;
+      return a.type.localeCompare(b.type, undefined, { sensitivity: 'base' });
+    });
+    return arr;
+  }, [tablesDashboardData, tablesBlocTypeOutSort]);
+
+  const tablesBlocSortedSummaryByAccount = useMemo(() => {
+    if (!tablesDashboardData) return [];
+    const { col, dir } = tablesBlocAccountSort;
+    const arr = [...tablesDashboardData.summaryByAccount];
+    arr.sort((a, b) => {
+      let c = 0;
+      switch (col) {
+        case 'account':
+          c = dashboardTablesBlocCompareStr(a.account, b.account, dir);
+          break;
+        case 'entrées':
+          c = dashboardTablesBlocCompareNum(a.entrées, b.entrées, dir);
+          break;
+        case 'sorties':
+          c = dashboardTablesBlocCompareNum(a.sorties, b.sorties, dir);
+          break;
+        case 'balance':
+          c = dashboardTablesBlocCompareNum(a.balance, b.balance, dir);
+          break;
+        default:
+          break;
+      }
+      if (c !== 0) return c;
+      return a.account.localeCompare(b.account, undefined, { sensitivity: 'base' });
+    });
+    return arr;
+  }, [tablesDashboardData, tablesBlocAccountSort]);
 
   /** Données tableau par type pour la colonne gauche du bloc Evolution comparée */
   const movementsCompareTableDataA = useMemo(() => {
@@ -1071,6 +1722,27 @@ const Dashboard: React.FC = () => {
     };
   }, [yearlyViewDataFiltered, vueGlobaleYAxisCurrency]);
 
+  /** Libellés de la légende du graphe Suivi annuel (barres + courbe Balance). */
+  const yearlySummarySeriesLabels = useMemo((): string[] => {
+    const d = yearlyChartData;
+    if (!d) return [];
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
+    const entreeLabels = d.entréeTypes && d.entréeTypes.length > 0 ? d.entréeTypes : ['Entrées'];
+    return [...sortieLabels, ...entreeLabels, 'Balance'];
+  }, [yearlyChartData]);
+  const areAllYearlySummarySeriesChecked = useMemo(
+    () =>
+      yearlySummarySeriesLabels.length > 0 &&
+      yearlySummarySeriesLabels.every((label) => !(vueGlobaleHiddenSeriesByLabel[label] ?? false)),
+    [yearlySummarySeriesLabels, vueGlobaleHiddenSeriesByLabel]
+  );
+  const yearlySummarySortieLabelSet = useMemo(() => {
+    const d = yearlyChartData;
+    if (!d) return new Set<string>();
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
+    return new Set(sortieLabels);
+  }, [yearlyChartData]);
+
   /** Balance par compte pour la colonne A du bloc Evolution comparée */
   const movementsCompareBalanceByAccountA = useMemo(() => {
     if (!sourceData?.rows?.length || !movementsColumns) return null;
@@ -1244,6 +1916,27 @@ const Dashboard: React.FC = () => {
     };
   }, [movementsMonthlyChartData, movementsYAxisCurrency]);
 
+  /** Labels de séries visibles dans la légende du graphique mensuel mouvements. */
+  const movementsMonthlySeriesLabels = useMemo((): string[] => {
+    const d = movementsMonthlyChartDataForMovements;
+    if (!d) return [];
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
+    const entreeLabels = d.entréeTypes && d.entréeTypes.length > 0 ? d.entréeTypes : ['Entrées'];
+    return [...sortieLabels, ...entreeLabels];
+  }, [movementsMonthlyChartDataForMovements]);
+  const areAllMonthlySeriesChecked = useMemo(
+    () =>
+      movementsMonthlySeriesLabels.length > 0 &&
+      movementsMonthlySeriesLabels.every((label) => !(hiddenMonthlySeriesByLabel[label] ?? false)),
+    [movementsMonthlySeriesLabels, hiddenMonthlySeriesByLabel]
+  );
+  const movementsMonthlySortieLabelSet = useMemo(() => {
+    const d = movementsMonthlyChartDataForMovements;
+    if (!d) return new Set<string>();
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
+    return new Set(sortieLabels);
+  }, [movementsMonthlyChartDataForMovements]);
+
   const handleDateRangeChange = useCallback(
     (startDate: Date, endDate: Date) => {
       if (!accountBalanceChartData?.dates?.length) return;
@@ -1264,8 +1957,12 @@ const Dashboard: React.FC = () => {
         setMovementsRange(range);
         saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsRange, JSON.stringify(range));
       }
+      if (tablesSyncsWithChart) {
+        setTablesRange(range);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(range));
+      }
     },
-    [accountBalanceChartData?.dates, movementsSyncsWithChart, chartSyncsWithMovements]
+    [accountBalanceChartData?.dates, movementsSyncsWithChart, chartSyncsWithMovements, tablesSyncsWithChart]
   );
 
   const handleMovementsDateRangeChange = useCallback(
@@ -1288,9 +1985,73 @@ const Dashboard: React.FC = () => {
         setChartRange(range);
         saveDashboardPref(DASHBOARD_STORAGE_KEYS.chartRange, JSON.stringify(range));
       }
+      if (tablesSyncsWithMovements) {
+        setTablesRange(range);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(range));
+      }
     },
-    [accountBalanceChartData?.dates, chartSyncsWithMovements, movementsSyncsWithChart]
+    [accountBalanceChartData?.dates, chartSyncsWithMovements, movementsSyncsWithChart, tablesSyncsWithMovements]
   );
+
+  const handleTablesDateRangeChange = useCallback(
+    (startDate: Date, endDate: Date) => {
+      if (!accountBalanceChartData?.dates?.length) return;
+      const ds = accountBalanceChartData.dates;
+      const startTs = startDate.getTime();
+      const endTs = endDate.getTime();
+      let startIdx = ds.findIndex((d) => d.getTime() >= startTs);
+      if (startIdx === -1) startIdx = ds.length - 1;
+      let endIdx = 0;
+      for (let i = 0; i < ds.length; i++) {
+        if (ds[i].getTime() <= endTs) endIdx = i;
+      }
+      if (startIdx > endIdx) endIdx = startIdx;
+      const range: [number, number] = [startIdx, endIdx];
+      setTablesRange(range);
+      saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(range));
+      if (tablesSyncsWithChart) {
+        setChartRange(range);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.chartRange, JSON.stringify(range));
+        if (movementsSyncsWithChart || chartSyncsWithMovements) {
+          setMovementsRange(range);
+          saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsRange, JSON.stringify(range));
+        }
+      }
+      if (tablesSyncsWithMovements) {
+        setMovementsRange(range);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsRange, JSON.stringify(range));
+        if (chartSyncsWithMovements || movementsSyncsWithChart) {
+          setChartRange(range);
+          saveDashboardPref(DASHBOARD_STORAGE_KEYS.chartRange, JSON.stringify(range));
+        }
+      }
+    },
+    [
+      accountBalanceChartData?.dates,
+      tablesSyncsWithChart,
+      tablesSyncsWithMovements,
+      movementsSyncsWithChart,
+      chartSyncsWithMovements,
+    ]
+  );
+
+  const handleTablesChartSyncChange = useCallback((checked: boolean) => {
+    setTablesSyncsWithChart(checked);
+    if (checked) {
+      setTablesSyncsWithMovements(false);
+      setTablesRange(chartRange);
+      saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(chartRange));
+    }
+  }, [chartRange]);
+
+  const handleTablesMovementsSyncChange = useCallback((checked: boolean) => {
+    setTablesSyncsWithMovements(checked);
+    if (checked) {
+      setTablesSyncsWithChart(false);
+      setTablesRange(movementsRange);
+      saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(movementsRange));
+    }
+  }, [movementsRange]);
 
   const handleMovementsCompareDateRangeChangeA = useCallback(
     (startDate: Date, endDate: Date) => {
@@ -1356,70 +2117,116 @@ const Dashboard: React.FC = () => {
     [chartRange]
   );
 
+  const handleDateRangeSliderFullYearsChange = useCallback(
+    (enabled: boolean) => {
+      setDateRangeSliderFullYears(enabled);
+      saveDashboardPref(DASHBOARD_STORAGE_KEYS.dateRangeSliderFullYears, String(enabled));
+      if (!enabled || !accountBalanceChartData?.dates?.length) return;
+      const ds = accountBalanceChartData.dates;
+      const apply = (prev: [number, number]) => snapRangeIndicesToFullYears(ds, prev);
+      setChartRange((prev) => {
+        const n = apply(prev);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.chartRange, JSON.stringify(n));
+        return n;
+      });
+      setMovementsRange((prev) => {
+        const n = apply(prev);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsRange, JSON.stringify(n));
+        return n;
+      });
+      setTablesRange((prev) => {
+        const n = apply(prev);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(n));
+        return n;
+      });
+      setMovementsCompareRangeA((prev) => {
+        const n = apply(prev);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareRangeA, JSON.stringify(n));
+        return n;
+      });
+      setMovementsCompareRangeB((prev) => {
+        const n = apply(prev);
+        saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareRangeB, JSON.stringify(n));
+        return n;
+      });
+    },
+    [accountBalanceChartData?.dates]
+  );
+
   return (
-    <div className="min-h-screen flex bg-gray-50">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggleCollapsed={handleToggleSidebar}
-      />
-      <main className="flex-1 flex flex-col min-w-0 p-4">
+    <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4">
           <h1 className="text-2xl font-bold text-gray-800">Tableau de bord</h1>
         </div>
 
       {/* Graphique évolution des soldes (données = début de chaque mois depuis account_balance.csv) */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6" style={{ minHeight: sectionsExpanded.evolutionSoldes ? 320 : undefined }}>
-        <div
-          className="flex items-center justify-between gap-3 mb-3 cursor-pointer select-none"
-          onClick={() => setSectionExpanded('evolutionSoldes', !sectionsExpanded.evolutionSoldes)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSectionExpanded('evolutionSoldes', !sectionsExpanded.evolutionSoldes); } }}
-          aria-expanded={sectionsExpanded.evolutionSoldes}
+      <section
+        className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6"
+        style={{ minHeight: sectionsExpanded.evolutionSoldes ? 320 : undefined }}
+      >
+        <header
+          className={`bg-gradient-to-br from-slate-50 to-white ${
+            sectionsExpanded.evolutionSoldes ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+          }`}
         >
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block transition-transform duration-200 text-gray-500"
-              style={{ transform: sectionsExpanded.evolutionSoldes ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-              aria-hidden
+          <div className="flex items-stretch">
+            <button
+              type="button"
+              className="flex-1 min-w-0 px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
+              onClick={() => setSectionExpanded('evolutionSoldes', !sectionsExpanded.evolutionSoldes)}
+              aria-expanded={sectionsExpanded.evolutionSoldes}
             >
-              ▼
-            </span>
-            <h2 className="text-lg font-semibold text-gray-800">
-              Évolution des soldes
-            </h2>
+              <span
+                className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                  sectionsExpanded.evolutionSoldes ? 'rotate-90' : ''
+                }`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                  Évolution des soldes
+                </span>
+              </span>
+            </button>
+            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setChartFiltersOpen((o) => {
+                    const next = !o;
+                    saveDashboardPref(DASHBOARD_STORAGE_KEYS.chartFiltersOpen, String(next));
+                    return next;
+                  });
+                }}
+                title="Paramètres"
+                className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
+                  chartFiltersOpen
+                    ? 'bg-gray-200 border-gray-300 text-gray-800'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                }`}
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setChartFiltersOpen((o) => {
-              const next = !o;
-              saveDashboardPref(DASHBOARD_STORAGE_KEYS.chartFiltersOpen, String(next));
-              return next;
-            }); }}
-            title="Paramètres"
-            className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
-              chartFiltersOpen
-                ? 'bg-gray-200 border-gray-300 text-gray-800'
-                : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
-            }`}
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-              />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
-        </div>
+        </header>
         {sectionsExpanded.evolutionSoldes && (
+        <div className="px-4 pb-4 pt-3">
         <>
         {chartLoading ? (
           <div className="flex items-center justify-center h-64 text-gray-500">
@@ -1619,12 +2426,14 @@ const Dashboard: React.FC = () => {
                 <DateRangeSlider
                   minDate={minDate}
                   maxDate={maxDate}
-                  startDate={chartSyncsWithMovements ? movementsStartDate : sliderStartDate}
-                  endDate={chartSyncsWithMovements ? movementsEndDate : sliderEndDate}
+                  startDate={chartSyncsWithMovements ? movementsStartDate : chartSliderStartForUi}
+                  endDate={chartSyncsWithMovements ? movementsEndDate : chartSliderEndForUi}
                   onChange={handleDateRangeChange}
                   syncLabel="Synchroniser avec Suivi des mouvements"
                   syncChecked={chartSyncsWithMovements}
                   onSyncChange={handleChartSyncChange}
+                  fullYearsMode={dateRangeSliderFullYears}
+                  onFullYearsModeChange={handleDateRangeSliderFullYearsChange}
                 />
               </div>
             )}
@@ -1854,66 +2663,79 @@ const Dashboard: React.FC = () => {
           </div>
         ) : (
           <div className="flex items-center justify-center h-64 text-gray-500">
-            Aucune donnée (fichier {ACCOUNT_BALANCE_PROCESSED_DIR}/Account-Balance.csv ou account_balance.csv absent ou vide)
+            Aucune donnée (fichier {ACCOUNT_BALANCE_PROCESSED_DIR}/src_account_balance.csv ou account_balance.csv absent ou vide)
           </div>
         )}
         </>
+        </div>
         )}
-      </div>
+      </section>
 
       {/* Suivi des mouvements */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6">
-        <div
-          className="flex items-center justify-between gap-3 mb-3 cursor-pointer select-none"
-          onClick={() => setSectionExpanded('suiviMouvements', !sectionsExpanded.suiviMouvements)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSectionExpanded('suiviMouvements', !sectionsExpanded.suiviMouvements); } }}
-          aria-expanded={sectionsExpanded.suiviMouvements}
+      <section className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6">
+        <header
+          className={`bg-gradient-to-br from-slate-50 to-white ${
+            sectionsExpanded.suiviMouvements ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+          }`}
         >
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block transition-transform duration-200 text-gray-500"
-              style={{ transform: sectionsExpanded.suiviMouvements ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-              aria-hidden
+          <div className="flex items-stretch">
+            <button
+              type="button"
+              className="flex-1 min-w-0 px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
+              onClick={() => setSectionExpanded('suiviMouvements', !sectionsExpanded.suiviMouvements)}
+              aria-expanded={sectionsExpanded.suiviMouvements}
             >
-              ▼
-            </span>
-            <h2 className="text-lg font-semibold text-gray-800">
-              Suivi des mouvements
-            </h2>
+              <span
+                className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                  sectionsExpanded.suiviMouvements ? 'rotate-90' : ''
+                }`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                  Suivi des mouvements
+                </span>
+              </span>
+            </button>
+            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setMovementsFiltersOpen((o) => {
+                    const next = !o;
+                    saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsFiltersOpen, String(next));
+                    return next;
+                  });
+                }}
+                title="Paramètres"
+                className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
+                  movementsFiltersOpen
+                    ? 'bg-gray-200 border-gray-300 text-gray-800'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                }`}
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setMovementsFiltersOpen((o) => {
-              const next = !o;
-              saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsFiltersOpen, String(next));
-              return next;
-            }); }}
-            title="Paramètres"
-            className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
-              movementsFiltersOpen
-                ? 'bg-gray-200 border-gray-300 text-gray-800'
-                : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
-            }`}
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-              />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
-        </div>
+        </header>
         {sectionsExpanded.suiviMouvements && (
+        <div className="px-4 pb-4 pt-3">
         <>
         <div className="flex gap-4 items-stretch">
           {/* Panneau paramètres à gauche : pousse le contenu vers la droite */}
@@ -1978,6 +2800,67 @@ const Dashboard: React.FC = () => {
                       </span>
                     </div>
                   </div>
+                  {movementsMonthlySeriesLabels.length > 0 && (
+                    <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                        Afficher uniquement les labels cochés
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-800 cursor-pointer select-none mb-2">
+                        <input
+                          type="checkbox"
+                          checked={areAllMonthlySeriesChecked}
+                          onChange={(e) => {
+                            const isChecked = e.target.checked;
+                            setHiddenMonthlySeriesByLabel((prev) => {
+                              const next = { ...prev };
+                              movementsMonthlySeriesLabels.forEach((label) => {
+                                next[label] = !isChecked;
+                              });
+                              return next;
+                            });
+                          }}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>{areAllMonthlySeriesChecked ? 'Tout décocher' : 'Tout cocher'}</span>
+                      </label>
+                      <div className="flex-1 min-h-0 overflow-auto rounded border border-gray-200 bg-white p-2 space-y-1.5">
+                        {movementsMonthlySeriesLabels.map((label) => {
+                          const checked = !(hiddenMonthlySeriesByLabel[label] ?? false);
+                          const isSortieLabel = movementsMonthlySortieLabelSet.has(label);
+                          return (
+                            <label
+                              key={label}
+                              className="flex items-center gap-2 text-sm text-gray-800 cursor-pointer select-none"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const isChecked = e.target.checked;
+                                  setHiddenMonthlySeriesByLabel((prev) => {
+                                    const next = { ...prev };
+                                    next[label] = !isChecked;
+                                    return next;
+                                  });
+                                }}
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className="truncate" title={label}>
+                                {label}
+                              </span>
+                              <span
+                                className={`inline-block h-2 w-2 rounded-full shrink-0 ${
+                                  isSortieLabel ? 'bg-red-500' : 'bg-green-500'
+                                }`}
+                                aria-hidden
+                                title={isSortieLabel ? 'Type sortie' : 'Type entrée'}
+                              />
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1988,12 +2871,14 @@ const Dashboard: React.FC = () => {
             <DateRangeSlider
               minDate={minDate}
               maxDate={maxDate}
-              startDate={movementsSyncsWithChart ? sliderStartDate : movementsStartDate}
-              endDate={movementsSyncsWithChart ? sliderEndDate : movementsEndDate}
+              startDate={movementsSyncsWithChart ? chartSliderStartForUi : movementsStartDate}
+              endDate={movementsSyncsWithChart ? chartSliderEndForUi : movementsEndDate}
               onChange={handleMovementsDateRangeChange}
               syncLabel="Synchroniser avec Évolution des soldes"
               syncChecked={movementsSyncsWithChart}
               onSyncChange={handleMovementsSyncChange}
+              fullYearsMode={dateRangeSliderFullYears}
+              onFullYearsModeChange={handleDateRangeSliderFullYearsChange}
             />
           </div>
         )}
@@ -2014,6 +2899,7 @@ const Dashboard: React.FC = () => {
               <MovementsBalanceHorizontalBar
                 data={movementsMonthlyChartDataForMovements}
                 currency={movementsYAxisCurrency}
+                hiddenSeriesByLabel={hiddenMonthlySeriesByLabel}
               />
             </div>
           )}
@@ -2043,62 +2929,75 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         </>
+        </div>
         )}
-      </div>
+      </section>
 
       {/* Evolution comparée des mouvements */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6">
-        <div
-          className="flex items-center justify-between gap-3 mb-3 cursor-pointer select-none"
-          onClick={() => setSectionExpanded('evolutionComparee', !sectionsExpanded.evolutionComparee)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSectionExpanded('evolutionComparee', !sectionsExpanded.evolutionComparee); } }}
-          aria-expanded={sectionsExpanded.evolutionComparee}
+      <section className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6">
+        <header
+          className={`bg-gradient-to-br from-slate-50 to-white ${
+            sectionsExpanded.evolutionComparee ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+          }`}
         >
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block transition-transform duration-200 text-gray-500"
-              style={{ transform: sectionsExpanded.evolutionComparee ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-              aria-hidden
+          <div className="flex items-stretch">
+            <button
+              type="button"
+              className="flex-1 min-w-0 px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
+              onClick={() => setSectionExpanded('evolutionComparee', !sectionsExpanded.evolutionComparee)}
+              aria-expanded={sectionsExpanded.evolutionComparee}
             >
-              ▼
-            </span>
-            <h2 className="text-lg font-semibold text-gray-800">
-              Evolution comparée des mouvements
-            </h2>
+              <span
+                className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                  sectionsExpanded.evolutionComparee ? 'rotate-90' : ''
+                }`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                  Evolution comparée des mouvements
+                </span>
+              </span>
+            </button>
+            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setMovementsCompareFiltersOpen((o) => {
+                    const next = !o;
+                    saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareFiltersOpen, String(next));
+                    return next;
+                  });
+                }}
+                title="Paramètres"
+                className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
+                  movementsCompareFiltersOpen
+                    ? 'bg-gray-200 border-gray-300 text-gray-800'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                }`}
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setMovementsCompareFiltersOpen((o) => {
-              const next = !o;
-              saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareFiltersOpen, String(next));
-              return next;
-            }); }}
-            title="Paramètres"
-            className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
-              movementsCompareFiltersOpen
-                ? 'bg-gray-200 border-gray-300 text-gray-800'
-                : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
-            }`}
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-              />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
-        </div>
+        </header>
         {sectionsExpanded.evolutionComparee && (
+        <div className="px-4 pb-4 pt-3">
         <>
         <div className="flex gap-4 items-stretch">
           {movementsCompareFiltersOpen && (
@@ -2250,6 +3149,8 @@ const Dashboard: React.FC = () => {
                     startDate={movementsCompareStartDateA}
                     endDate={movementsCompareEndDateA}
                     onChange={handleMovementsCompareDateRangeChangeA}
+                    fullYearsMode={dateRangeSliderFullYears}
+                    onFullYearsModeChange={handleDateRangeSliderFullYearsChange}
                   />
                 </div>
               )}
@@ -2455,6 +3356,8 @@ const Dashboard: React.FC = () => {
                     startDate={movementsCompareStartDateB}
                     endDate={movementsCompareEndDateB}
                     onChange={handleMovementsCompareDateRangeChangeB}
+                    fullYearsMode={dateRangeSliderFullYears}
+                    onFullYearsModeChange={handleDateRangeSliderFullYearsChange}
                   />
                 </div>
               )}
@@ -2655,62 +3558,1076 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         </>
+        </div>
         )}
-      </div>
+      </section>
+
+      {/* Tableaux et filtres */}
+      <section className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6">
+        <header
+          className={`bg-gradient-to-br from-slate-50 to-white ${
+            sectionsExpanded.tableauxFiltres ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+          }`}
+        >
+          <div className="flex items-stretch">
+            <button
+              type="button"
+              className="flex-1 min-w-0 px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
+              onClick={() => setSectionExpanded('tableauxFiltres', !sectionsExpanded.tableauxFiltres)}
+              aria-expanded={sectionsExpanded.tableauxFiltres}
+            >
+              <span
+                className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                  sectionsExpanded.tableauxFiltres ? 'rotate-90' : ''
+                }`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                  Tableaux et filtres
+                </span>
+              </span>
+            </button>
+            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setTablesFiltersOpen((o) => {
+                    const next = !o;
+                    saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesFiltersOpen, String(next));
+                    return next;
+                  });
+                }}
+                title="Paramètres"
+                className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
+                  tablesFiltersOpen
+                    ? 'bg-gray-200 border-gray-300 text-gray-800'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                }`}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </header>
+        {sectionsExpanded.tableauxFiltres && (
+          <div className="px-4 pb-4 pt-3">
+          <>
+            <div className="flex gap-4 items-stretch">
+              {tablesFiltersOpen && (
+                <div className="flex-shrink-0 flex flex-col min-h-0 w-[220px]">
+                  <div className="flex-1 flex flex-col min-h-0 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setTablesFiltersOpen((o) => {
+                          const next = !o;
+                          saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesFiltersOpen, String(next));
+                          return next;
+                        })
+                      }
+                      className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
+                    >
+                      Paramètres
+                      <span className="text-gray-500">▼</span>
+                    </button>
+                    <div className="flex-1 min-h-0 flex flex-col p-3 gap-3 overflow-y-auto">
+                      <div className="flex-shrink-0">
+                        <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                          Devise d&apos;affichage
+                        </label>
+                        <select
+                          value={tablesYAxisCurrency}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setTablesYAxisCurrency(v);
+                            saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesYAxisCurrency, v);
+                          }}
+                          className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
+                        >
+                          {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                            <option key={value} value={value}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex-shrink-0">
+                        <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                          Hauteur max. tableau transactions
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={200}
+                            max={900}
+                            step={10}
+                            value={tablesTransactionsMaxHeight}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              if (Number.isFinite(v)) {
+                                setTablesTransactionsMaxHeight(v);
+                                saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesTransactionsMaxHeight, String(v));
+                              }
+                            }}
+                            className="flex-1 h-2 rounded-lg appearance-none cursor-pointer bg-gray-200 accent-blue-600"
+                          />
+                          <span className="text-sm text-gray-700 tabular-nums w-10">{tablesTransactionsMaxHeight}px</span>
+                        </div>
+                      </div>
+                      <div className="flex-shrink-0 border-t border-gray-200 pt-2 space-y-2">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Synchronisation plage</span>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={tablesSyncsWithMovements}
+                            onChange={(e) => handleTablesMovementsSyncChange(e.target.checked)}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>Synchroniser avec Suivi des mouvements</span>
+                        </label>
+                      </div>
+                      <div className="flex-shrink-0 border-t border-gray-200 pt-2 space-y-2">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Mouvements</span>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={tablesShowEntrées}
+                            onChange={(e) => {
+                              const v = e.target.checked;
+                              setTablesShowEntrées(v);
+                              saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesShowEntrées, String(v));
+                            }}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>Entrées</span>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={tablesShowSorties}
+                            onChange={(e) => {
+                              const v = e.target.checked;
+                              setTablesShowSorties(v);
+                              saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesShowSorties, String(v));
+                            }}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>Sorties</span>
+                        </label>
+                      </div>
+                      {tablesDashboardData && (
+                        <>
+                          <div className="flex-shrink-0 border-t border-gray-200 pt-2">
+                            <div className="flex items-center justify-between gap-1 mb-1">
+                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Titres</label>
+                              <button
+                                type="button"
+                                className="text-xs text-blue-600 hover:underline flex-shrink-0"
+                                onClick={() => setTablesTitleExactQueries((prev) => [...prev, ''])}
+                              >
+                                + Ligne
+                              </button>
+                            </div>
+                            <div className="flex flex-col gap-1.5">
+                              {tablesTitleExactQueries.map((line, i) => {
+                                const sug = tablesTitleFilterSuggestionsList[i] ?? [];
+                                const listId = `${TABLES_FILTER_DL_TITLE_PREFIX}${i}`;
+                                return (
+                                  <div key={`title-line-${i}`} className="flex gap-1 items-start">
+                                    <input
+                                      type="text"
+                                      value={line}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        setTablesTitleExactQueries((prev) => {
+                                          const n = [...prev];
+                                          n[i] = v;
+                                          return n;
+                                        });
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key !== 'Tab' || e.shiftKey || sug.length === 0) return;
+                                        const first = sug[0].value;
+                                        const seg = tablesFilterSuggestPrefix(line);
+                                        if (seg.toLowerCase() !== first.toLowerCase()) {
+                                          e.preventDefault();
+                                          setTablesTitleExactQueries((prev) => {
+                                            const n = [...prev];
+                                            n[i] = applyTablesFilterSuggestionToLine(line, first);
+                                            return n;
+                                          });
+                                        }
+                                      }}
+                                      placeholder="Vide = ignoré · OU entre lignes (« + Ligne ») (contient)"
+                                      list={movementsColumns?.titleCol && sug.length > 0 ? listId : undefined}
+                                      className="min-w-0 flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800 placeholder:text-gray-400"
+                                      autoComplete="off"
+                                    />
+                                    {tablesTitleExactQueries.length > 1 && (
+                                      <button
+                                        type="button"
+                                        className="flex-shrink-0 px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-200"
+                                        title="Retirer cette ligne"
+                                        onClick={() =>
+                                          setTablesTitleExactQueries((prev) => prev.filter((_, j) => j !== i))
+                                        }
+                                      >
+                                        ×
+                                      </button>
+                                    )}
+                                    {movementsColumns?.titleCol && sug.length > 0 && (
+                                      <datalist id={listId}>
+                                        {sug.map((s) => (
+                                          <option key={`${listId}-${s.value}-${s.count}`} value={s.value} />
+                                        ))}
+                                      </datalist>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="flex-shrink-0 border-t border-gray-200 pt-2">
+                            <div className="flex items-center justify-between gap-1 mb-1">
+                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Types</label>
+                              <button
+                                type="button"
+                                className="text-xs text-blue-600 hover:underline flex-shrink-0"
+                                onClick={() => setTablesTypeExactQueries((prev) => [...prev, ''])}
+                              >
+                                + Ligne
+                              </button>
+                            </div>
+                            <div className="flex flex-col gap-1.5">
+                              {tablesTypeExactQueries.map((line, i) => {
+                                const sug = tablesTypeFilterSuggestionsList[i] ?? [];
+                                const listId = `${TABLES_FILTER_DL_TYPE_PREFIX}${i}`;
+                                return (
+                                  <div key={`type-line-${i}`} className="flex gap-1 items-start">
+                                    <input
+                                      type="text"
+                                      value={line}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        setTablesTypeExactQueries((prev) => {
+                                          const n = [...prev];
+                                          n[i] = v;
+                                          return n;
+                                        });
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key !== 'Tab' || e.shiftKey || sug.length === 0) return;
+                                        const first = sug[0].value;
+                                        const seg = tablesFilterSuggestPrefix(line);
+                                        if (seg.toLowerCase() !== first.toLowerCase()) {
+                                          e.preventDefault();
+                                          setTablesTypeExactQueries((prev) => {
+                                            const n = [...prev];
+                                            n[i] = applyTablesFilterSuggestionToLine(line, first);
+                                            return n;
+                                          });
+                                        }
+                                      }}
+                                      placeholder="Vide = ignoré · OU entre lignes (« + Ligne ») (contient)"
+                                      list={movementsColumns?.typeCol && sug.length > 0 ? listId : undefined}
+                                      className="min-w-0 flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800 placeholder:text-gray-400"
+                                      autoComplete="off"
+                                    />
+                                    {tablesTypeExactQueries.length > 1 && (
+                                      <button
+                                        type="button"
+                                        className="flex-shrink-0 px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-200"
+                                        title="Retirer cette ligne"
+                                        onClick={() =>
+                                          setTablesTypeExactQueries((prev) => prev.filter((_, j) => j !== i))
+                                        }
+                                      >
+                                        ×
+                                      </button>
+                                    )}
+                                    {movementsColumns?.typeCol && sug.length > 0 && (
+                                      <datalist id={listId}>
+                                        {sug.map((s) => (
+                                          <option key={`${listId}-${s.value}-${s.count}`} value={s.value} />
+                                        ))}
+                                      </datalist>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="flex-shrink-0 border-t border-gray-200 pt-2">
+                            <div className="flex items-center justify-between gap-1 mb-1">
+                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Comptes</label>
+                              <button
+                                type="button"
+                                className="text-xs text-blue-600 hover:underline flex-shrink-0"
+                                onClick={() => setTablesAccountExactQueries((prev) => [...prev, ''])}
+                              >
+                                + Ligne
+                              </button>
+                            </div>
+                            <div className="flex flex-col gap-1.5">
+                              {tablesAccountExactQueries.map((line, i) => {
+                                const sug = tablesAccountFilterSuggestionsList[i] ?? [];
+                                const listId = `${TABLES_FILTER_DL_ACCOUNT_PREFIX}${i}`;
+                                return (
+                                  <div key={`acc-line-${i}`} className="flex gap-1 items-start">
+                                    <input
+                                      type="text"
+                                      value={line}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        setTablesAccountExactQueries((prev) => {
+                                          const n = [...prev];
+                                          n[i] = v;
+                                          return n;
+                                        });
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key !== 'Tab' || e.shiftKey || sug.length === 0) return;
+                                        const first = sug[0].value;
+                                        const seg = tablesFilterSuggestPrefix(line);
+                                        if (seg.toLowerCase() !== first.toLowerCase()) {
+                                          e.preventDefault();
+                                          setTablesAccountExactQueries((prev) => {
+                                            const n = [...prev];
+                                            n[i] = applyTablesFilterSuggestionToLine(line, first);
+                                            return n;
+                                          });
+                                        }
+                                      }}
+                                      placeholder="Vide = ignoré · OU entre lignes (« + Ligne ») (contient)"
+                                      list={movementsColumns?.accountCol && sug.length > 0 ? listId : undefined}
+                                      className="min-w-0 flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800 placeholder:text-gray-400"
+                                      autoComplete="off"
+                                    />
+                                    {tablesAccountExactQueries.length > 1 && (
+                                      <button
+                                        type="button"
+                                        className="flex-shrink-0 px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-200"
+                                        title="Retirer cette ligne"
+                                        onClick={() =>
+                                          setTablesAccountExactQueries((prev) => prev.filter((_, j) => j !== i))
+                                        }
+                                      >
+                                        ×
+                                      </button>
+                                    )}
+                                    {movementsColumns?.accountCol && sug.length > 0 && (
+                                      <datalist id={listId}>
+                                        {sug.map((s) => (
+                                          <option key={`${listId}-${s.value}-${s.count}`} value={s.value} />
+                                        ))}
+                                      </datalist>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="flex-1 min-w-0 flex flex-col">
+                {hasChartData && dates.length > 0 && (
+                  <div className="w-full mb-4">
+                    <DateRangeSlider
+                      minDate={minDate}
+                      maxDate={maxDate}
+                      startDate={
+                        tablesSyncsWithChart
+                          ? chartSliderStartForUi
+                          : tablesSyncsWithMovements
+                            ? movementsStartDate
+                            : tablesSliderStartDate
+                      }
+                      endDate={
+                        tablesSyncsWithChart
+                          ? chartSliderEndForUi
+                          : tablesSyncsWithMovements
+                            ? movementsEndDate
+                            : tablesSliderEndDate
+                      }
+                      onChange={handleTablesDateRangeChange}
+                      syncLabel="Synchroniser avec Évolution des soldes"
+                      syncChecked={tablesSyncsWithChart}
+                      onSyncChange={handleTablesChartSyncChange}
+                      fullYearsMode={dateRangeSliderFullYears}
+                      onFullYearsModeChange={handleDateRangeSliderFullYearsChange}
+                    />
+                  </div>
+                )}
+                {movementsDataLoading && <div className="py-6 text-center text-gray-500">Chargement…</div>}
+                {!movementsDataLoading && movementsDataError && (
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3">{movementsDataError}</div>
+                )}
+                {!movementsDataLoading && !movementsDataError && tablesDashboardData && (
+                  <div className="flex flex-col gap-6">
+                    <div
+                      className="w-full rounded-lg border border-gray-200 overflow-hidden flex flex-col"
+                      style={{ maxHeight: tablesTransactionsMaxHeight }}
+                    >
+                      <div className="flex-1 min-h-0 overflow-auto">
+                        <table className="w-full text-sm">
+                          <thead className="bg-gray-100 sticky top-0 z-10">
+                            <tr className="text-left text-xs font-medium text-gray-600 uppercase tracking-wide">
+                              <th
+                                className="px-2 py-2 border-b border-gray-200 w-10 text-center align-middle"
+                                scope="col"
+                              >
+                                <input
+                                  ref={tablesBlocTxTableHeaderCheckboxRef}
+                                  type="checkbox"
+                                  checked={
+                                    tablesBlocSortedTxRows.length > 0 &&
+                                    tablesBlocSortedTxRows.every((r) => tablesBlocSelectedRowKeys.has(r.rowKey))
+                                  }
+                                  onChange={toggleTablesBlocSelectAllVisible}
+                                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                  title="Tout sélectionner ou tout désélectionner"
+                                  aria-label="Sélectionner ou désélectionner toutes les transactions affichées"
+                                />
+                              </th>
+                              <th
+                                className="px-3 py-2 border-b border-gray-200 w-14 tabular-nums"
+                                aria-sort={dashboardTablesBlocAriaSort(tablesBlocTxSort.col, 'index', tablesBlocTxSort.dir)}
+                              >
+                                <button
+                                  type="button"
+                                  title="Trier par index"
+                                  onClick={() =>
+                                    setTablesBlocTxSort((prev) =>
+                                      prev.col === 'index'
+                                        ? { col: 'index', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                        : { col: 'index', dir: 'asc' }
+                                    )
+                                  }
+                                  className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
+                                >
+                                  Index
+                                  {tablesBlocTxSort.col === 'index' && (
+                                    <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                      {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
+                                    </span>
+                                  )}
+                                </button>
+                              </th>
+                              <th
+                                className="px-3 py-2 border-b border-gray-200"
+                                aria-sort={dashboardTablesBlocAriaSort(tablesBlocTxSort.col, 'date', tablesBlocTxSort.dir)}
+                              >
+                                <button
+                                  type="button"
+                                  title="Trier par date"
+                                  onClick={() =>
+                                    setTablesBlocTxSort((prev) =>
+                                      prev.col === 'date'
+                                        ? { col: 'date', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                        : { col: 'date', dir: 'desc' }
+                                    )
+                                  }
+                                  className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
+                                >
+                                  Date
+                                  {tablesBlocTxSort.col === 'date' && (
+                                    <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                      {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
+                                    </span>
+                                  )}
+                                </button>
+                              </th>
+                              <th
+                                className="px-3 py-2 border-b border-gray-200"
+                                aria-sort={dashboardTablesBlocAriaSort(tablesBlocTxSort.col, 'title', tablesBlocTxSort.dir)}
+                              >
+                                <button
+                                  type="button"
+                                  title="Trier par titre"
+                                  onClick={() =>
+                                    setTablesBlocTxSort((prev) =>
+                                      prev.col === 'title'
+                                        ? { col: 'title', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                        : { col: 'title', dir: 'asc' }
+                                    )
+                                  }
+                                  className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
+                                >
+                                  Titre
+                                  {tablesBlocTxSort.col === 'title' && (
+                                    <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                      {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
+                                    </span>
+                                  )}
+                                </button>
+                              </th>
+                              <th
+                                className="px-3 py-2 border-b border-gray-200"
+                                aria-sort={dashboardTablesBlocAriaSort(tablesBlocTxSort.col, 'type', tablesBlocTxSort.dir)}
+                              >
+                                <button
+                                  type="button"
+                                  title="Trier par type"
+                                  onClick={() =>
+                                    setTablesBlocTxSort((prev) =>
+                                      prev.col === 'type'
+                                        ? { col: 'type', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                        : { col: 'type', dir: 'asc' }
+                                    )
+                                  }
+                                  className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
+                                >
+                                  Type
+                                  {tablesBlocTxSort.col === 'type' && (
+                                    <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                      {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
+                                    </span>
+                                  )}
+                                </button>
+                              </th>
+                              <th
+                                className="px-3 py-2 border-b border-gray-200"
+                                aria-sort={dashboardTablesBlocAriaSort(tablesBlocTxSort.col, 'account', tablesBlocTxSort.dir)}
+                              >
+                                <button
+                                  type="button"
+                                  title="Trier par compte"
+                                  onClick={() =>
+                                    setTablesBlocTxSort((prev) =>
+                                      prev.col === 'account'
+                                        ? { col: 'account', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                        : { col: 'account', dir: 'asc' }
+                                    )
+                                  }
+                                  className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
+                                >
+                                  Compte
+                                  {tablesBlocTxSort.col === 'account' && (
+                                    <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                      {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
+                                    </span>
+                                  )}
+                                </button>
+                              </th>
+                              <th
+                                className="px-3 py-2 border-b border-gray-200 text-right"
+                                aria-sort={dashboardTablesBlocAriaSort(tablesBlocTxSort.col, 'amount', tablesBlocTxSort.dir)}
+                              >
+                                <button
+                                  type="button"
+                                  title="Trier par montant"
+                                  onClick={() =>
+                                    setTablesBlocTxSort((prev) =>
+                                      prev.col === 'amount'
+                                        ? { col: 'amount', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                        : { col: 'amount', dir: 'desc' }
+                                    )
+                                  }
+                                  className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
+                                >
+                                  Montant
+                                  {tablesBlocTxSort.col === 'amount' && (
+                                    <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                      {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
+                                    </span>
+                                  )}
+                                </button>
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tablesBlocSortedTxRows.map((row) => {
+                              const disp = convertMovementsToDisplayCurrency(row.amountGbp, tablesYAxisCurrency as CurrencySymbol);
+                              const absDisp = Math.abs(disp);
+                              return (
+                                <tr
+                                  key={row.rowKey}
+                                  className="border-b border-gray-100 hover:bg-gray-50/80"
+                                >
+                                  <td className="px-2 py-2 text-center align-middle">
+                                    <input
+                                      type="checkbox"
+                                      checked={tablesBlocSelectedRowKeys.has(row.rowKey)}
+                                      onChange={() => toggleTablesBlocRowSelected(row.rowKey)}
+                                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                      aria-label={`Inclure la transaction ${row.txIndex} dans les totaux par type et compte`}
+                                    />
+                                  </td>
+                                  <td className="px-3 py-2 text-gray-700 whitespace-nowrap tabular-nums w-14">
+                                    {row.txIndex}
+                                  </td>
+                                  <td className="px-3 py-2 text-gray-800 whitespace-nowrap">{row.dateLabel}</td>
+                                  <td className="px-3 py-2 text-gray-800 max-w-[140px] truncate" title={row.title}>
+                                    {row.title}
+                                  </td>
+                                  <td className="px-3 py-2 text-gray-700 max-w-[120px] truncate" title={row.typeLabel}>
+                                    {row.typeLabel}
+                                  </td>
+                                  <td className="px-3 py-2 text-gray-700 max-w-[120px] truncate" title={row.accountLabel}>
+                                    {row.accountLabel}
+                                  </td>
+                                  <td
+                                    className={`px-3 py-2 text-right tabular-nums font-medium ${
+                                      row.sens === 'entrée' ? 'text-green-700' : 'text-red-700'
+                                    }`}
+                                  >
+                                    {row.sens === 'entrée' ? '+' : '−'}
+                                    {formatCurrency(absDisp, tablesYAxisCurrency)}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div
+                        className="flex-shrink-0 border-t border-gray-200 bg-gray-100 px-3 py-2 text-xs text-gray-600 tabular-nums"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {tablesBlocSortedTxRows.length === 1
+                          ? '1 transaction affichée'
+                          : `${tablesBlocSortedTxRows.length} transactions affichées`}
+                        {tablesBlocSelectedRowKeys.size > 0 && (
+                          <span className="block sm:inline sm:ml-2 mt-1 sm:mt-0 text-gray-600">
+                            · Totaux type / compte : {tablesBlocSelectedRowKeys.size}{' '}
+                            {tablesBlocSelectedRowKeys.size > 1 ? 'lignes sélectionnées' : 'ligne sélectionnée'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {tablesDashboardData.rows.length === 0 && (
+                      <p className="text-sm text-gray-500 text-center py-4">Aucune transaction pour les filtres sélectionnés.</p>
+                    )}
+                    <div className="flex flex-col xl:flex-row gap-4 w-full items-stretch">
+                      <div className="min-w-0 shrink xl:flex-[1] xl:basis-0 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+                        <div className="px-2 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-800 flex-shrink-0">
+                          Types — entrées
+                        </div>
+                        <div className="overflow-x-auto min-h-0">
+                          <table className="w-full text-sm table-fixed">
+                            <thead>
+                              <tr className="text-left text-xs font-medium text-gray-600 uppercase tracking-wide border-b border-gray-200 bg-white">
+                                <th
+                                  className="px-2 py-1.5 w-[58%]"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocTypeInSort.col, 'type', tablesBlocTypeInSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par type"
+                                    onClick={() =>
+                                      setTablesBlocTypeInSort((prev) =>
+                                        prev.col === 'type'
+                                          ? { col: 'type', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'type', dir: 'asc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full min-w-0 items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    <span className="truncate">Type</span>
+                                    {tablesBlocTypeInSort.col === 'type' && (
+                                      <span className="flex-shrink-0 font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocTypeInSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                                <th
+                                  className="px-2 py-1.5 text-right"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocTypeInSort.col, 'entrées', tablesBlocTypeInSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par montant des entrées"
+                                    onClick={() =>
+                                      setTablesBlocTypeInSort((prev) =>
+                                        prev.col === 'entrées'
+                                          ? { col: 'entrées', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'entrées', dir: 'desc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    Entrées
+                                    {tablesBlocTypeInSort.col === 'entrées' && (
+                                      <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocTypeInSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tablesBlocSortedTypeEntrées.map((r) => (
+                                <tr key={`ste-${r.type}`} className="border-b border-gray-100">
+                                  <td className="px-2 py-1.5 text-gray-800 truncate max-w-0" title={r.type}>
+                                    {r.type}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums text-green-700 font-medium whitespace-nowrap">
+                                    +
+                                    {formatCurrency(
+                                      convertMovementsToDisplayCurrency(r.entrées, tablesYAxisCurrency as CurrencySymbol),
+                                      tablesYAxisCurrency
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                      <div className="min-w-0 shrink xl:flex-[1] xl:basis-0 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+                        <div className="px-2 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-800 flex-shrink-0">
+                          Types — sorties
+                        </div>
+                        <div className="overflow-x-auto min-h-0">
+                          <table className="w-full text-sm table-fixed">
+                            <thead>
+                              <tr className="text-left text-xs font-medium text-gray-600 uppercase tracking-wide border-b border-gray-200 bg-white">
+                                <th
+                                  className="px-2 py-1.5 w-[58%]"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocTypeOutSort.col, 'type', tablesBlocTypeOutSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par type"
+                                    onClick={() =>
+                                      setTablesBlocTypeOutSort((prev) =>
+                                        prev.col === 'type'
+                                          ? { col: 'type', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'type', dir: 'asc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full min-w-0 items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    <span className="truncate">Type</span>
+                                    {tablesBlocTypeOutSort.col === 'type' && (
+                                      <span className="flex-shrink-0 font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocTypeOutSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                                <th
+                                  className="px-2 py-1.5 text-right"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocTypeOutSort.col, 'sorties', tablesBlocTypeOutSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par montant des sorties"
+                                    onClick={() =>
+                                      setTablesBlocTypeOutSort((prev) =>
+                                        prev.col === 'sorties'
+                                          ? { col: 'sorties', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'sorties', dir: 'desc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    Sorties
+                                    {tablesBlocTypeOutSort.col === 'sorties' && (
+                                      <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocTypeOutSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tablesBlocSortedTypeSorties.map((r) => (
+                                <tr key={`sts-${r.type}`} className="border-b border-gray-100">
+                                  <td className="px-2 py-1.5 text-gray-800 truncate max-w-0" title={r.type}>
+                                    {r.type}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums text-red-700 font-medium whitespace-nowrap">
+                                    −
+                                    {formatCurrency(
+                                      convertMovementsToDisplayCurrency(r.sorties, tablesYAxisCurrency as CurrencySymbol),
+                                      tablesYAxisCurrency
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                      <div className="min-w-0 shrink xl:flex-[2.5] xl:basis-0 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+                        <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-800 flex-shrink-0">
+                          Synthèse par compte
+                        </div>
+                        <div className="overflow-x-auto min-h-0">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-xs font-medium text-gray-600 uppercase tracking-wide border-b border-gray-200 bg-white">
+                                <th
+                                  className="px-3 py-2"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocAccountSort.col, 'account', tablesBlocAccountSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par compte"
+                                    onClick={() =>
+                                      setTablesBlocAccountSort((prev) =>
+                                        prev.col === 'account'
+                                          ? { col: 'account', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'account', dir: 'asc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    Compte
+                                    {tablesBlocAccountSort.col === 'account' && (
+                                      <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                                <th
+                                  className="px-3 py-2 text-right"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocAccountSort.col, 'entrées', tablesBlocAccountSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par entrées"
+                                    onClick={() =>
+                                      setTablesBlocAccountSort((prev) =>
+                                        prev.col === 'entrées'
+                                          ? { col: 'entrées', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'entrées', dir: 'desc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    Entrées
+                                    {tablesBlocAccountSort.col === 'entrées' && (
+                                      <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                                <th
+                                  className="px-3 py-2 text-right"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocAccountSort.col, 'sorties', tablesBlocAccountSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par sorties"
+                                    onClick={() =>
+                                      setTablesBlocAccountSort((prev) =>
+                                        prev.col === 'sorties'
+                                          ? { col: 'sorties', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'sorties', dir: 'desc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    Sorties
+                                    {tablesBlocAccountSort.col === 'sorties' && (
+                                      <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                                <th
+                                  className="px-3 py-2 text-right"
+                                  aria-sort={dashboardTablesBlocAriaSort(tablesBlocAccountSort.col, 'balance', tablesBlocAccountSort.dir)}
+                                >
+                                  <button
+                                    type="button"
+                                    title="Trier par balance"
+                                    onClick={() =>
+                                      setTablesBlocAccountSort((prev) =>
+                                        prev.col === 'balance'
+                                          ? { col: 'balance', dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                          : { col: 'balance', dir: 'desc' }
+                                      )
+                                    }
+                                    className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
+                                  >
+                                    Balance
+                                    {tablesBlocAccountSort.col === 'balance' && (
+                                      <span className="font-normal tabular-nums text-gray-500" aria-hidden>
+                                        {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
+                                      </span>
+                                    )}
+                                  </button>
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tablesBlocSortedSummaryByAccount.map((r) => (
+                                <tr key={`sa-${r.account}`} className="border-b border-gray-100">
+                                  <td className="px-3 py-2 text-gray-800">{r.account}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums text-green-700">
+                                    {r.entrées > 0
+                                      ? `+${formatCurrency(convertMovementsToDisplayCurrency(r.entrées, tablesYAxisCurrency as CurrencySymbol), tablesYAxisCurrency)}`
+                                      : '–'}
+                                  </td>
+                                  <td className="px-3 py-2 text-right tabular-nums text-red-700">
+                                    {r.sorties > 0
+                                      ? `−${formatCurrency(convertMovementsToDisplayCurrency(r.sorties, tablesYAxisCurrency as CurrencySymbol), tablesYAxisCurrency)}`
+                                      : '–'}
+                                  </td>
+                                  <td
+                                    className={`px-3 py-2 text-right tabular-nums font-medium ${
+                                      r.balance >= 0 ? 'text-green-700' : 'text-red-700'
+                                    }`}
+                                  >
+                                    {r.balance >= 0 ? '+' : '−'}
+                                    {formatCurrency(
+                                      Math.abs(convertMovementsToDisplayCurrency(r.balance, tablesYAxisCurrency as CurrencySymbol)),
+                                      tablesYAxisCurrency
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 flex flex-col gap-2">
+                      {tablesBlocSelectedRowKeys.size > 0 && (
+                        <p className="text-xs text-gray-600">
+                          Les montants ci-dessous ne comptent que les lignes cochées dans le tableau.
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-6 justify-between items-center">
+                      <div className="text-sm">
+                        <span className="text-gray-600">Total entrées : </span>
+                        <span className="font-semibold text-green-700 tabular-nums">
+                          +
+                          {formatCurrency(
+                            convertMovementsToDisplayCurrency(tablesDashboardData.totalEntrées, tablesYAxisCurrency as CurrencySymbol),
+                            tablesYAxisCurrency
+                          )}
+                        </span>
+                      </div>
+                      <div className="text-sm">
+                        <span className="text-gray-600">Total sorties : </span>
+                        <span className="font-semibold text-red-700 tabular-nums">
+                          −
+                          {formatCurrency(
+                            convertMovementsToDisplayCurrency(tablesDashboardData.totalSorties, tablesYAxisCurrency as CurrencySymbol),
+                            tablesYAxisCurrency
+                          )}
+                        </span>
+                      </div>
+                      <div className="text-sm">
+                        <span className="text-gray-600">Balance : </span>
+                        <span
+                          className={`font-semibold tabular-nums ${
+                            tablesDashboardData.balance >= 0 ? 'text-green-700' : 'text-red-700'
+                          }`}
+                        >
+                          {tablesDashboardData.balance >= 0 ? '+' : '−'}
+                          {formatCurrency(
+                            Math.abs(convertMovementsToDisplayCurrency(tablesDashboardData.balance, tablesYAxisCurrency as CurrencySymbol)),
+                            tablesYAxisCurrency
+                          )}
+                        </span>
+                      </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {!movementsDataLoading && !movementsDataError && sourceData && !tablesDashboardData && (
+                  <div className="py-4 text-center text-gray-500 text-sm">
+                    Données source sans colonne Date ou AMOUNT GBP, ou plage vide.
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        </div>
+        )}
+      </section>
 
       {/* Suivi annuel */}
-      <div className="bg-white rounded-lg shadow p-4 mb-6">
-        <div
-          className="flex items-center justify-between gap-3 mb-3 cursor-pointer select-none"
-          onClick={() => setSectionExpanded('vueGlobale', !sectionsExpanded.vueGlobale)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSectionExpanded('vueGlobale', !sectionsExpanded.vueGlobale); } }}
-          aria-expanded={sectionsExpanded.vueGlobale}
+      <section className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6">
+        <header
+          className={`bg-gradient-to-br from-slate-50 to-white ${
+            sectionsExpanded.vueGlobale ? 'border-b-2 border-gray-200' : 'rounded-b-xl border-b-0'
+          }`}
         >
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block transition-transform duration-200 text-gray-500"
-              style={{ transform: sectionsExpanded.vueGlobale ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-              aria-hidden
+          <div className="flex items-stretch">
+            <button
+              type="button"
+              className="flex-1 min-w-0 px-4 py-3 sm:py-4 text-left flex items-start gap-3 hover:bg-slate-50/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-none"
+              onClick={() => setSectionExpanded('vueGlobale', !sectionsExpanded.vueGlobale)}
+              aria-expanded={sectionsExpanded.vueGlobale}
             >
-              ▼
-            </span>
-            <h2 className="text-lg font-semibold text-gray-800">
-              Suivi annuel
-            </h2>
+              <span
+                className={`mt-1.5 shrink-0 text-gray-500 text-sm leading-none transition-transform duration-200 ${
+                  sectionsExpanded.vueGlobale ? 'rotate-90' : ''
+                }`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
+                  Suivi annuel
+                </span>
+              </span>
+            </button>
+            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setVueGlobaleFiltersOpen((o) => {
+                    const next = !o;
+                    saveDashboardPref(DASHBOARD_STORAGE_KEYS.vueGlobaleFiltersOpen, String(next));
+                    return next;
+                  });
+                }}
+                title="Paramètres"
+                className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
+                  vueGlobaleFiltersOpen
+                    ? 'bg-gray-200 border-gray-300 text-gray-800'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                }`}
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setVueGlobaleFiltersOpen((o) => {
-              const next = !o;
-              saveDashboardPref(DASHBOARD_STORAGE_KEYS.vueGlobaleFiltersOpen, String(next));
-              return next;
-            }); }}
-            title="Paramètres"
-            className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
-              vueGlobaleFiltersOpen
-                ? 'bg-gray-200 border-gray-300 text-gray-800'
-                : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
-            }`}
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-              />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
-        </div>
+        </header>
         {sectionsExpanded.vueGlobale && (
+        <div className="px-4 pb-4 pt-3">
         <>
         <div className="flex gap-4 items-stretch">
           {vueGlobaleFiltersOpen && (
@@ -2775,6 +4692,77 @@ const Dashboard: React.FC = () => {
                                 className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                               />
                               <span className="text-sm text-gray-700">{year}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {yearlySummarySeriesLabels.length > 0 && (
+                    <div className="flex-shrink-0 flex flex-col">
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                        Afficher uniquement les labels cochés
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-800 cursor-pointer select-none mb-2">
+                        <input
+                          type="checkbox"
+                          checked={areAllYearlySummarySeriesChecked}
+                          onChange={(e) => {
+                            const isChecked = e.target.checked;
+                            setVueGlobaleHiddenSeriesByLabel((prev) => {
+                              const next = { ...prev };
+                              yearlySummarySeriesLabels.forEach((label) => {
+                                next[label] = !isChecked;
+                              });
+                              saveDashboardPref(
+                                DASHBOARD_STORAGE_KEYS.vueGlobaleHiddenSeriesByLabel,
+                                JSON.stringify(next)
+                              );
+                              return next;
+                            });
+                          }}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>{areAllYearlySummarySeriesChecked ? 'Tout décocher' : 'Tout cocher'}</span>
+                      </label>
+                      <div className="max-h-40 overflow-y-auto rounded border border-gray-200 bg-white p-2 space-y-1.5">
+                        {yearlySummarySeriesLabels.map((label) => {
+                          const checked = !(vueGlobaleHiddenSeriesByLabel[label] ?? false);
+                          const isSortieLabel = yearlySummarySortieLabelSet.has(label);
+                          const isBalance = label === 'Balance';
+                          return (
+                            <label
+                              key={label}
+                              className="flex items-center gap-2 text-sm text-gray-800 cursor-pointer select-none"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const isCh = e.target.checked;
+                                  setVueGlobaleHiddenSeriesByLabel((prev) => {
+                                    const next = { ...prev, [label]: !isCh };
+                                    saveDashboardPref(
+                                      DASHBOARD_STORAGE_KEYS.vueGlobaleHiddenSeriesByLabel,
+                                      JSON.stringify(next)
+                                    );
+                                    return next;
+                                  });
+                                }}
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className="truncate" title={label}>
+                                {label}
+                              </span>
+                              <span
+                                className={`inline-block h-2 w-2 rounded-full shrink-0 ${
+                                  isBalance ? 'bg-gray-600 dark:bg-gray-400' : isSortieLabel ? 'bg-red-500' : 'bg-green-500'
+                                }`}
+                                aria-hidden
+                                title={
+                                  isBalance ? 'Balance' : isSortieLabel ? 'Type sortie' : 'Type entrée'
+                                }
+                              />
                             </label>
                           );
                         })}
@@ -3159,14 +5147,16 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         </>
+        </div>
         )}
-      </div>
+      </section>
 
       <div className="flex-1 flex flex-col items-center justify-center text-gray-600">
-        <p>Contenu du dashboard à compléter.</p>
+        <p>
+          Chamaccounts 2026 – Logiciel de comptabilité pour indépendants.
+        </p>
       </div>
     </main>
-    </div>
   );
 };
 

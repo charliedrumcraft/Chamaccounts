@@ -1,5 +1,5 @@
 /**
- * Devise par code de compte (cohérent avec Account-Balance.csv : £ GBP, € EUR, CHF).
+ * Devise par code de compte (cohérent avec src_account_balance.csv : £ GBP, € EUR, CHF).
  */
 export const ACCOUNT_CURRENCY: Record<string, string> = {
   HSBC_SAVINGS: '£',

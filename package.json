@@ -1,7 +1,7 @@
 {
   "name": "chamaccounts",
   "version": "1.0.0",
-  "description": "Application dérivée, réutilisant des modules de Comptal2",
+  "description": "Comptabilité multi-plateforme : transactions, soldes, budget et import CSV (dérivé de Comptal2)",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "node -e \"delete process.env.ELECTRON_RUN_AS_NODE;require('child_process').spawnSync('npx',['vite'],{stdio:'inherit',env:{...process.env}})\"",
@@ -9,7 +9,12 @@
     "build": "npm run electron:build && electron-builder",
     "build:win": "npm run electron:build && electron-builder --win",
     "build:mac": "npm run electron:build && (if [ \"$(uname)\" = \"Darwin\" ]; then electron-builder --mac; else echo 'Build Mac impossible depuis Linux.'; exit 1; fi)",
+    "release:notes": "node scripts/generate-release-notes.mjs",
+    "release:mac": "npm run release:notes && npm run electron:build && electron-builder --mac --publish always",
+    "release:win": "npm run release:notes && npm run electron:build && electron-builder --win --publish always",
+    "release:linux": "npm run release:notes && npm run electron:build && electron-builder --linux --publish always",
     "build:linux": "npm run electron:build && electron-builder --linux",
+    "migrate:revolut-accounts": "node scripts/migrate-revolut-accounts.js",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5174 && cross-env VITE_DEV_SERVER_URL=http://localhost:5174 electron .\""
   },
@@ -20,9 +25,15 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/charliedrumcraft/Chamaccounts.git"
+  },
   "dependencies": {
+    "adm-zip": "^0.5.17",
     "chart.js": "^4.5.1",
     "date-fns": "^2.30.0",
+    "electron-updater": "^6.8.3",
     "nouislider": "^15.8.1",
     "papaparse": "^5.4.1",
     "react": "^18.2.0",
@@ -31,6 +42,7 @@
     "react-router-dom": "^6.20.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^20.10.5",
     "@types/nouislider": "^9.0.10",
     "@types/papaparse": "^5.3.14",
