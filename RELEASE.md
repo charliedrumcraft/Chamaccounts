@@ -1,3 +1,25 @@
+# Chamaccounts v1.0.1
+
+Release recommandée : dépôt open source **sans données personnelles**, installateurs construits à partir de **`data-template/`** (CSV vierges, en-têtes seuls).
+
+### Changements par rapport à v1.0.0
+- Suppression de l’historique Git contenant le dossier `data/` (données de dev)
+- Empaquetage release : uniquement `data-template/` copié en `data/` en CI
+- **Paramètres** : comptes, types d’entrées et de sorties vides par défaut (configuration utilisateur)
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.1-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.1-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.1-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.1-linux-x64.AppImage` |
+
+[Télécharger v1.0.1](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.1)
+
+---
+
 # Chamaccounts v1.0.0
 
 Première version publique de **Chamaccounts**, application de comptabilité multi-plateforme (Windows, macOS, Linux) pour le suivi des transactions, des soldes de comptes, de la comptabilité mensuelle et du budget annuel.

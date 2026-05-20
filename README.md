@@ -30,7 +30,7 @@ Les noms des artefacts suivent le modèle `Chamaccounts-{version}-{plateforme}-{
 
 ### Windows
 
-1. Téléchargez `Chamaccounts-1.0.0-win-x64.exe` (ou la version indiquée sur la release)
+1. Téléchargez `Chamaccounts-1.0.1-win-x64.exe` (ou la version indiquée sur la release)
 2. Double-cliquez sur l’installateur et suivez les instructions
 3. Lancez Chamaccounts depuis le menu Démarrer ou le raccourci bureau
 
@@ -38,16 +38,16 @@ Les noms des artefacts suivent le modèle `Chamaccounts-{version}-{plateforme}-{
 
 ### macOS
 
-- **Intel** : `Chamaccounts-1.0.0-mac-x64.dmg`
-- **Apple Silicon (M1/M2/M3/M4)** : `Chamaccounts-1.0.0-mac-arm64.dmg`
+- **Intel** : `Chamaccounts-1.0.1-mac-x64.dmg`
+- **Apple Silicon (M1/M2/M3/M4)** : `Chamaccounts-1.0.1-mac-arm64.dmg`
 
 Ouvrez le DMG, puis glissez Chamaccounts dans le dossier **Applications**. macOS 10.15 (Catalina) ou supérieur recommandé.
 
 ### Linux
 
-1. Téléchargez `Chamaccounts-1.0.0-linux-x64.AppImage`
-2. Rendez-le exécutable : `chmod +x Chamaccounts-1.0.0-linux-x64.AppImage`
-3. Lancez-le : `./Chamaccounts-1.0.0-linux-x64.AppImage` ou double-clic dans le gestionnaire de fichiers
+1. Téléchargez `Chamaccounts-1.0.1-linux-x64.AppImage`
+2. Rendez-le exécutable : `chmod +x Chamaccounts-1.0.1-linux-x64.AppImage`
+3. Lancez-le : `./Chamaccounts-1.0.1-linux-x64.AppImage` ou double-clic dans le gestionnaire de fichiers
 
 **Note :** sous Linux, les données utilisateur sont stockées dans le répertoire Electron (`~/.config/Chamaccounts` ou équivalent selon la distribution).
 
@@ -123,8 +123,8 @@ npm run build
 Les builds Mac, Windows et Linux sont déclenchés par un tag `v*` (workflow `.github/workflows/release.yml`). Exemple :
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 ## Structure du projet
