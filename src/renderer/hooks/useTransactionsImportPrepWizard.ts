@@ -22,6 +22,8 @@ import {
 } from '../services/mappingWizardService';
 import { detectAnomalies, EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
 import type { ValidRow } from '@/shared/transactionsImportCore';
+import { transactionsImportFile } from '@/shared/dataPaths';
+import { removeImportedRowsFromImportFolder } from '../services/importWizardRemoveFromDiskService';
 
 export type { ImportWizardResultField, PrepTableColDef };
 
@@ -56,6 +58,8 @@ export function useTransactionsImportPrepWizard(options: {
   const [diskImportFirstLineAsData, setDiskImportFirstLineAsData] = useState(false);
   /** Désactivé par défaut : affichage des données brutes sans mapping automatique. */
   const [mappingWizardActive, setMappingWizardActive] = useState(false);
+  /** Après import réussi : retirer les lignes importées des CSV du dossier Import. */
+  const [removeImportedFromImportFolder, setRemoveImportedFromImportFolder] = useState(false);
 
   const loadImportWizard = useCallback(async () => {
     const api = (
@@ -210,6 +214,15 @@ export function useTransactionsImportPrepWizard(options: {
     return map;
   },     [importWizardPreview, importWizardModel, importColumnMapping]);
 
+  const anomalousRowIds = useMemo(() => {
+    if (!mappingWizardActive || !importWizardPreview?.list.length) return [] as string[];
+    const ids: string[] = [];
+    for (const p of importWizardPreview.list) {
+      if (importPreviewRowStatusByRowId.get(p.row.id)?.hasAmberAside) ids.push(p.row.id);
+    }
+    return ids;
+  }, [mappingWizardActive, importWizardPreview, importPreviewRowStatusByRowId]);
+
   /** Lignes dérivées de l’aperçu mapping (suggestions fréquentielles pendant le wizard). */
   const importWizardSuggestionRows = useMemo((): Record<string, string>[] => {
     if (!mappingWizardActive || !importWizardPreview?.list.length) return [];
@@ -228,13 +241,36 @@ export function useTransactionsImportPrepWizard(options: {
 
   const importPrepIgnSkipHeader = useMemo(() => {
     const ids = importWizardRowIds;
-    if (ids.length === 0) return { allSkipped: false, someSkipped: false };
+    const total = ids.length;
+    if (total === 0) {
+      return { allSkipped: false, someSkipped: false, total: 0, skipped: 0, active: 0 };
+    }
     let skipped = 0;
     for (const id of ids) {
       if (importRowSkip.has(id)) skipped += 1;
     }
-    return { allSkipped: skipped === ids.length, someSkipped: skipped > 0 };
+    return {
+      allSkipped: skipped === total,
+      someSkipped: skipped > 0,
+      total,
+      skipped,
+      active: total - skipped,
+    };
   }, [importWizardRowIds, importRowSkip]);
+
+  const importPrepAnomalySkipHeader = useMemo(() => {
+    const count = anomalousRowIds.length;
+    if (count === 0) return { allSkipped: false, someSkipped: false, count: 0 };
+    let skipped = 0;
+    for (const id of anomalousRowIds) {
+      if (importRowSkip.has(id)) skipped += 1;
+    }
+    return {
+      allSkipped: skipped === count,
+      someSkipped: skipped > 0,
+      count,
+    };
+  }, [anomalousRowIds, importRowSkip]);
 
   const prepTableColDefs = useMemo(
     () =>
@@ -255,6 +291,7 @@ export function useTransactionsImportPrepWizard(options: {
   const prepStickyKey = visiblePrepColDefs[0]?.key;
 
   const prepIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
+  const prepAnomalyIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const el = prepIgnHeaderCheckboxRef.current;
@@ -262,6 +299,13 @@ export function useTransactionsImportPrepWizard(options: {
     el.indeterminate =
       importPrepIgnSkipHeader.someSkipped && !importPrepIgnSkipHeader.allSkipped;
   }, [importPrepIgnSkipHeader]);
+
+  useEffect(() => {
+    const el = prepAnomalyIgnHeaderCheckboxRef.current;
+    if (!el) return;
+    el.indeterminate =
+      importPrepAnomalySkipHeader.someSkipped && !importPrepAnomalySkipHeader.allSkipped;
+  }, [importPrepAnomalySkipHeader]);
 
   const toggleImportPrepSkipAll = useCallback(() => {
     setImportRowSkip((prev) => {
@@ -277,6 +321,20 @@ export function useTransactionsImportPrepWizard(options: {
       return next;
     });
   }, [importWizardModel?.rows]);
+
+  const toggleSkipAllAnomalous = useCallback(() => {
+    setImportRowSkip((prev) => {
+      if (anomalousRowIds.length === 0) return prev;
+      const all = anomalousRowIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (all) {
+        for (const id of anomalousRowIds) next.delete(id);
+      } else {
+        for (const id of anomalousRowIds) next.add(id);
+      }
+      return next;
+    });
+  }, [anomalousRowIds]);
 
   const updateImportColumnMappingUser = useCallback((colKey: string, value: string) => {
     setImportColumnMappingUser((prev) => {
@@ -416,6 +474,7 @@ export function useTransactionsImportPrepWizard(options: {
       return;
     }
     const toAppend: ValidRow[] = [];
+    const importedDiskRows: { id: string; sourceFile: string }[] = [];
     for (const p of importWizardPreview.list) {
       if (importRowSkip.has(p.row.id)) continue;
       if (!('valid' in p.processed)) continue;
@@ -431,6 +490,7 @@ export function useTransactionsImportPrepWizard(options: {
         }
       }
       toAppend.push(p.processed.valid);
+      importedDiskRows.push({ id: p.row.id, sourceFile: p.row.sourceFile });
     }
     if (toAppend.length === 0) {
       setImportWizardMessage(
@@ -443,10 +503,45 @@ export function useTransactionsImportPrepWizard(options: {
     try {
       const result = await api.appendForcedTransactionRows(toAppend);
       if (result.success) {
+        let diskMsg = '';
+        if (removeImportedFromImportFolder && importedDiskRows.length > 0) {
+          const fileApi = (window as unknown as {
+            electronAPI?: {
+              readFile: (p: string) => Promise<{ success: boolean; data?: string; error?: string }>;
+              writeFile: (p: string, c: string) => Promise<{ success: boolean; error?: string }>;
+              deleteFile: (p: string) => Promise<{ success: boolean; error?: string }>;
+            };
+          }).electronAPI;
+          if (fileApi?.readFile && fileApi?.writeFile && fileApi?.deleteFile) {
+            const diskResult = await removeImportedRowsFromImportFolder({
+              rows: importedDiskRows,
+              importFilePath: transactionsImportFile,
+              api: fileApi,
+            });
+            if (!diskResult.success) {
+              setImportWizardMessage(
+                `${result.appendedCount ?? toAppend.length} ligne(s) ajoutée(s) à src_transaction_data.csv, mais retrait du dossier Import impossible : ${diskResult.error ?? 'erreur inconnue'}.`
+              );
+              onAfterSuccessfulAppend?.();
+              setImportWizardReloadKey((k) => k + 1);
+              return;
+            }
+            if (diskResult.removedLineCount > 0) {
+              const parts: string[] = [];
+              if (diskResult.updatedFiles.length) {
+                parts.push(`${diskResult.updatedFiles.length} fichier(s) mis à jour`);
+              }
+              if (diskResult.deletedFiles.length) {
+                parts.push(`${diskResult.deletedFiles.length} fichier(s) supprimé(s) (vide)`);
+              }
+              diskMsg = ` ${diskResult.removedLineCount} ligne(s) retirée(s) du dossier Import${parts.length ? ` (${parts.join(', ')})` : ''}.`;
+            }
+          }
+        }
         onAfterSuccessfulAppend?.();
         setImportWizardReloadKey((k) => k + 1);
         setImportWizardMessage(
-          `${result.appendedCount ?? toAppend.length} ligne(s) ajoutée(s) à src_transaction_data.csv.`
+          `${result.appendedCount ?? toAppend.length} ligne(s) ajoutée(s) à src_transaction_data.csv.${diskMsg}`
         );
       } else {
         setImportWizardMessage(result.error ?? 'Erreur lors de l’import.');
@@ -454,7 +549,13 @@ export function useTransactionsImportPrepWizard(options: {
     } finally {
       setImportLinesLoading(false);
     }
-  }, [mappingWizardActive, importWizardPreview, importRowSkip, onAfterSuccessfulAppend]);
+  }, [
+    mappingWizardActive,
+    importWizardPreview,
+    importRowSkip,
+    onAfterSuccessfulAppend,
+    removeImportedFromImportFolder,
+  ]);
 
   const applyImportWizardClipboardPaste = useCallback(
     (raw: string, parseOptions?: ImportWizardParseOptions) => {
@@ -490,6 +591,8 @@ export function useTransactionsImportPrepWizard(options: {
     setDiskImportFirstLineAsData,
     mappingWizardActive,
     setMappingWizardActive,
+    removeImportedFromImportFolder,
+    setRemoveImportedFromImportFolder,
     importColumnMapping,
     importColumnMappingUser,
     updateImportColumnMappingUser,
@@ -507,11 +610,14 @@ export function useTransactionsImportPrepWizard(options: {
     importWizardSourceFileNames,
     importWizardRowIds,
     importPrepIgnSkipHeader,
+    importPrepAnomalySkipHeader,
     prepTableColDefs,
     visiblePrepColDefs,
     prepStickyKey,
     prepIgnHeaderCheckboxRef,
+    prepAnomalyIgnHeaderCheckboxRef,
     toggleImportPrepSkipAll,
+    toggleSkipAllAnomalous,
     updateWizardManualCell,
     updateMappedOutputCell,
     updateImportPrepCell,

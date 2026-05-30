@@ -44,10 +44,13 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
     updateRawCell,
     updateMappedCell,
     importPrepIgnSkipHeader,
+    importPrepAnomalySkipHeader,
     toggleImportPrepSkipAll,
+    toggleSkipAllAnomalous,
   } = props;
 
   const prepIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
+  const prepAnomalyIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
   const [clipboardDraft, setClipboardDraft] = useState('');
   const [pasteFirstLineAsData, setPasteFirstLineAsData] = useState(false);
 
@@ -65,6 +68,13 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
     if (!el) return;
     el.indeterminate = importPrepIgnSkipHeader.someSkipped && !importPrepIgnSkipHeader.allSkipped;
   }, [importPrepIgnSkipHeader]);
+
+  useEffect(() => {
+    const el = prepAnomalyIgnHeaderCheckboxRef.current;
+    if (!el) return;
+    el.indeterminate =
+      importPrepAnomalySkipHeader.someSkipped && !importPrepAnomalySkipHeader.allSkipped;
+  }, [importPrepAnomalySkipHeader]);
 
   const sourceFileNames = React.useMemo(() => {
     if (!abImportWizardModel?.rows.length) return [] as string[];
@@ -253,14 +263,45 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
         {abImportWizardModel && abImportWizardModel.rows.length > 0 && (
           <div className="rounded border border-gray-200 bg-white overflow-hidden">
             <div className="px-2 py-1.5 bg-gray-100 text-xs font-medium text-gray-700">
-              Préparation —{' '}
-              <span className="font-semibold text-gray-900" title={sourceFileNames.join(', ')}>
-                {sourceFileNames.join(', ')}
-              </span>{' '}
-              ({abImportWizardModel.rows.length} lignes)
-              {mappingWizardActive
-                ? ' — aperçu aligné sur src_account_balance.csv'
-                : ' — données brutes (mapping wizard désactivé)'}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span>
+                  Préparation —{' '}
+                  <span className="font-semibold text-gray-900" title={sourceFileNames.join(', ')}>
+                    {sourceFileNames.join(', ')}
+                  </span>{' '}
+                  ({mappingWizardActive
+                    ? `${importPrepIgnSkipHeader.total} lignes au total · ${importPrepIgnSkipHeader.active} non ignorée${importPrepIgnSkipHeader.active !== 1 ? 's' : ''}`
+                    : `${abImportWizardModel.rows.length} lignes`}
+                  )
+                  {mappingWizardActive
+                    ? ' — aperçu aligné sur src_account_balance.csv'
+                    : ' — données brutes (mapping wizard désactivé)'}
+                </span>
+                {mappingWizardActive && (
+                  <label
+                    className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
+                    title={
+                      importPrepAnomalySkipHeader.count === 0
+                        ? 'Aucune ligne en anomalie (⚠️)'
+                        : 'Cocher pour ignorer toutes les lignes affichant une alerte ⚠️ ; décocher pour les rétablir'
+                    }
+                  >
+                    <input
+                      ref={prepAnomalyIgnHeaderCheckboxRef}
+                      type="checkbox"
+                      className="shrink-0"
+                      checked={importPrepAnomalySkipHeader.allSkipped}
+                      disabled={importPrepAnomalySkipHeader.count === 0}
+                      onChange={toggleSkipAllAnomalous}
+                      aria-label="Ignorer toutes les lignes en anomalie"
+                    />
+                    Ignorer les lignes en anomalie
+                    {importPrepAnomalySkipHeader.count > 0 && (
+                      <span className="text-gray-500">({importPrepAnomalySkipHeader.count})</span>
+                    )}
+                  </label>
+                )}
+              </div>
             </div>
             {mappingWizardActive && abImportWizardModel.columns.length > 0 && (
               <div className="px-2 py-2 border-b border-indigo-100 bg-indigo-50/50 text-xs text-gray-800">

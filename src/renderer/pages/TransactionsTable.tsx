@@ -947,6 +947,23 @@ const TransactionsTable: React.FC = () => {
                         >
                           {prepWizard.importLinesLoading ? 'Import…' : 'Importer les lignes'}
                         </button>
+                        {prepWizard.mappingWizardActive && (
+                          <label
+                            className="inline-flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer select-none"
+                            title="Après un import réussi, retire du dossier Import les lignes qui viennent d’être ajoutées à src_transaction_data.csv (les lignes collées depuis le presse-papiers ne sont pas concernées)."
+                          >
+                            <input
+                              type="checkbox"
+                              className="shrink-0"
+                              checked={prepWizard.removeImportedFromImportFolder}
+                              onChange={(e) =>
+                                prepWizard.setRemoveImportedFromImportFolder(e.target.checked)
+                              }
+                              disabled={prepWizard.importLinesLoading}
+                            />
+                            Retirer du dossier Import les lignes importées
+                          </label>
+                        )}
                       </div>
                     </div>
 

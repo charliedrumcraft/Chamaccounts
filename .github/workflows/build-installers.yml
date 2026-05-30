@@ -1,0 +1,65 @@
+# Build des installateurs Windows / macOS / Linux sans publication GitHub.
+# Utile pour valider le packaging avant un tag de release.
+name: Build installers
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'electron-builder.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'build/**'
+      - 'scripts/**'
+      - '.github/workflows/build-installers.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate app icons
+        run: npm run icons:generate
+
+      - name: Prepare virgin data for release build
+        shell: bash
+        run: bash scripts/prepare-release-data.sh
+
+      - name: Build installer
+        run: |
+          npm run electron:build
+          npx electron-builder --${{ matrix.platform }} --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chamaccounts-${{ matrix.platform }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.zip
+          if-no-files-found: error

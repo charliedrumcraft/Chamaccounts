@@ -11,10 +11,10 @@ directories:
   buildResources: build
 
 files:
-  - dist/**/*
-  - dist-electron/**/*
-  - parametre/**/*
-  - data/**/*
+  - dist
+  - dist-electron
+  - parametre
+  - data
   - package.json
 
 asarUnpack:
@@ -26,8 +26,23 @@ win:
     - target: nsis
       arch:
         - x64
+  icon: build/icon.ico
   artifactName: ${productName}-${version}-win-${arch}.${ext}
   # WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD via secrets CI (scripts/ci-prepare-signing.sh)
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Chamaccounts
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
 
 mac:
   target:
@@ -35,6 +50,7 @@ mac:
       arch:
         - x64
         - arm64
+  icon: build/icon.icns
   category: public.app-category.finance
   artifactName: ${productName}-${version}-mac-${arch}.${ext}
   hardenedRuntime: true
@@ -43,13 +59,37 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   # Notarisation auto si APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID (CI ou local)
 
+dmg:
+  title: ${productName} ${version}
+  icon: build/icon.icns
+  iconSize: 80
+  window:
+    width: 540
+    height: 380
+  contents:
+    - x: 140
+      y: 180
+      type: file
+    - x: 400
+      y: 180
+      type: link
+      path: /Applications
+
 linux:
   target:
     - target: AppImage
       arch:
         - x64
-  category: Office
+  icon: build/icons
+  category: Office;Finance;
   artifactName: ${productName}-${version}-linux-${arch}.${ext}
+  synopsis: Comptabilité multi-plateforme
+  description: Suivi des transactions, soldes de comptes, comptabilité mensuelle et budget annuel.
+  desktop:
+    Name: Chamaccounts
+    Comment: Comptabilité multi-plateforme
+    Categories: Office;Finance;
+    StartupWMClass: chamaccounts
 
 publish:
   provider: github

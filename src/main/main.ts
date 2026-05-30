@@ -28,6 +28,16 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 
+function resolveWindowIcon(): string | undefined {
+  const candidates = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, 'build', 'icon.png'),
+        path.join(app.getAppPath(), 'build', 'icon.png'),
+      ]
+    : [path.join(__dirname, '../../build/icon.png')];
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
 const createWindow = () => {
   let preloadPath: string;
   if (app.isPackaged) {
@@ -46,6 +56,7 @@ const createWindow = () => {
     height: 800,
     minWidth: 800,
     minHeight: 600,
+    icon: resolveWindowIcon(),
     webPreferences: {
       preload: preloadPath,
       nodeIntegration: false,

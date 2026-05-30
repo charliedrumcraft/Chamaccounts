@@ -993,6 +993,23 @@ const AccountBalanceTable: React.FC = () => {
                         >
                           {abPrepWizard.importLinesLoading ? 'Import…' : 'Importer les lignes'}
                         </button>
+                        {abPrepWizard.mappingWizardActive && (
+                          <label
+                            className="inline-flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer select-none"
+                            title="Après un import réussi, retire du dossier Import (soldes) les lignes qui viennent d’être ajoutées à src_account_balance.csv (les lignes collées depuis le presse-papiers ne sont pas concernées)."
+                          >
+                            <input
+                              type="checkbox"
+                              className="shrink-0"
+                              checked={abPrepWizard.removeImportedFromImportFolder}
+                              onChange={(e) =>
+                                abPrepWizard.setRemoveImportedFromImportFolder(e.target.checked)
+                              }
+                              disabled={abPrepWizard.importLinesLoading}
+                            />
+                            Retirer du dossier Import les lignes importées
+                          </label>
+                        )}
                       </div>
                     </div>
 

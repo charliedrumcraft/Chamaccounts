@@ -13,6 +13,8 @@ import {
   type AbImportWizardModel,
   type AbImportWizardRawRow,
 } from '../services/accountBalanceImportWizardService';
+import { accountBalanceImportFile } from '@/shared/dataPaths';
+import { removeImportedRowsFromImportFolder } from '../services/importWizardRemoveFromDiskService';
 import { detectAccountBalanceAnomalies, type AccountBalanceActiveAccount } from '../services/AnomalyDetectionService';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { AccountBalanceCSVService } from '../services/AccountBalanceCSVService';
@@ -46,6 +48,8 @@ export function useAccountBalanceImportPrepWizard(options: {
   const [importLinesLoading, setImportLinesLoading] = useState(false);
   const [importWizardMessage, setImportWizardMessage] = useState<string | null>(null);
   const [diskImportFirstLineAsData, setDiskImportFirstLineAsData] = useState(false);
+  /** Après import réussi : retirer les lignes importées des CSV du dossier Import (soldes). */
+  const [removeImportedFromImportFolder, setRemoveImportedFromImportFolder] = useState(false);
   /** Cible d’en-tête par colonne : absent = auto (libellé brut), '' = ignorer, sinon DATE ou nom de compte. */
   const [abColumnTargetUser, setAbColumnTargetUser] = useState<Record<string, string>>({});
 
@@ -192,6 +196,15 @@ export function useAccountBalanceImportPrepWizard(options: {
     abColumnTargetUser,
   ]);
 
+  const anomalousRowIds = useMemo(() => {
+    if (!mappingWizardActive || !model?.rows.length) return [] as string[];
+    const ids: string[] = [];
+    for (const row of model.rows) {
+      if (rowStatusByRowId.get(row.id)?.showDanger) ids.push(row.id);
+    }
+    return ids;
+  }, [mappingWizardActive, model?.rows, rowStatusByRowId]);
+
   const importPreviewImportableRows = useMemo(() => {
     if (!mappingWizardActive || !model?.rows.length) return [] as AbImportWizardRawRow[];
     const list: AbImportWizardRawRow[] = [];
@@ -251,15 +264,52 @@ export function useAccountBalanceImportPrepWizard(options: {
     });
   }, [model?.rows]);
 
+  const toggleSkipAllAnomalous = useCallback(() => {
+    setImportRowSkip((prev) => {
+      if (anomalousRowIds.length === 0) return prev;
+      const all = anomalousRowIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (all) {
+        for (const id of anomalousRowIds) next.delete(id);
+      } else {
+        for (const id of anomalousRowIds) next.add(id);
+      }
+      return next;
+    });
+  }, [anomalousRowIds]);
+
   const importPrepIgnSkipHeader = useMemo(() => {
     const ids = model?.rows.map((r) => r.id) ?? [];
-    if (ids.length === 0) return { allSkipped: false, someSkipped: false };
+    const total = ids.length;
+    if (total === 0) {
+      return { allSkipped: false, someSkipped: false, total: 0, skipped: 0, active: 0 };
+    }
     let skipped = 0;
     for (const id of ids) {
       if (importRowSkip.has(id)) skipped += 1;
     }
-    return { allSkipped: skipped === ids.length, someSkipped: skipped > 0 };
+    return {
+      allSkipped: skipped === total,
+      someSkipped: skipped > 0,
+      total,
+      skipped,
+      active: total - skipped,
+    };
   }, [model?.rows, importRowSkip]);
+
+  const importPrepAnomalySkipHeader = useMemo(() => {
+    const count = anomalousRowIds.length;
+    if (count === 0) return { allSkipped: false, someSkipped: false, count: 0 };
+    let skipped = 0;
+    for (const id of anomalousRowIds) {
+      if (importRowSkip.has(id)) skipped += 1;
+    }
+    return {
+      allSkipped: skipped === count,
+      someSkipped: skipped > 0,
+      count,
+    };
+  }, [anomalousRowIds, importRowSkip]);
 
   const handleImportLinesToSource = useCallback(async () => {
     if (!mappingWizardActive) {
@@ -284,6 +334,7 @@ export function useAccountBalanceImportPrepWizard(options: {
       byTime.set(r.date.getTime(), r);
     }
     let added = 0;
+    const importedDiskRows: { id: string; sourceFile: string }[] = [];
     for (const row of importPreviewImportableRows) {
       const prev = mappedPreviewByRowId.get(row.id);
       const br = prev ? balanceRowFromMappedDisplayRecord(prev.display, recognised) : null;
@@ -292,6 +343,7 @@ export function useAccountBalanceImportPrepWizard(options: {
       if (byTime.has(t)) continue;
       byTime.set(t, br);
       added++;
+      importedDiskRows.push({ id: row.id, sourceFile: row.sourceFile });
     }
     if (added === 0) {
       setImportWizardMessage('Aucune ligne nouvelle à fusionner (dates déjà présentes ou données invalides).');
@@ -303,9 +355,44 @@ export function useAccountBalanceImportPrepWizard(options: {
     try {
       const result = await AccountBalanceCSVService.saveBalanceRowsToProcessed(merged, recognised);
       if (result.success) {
+        let diskMsg = '';
+        if (removeImportedFromImportFolder && importedDiskRows.length > 0) {
+          const fileApi = (window as unknown as {
+            electronAPI?: {
+              readFile: (p: string) => Promise<{ success: boolean; data?: string; error?: string }>;
+              writeFile: (p: string, c: string) => Promise<{ success: boolean; error?: string }>;
+              deleteFile: (p: string) => Promise<{ success: boolean; error?: string }>;
+            };
+          }).electronAPI;
+          if (fileApi?.readFile && fileApi?.writeFile && fileApi?.deleteFile) {
+            const diskResult = await removeImportedRowsFromImportFolder({
+              rows: importedDiskRows,
+              importFilePath: accountBalanceImportFile,
+              api: fileApi,
+            });
+            if (!diskResult.success) {
+              setImportWizardMessage(
+                `${added} ligne(s) ajoutée(s) à src_account_balance.csv, mais retrait du dossier Import impossible : ${diskResult.error ?? 'erreur inconnue'}.`
+              );
+              onAfterSuccessfulAppend?.();
+              setReloadKey((k) => k + 1);
+              return;
+            }
+            if (diskResult.removedLineCount > 0) {
+              const parts: string[] = [];
+              if (diskResult.updatedFiles.length) {
+                parts.push(`${diskResult.updatedFiles.length} fichier(s) mis à jour`);
+              }
+              if (diskResult.deletedFiles.length) {
+                parts.push(`${diskResult.deletedFiles.length} fichier(s) supprimé(s) (vide)`);
+              }
+              diskMsg = ` ${diskResult.removedLineCount} ligne(s) retirée(s) du dossier Import${parts.length ? ` (${parts.join(', ')})` : ''}.`;
+            }
+          }
+        }
         onAfterSuccessfulAppend?.();
         setReloadKey((k) => k + 1);
-        setImportWizardMessage(`${added} ligne(s) ajoutée(s) à src_account_balance.csv.`);
+        setImportWizardMessage(`${added} ligne(s) ajoutée(s) à src_account_balance.csv.${diskMsg}`);
       } else {
         setImportWizardMessage(result.error ?? 'Erreur lors de l’enregistrement.');
       }
@@ -318,6 +405,7 @@ export function useAccountBalanceImportPrepWizard(options: {
     mappedPreviewByRowId,
     recognised,
     onAfterSuccessfulAppend,
+    removeImportedFromImportFolder,
   ]);
 
   const setMappingWizardActiveWrapped = useCallback((v: SetStateAction<boolean>) => {
@@ -364,6 +452,8 @@ export function useAccountBalanceImportPrepWizard(options: {
     updateAbColumnTargetUser,
     mappingWizardActive,
     setMappingWizardActive: setMappingWizardActiveWrapped,
+    removeImportedFromImportFolder,
+    setRemoveImportedFromImportFolder,
     rawCellOverrides,
     mappedCellOverrides,
     importRowSkip,
@@ -379,7 +469,9 @@ export function useAccountBalanceImportPrepWizard(options: {
     updateMappedCell,
     importPreviewImportableRows,
     importPrepIgnSkipHeader,
+    importPrepAnomalySkipHeader,
     toggleImportPrepSkipAll,
+    toggleSkipAllAnomalous,
     handleImportLinesToSource,
     recognised,
   };
