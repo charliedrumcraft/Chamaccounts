@@ -18,9 +18,7 @@ import {
   TRANSACTION_SOURCE_COLUMN,
   TRANSACTION_SOURCE_VALUE_FILE,
   TRANSACTION_SOURCE_VALUE_MANUAL,
-  formatManualTransactionSource,
   isManualTransactionSourceValue,
-  manualSourceOptionalLabel,
 } from '@/shared/transactionRowSource';
 import { SOUTIEN_IGNORE_COLUMN, isRowIgnoredForSoutienTotals } from '@/shared/soutienIgnoreColumn';
 import { TRANSACTION_PROJET_COLUMN } from '@/shared/transactionsImportCore';
@@ -44,9 +42,6 @@ type DraftFields = {
   title: string;
   amount: string;
   currency: string;
-  account: string;
-  /** Texte ajouté dans Source après « saisi manuelle — » (optionnel). */
-  sourceLabel: string;
 };
 
 /** Extrait l’année (AAAA) d’une cellule date (formats ISO, JJ/MM/AAAA, JJ.MM.AAAA, JJ.MM.AA). */
@@ -344,7 +339,6 @@ type YearGroupBase = {
 };
 
 const SUPPORT_MATCHED_SOURCE_VALUE = 'src_transactions_data.csv';
-const SUPPORT_MANUAL_SOURCE_VALUE = 'saisie manuelle';
 
 function buildSupportRowMatchKey(
   row: Record<string, string>,
@@ -410,17 +404,12 @@ const Support: React.FC = () => {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftAmount, setDraftAmount] = useState('');
   const [draftCurrency, setDraftCurrency] = useState('EUR');
-  const [draftAccount, setDraftAccount] = useState('');
-  const [draftSourceLabel, setDraftSourceLabel] = useState('');
-
   const [editOpen, setEditOpen] = useState(false);
   const [editDataRowIndex, setEditDataRowIndex] = useState<number | null>(null);
   const [editDate, setEditDate] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [editAmount, setEditAmount] = useState('');
   const [editCurrency, setEditCurrency] = useState('EUR');
-  const [editAccount, setEditAccount] = useState('');
-  const [editSourceLabel, setEditSourceLabel] = useState('');
   const [editMessage, setEditMessage] = useState<string | null>(null);
 
   const loadData = useCallback((options?: { silent?: boolean }) => {
@@ -470,7 +459,7 @@ const Support: React.FC = () => {
           if (typeHeader && rowType !== 'support') return { ...row };
           const key = buildSupportRowMatchKey(row, keyHeaders);
           const sourceValue =
-            key && srcSupportKeys.has(key) ? SUPPORT_MATCHED_SOURCE_VALUE : SUPPORT_MANUAL_SOURCE_VALUE;
+            key && srcSupportKeys.has(key) ? SUPPORT_MATCHED_SOURCE_VALUE : TRANSACTION_SOURCE_VALUE_MANUAL;
           return { ...row, [sourceHeader]: sourceValue };
         });
         const mergedRows = [...srcRows, ...supportRows];
@@ -746,8 +735,6 @@ const Support: React.FC = () => {
     setDraftTitle('');
     setDraftAmount('');
     setDraftCurrency('EUR');
-    setDraftAccount('');
-    setDraftSourceLabel('');
   }, []);
 
   const closeEditModal = useCallback(() => {
@@ -758,8 +745,6 @@ const Support: React.FC = () => {
     setEditTitle('');
     setEditAmount('');
     setEditCurrency('EUR');
-    setEditAccount('');
-    setEditSourceLabel('');
   }, []);
 
   const isManualRow = useCallback(
@@ -777,9 +762,8 @@ const Support: React.FC = () => {
       const dateTrim = draft.date.trim();
       const titleTrim = draft.title.trim();
       const amountTrim = draft.amount.trim().replace(',', '.');
-      const accountTrim = draft.account.trim();
-      if (!dateTrim || !titleTrim || !amountTrim || !accountTrim) {
-        return { row: {}, error: 'Renseignez au minimum la date, le libellé, le montant et le compte.' };
+      if (!dateTrim || !titleTrim || !amountTrim) {
+        return { row: {}, error: 'Renseignez au minimum la date, le libellé et le montant.' };
       }
       const amountNum = parseFloat(amountTrim);
       if (Number.isNaN(amountNum) || amountNum === 0) {
@@ -796,8 +780,8 @@ const Support: React.FC = () => {
       const currencyH = base.headers.find((h) => /^currency$/i.test(h));
       const accountH = base.headers.find((h) => /^account$/i.test(h));
       const amountGbpH = base.headers.find((h) => /^amount\s*gbp$/i.test(h));
-      if (!dateH || !titleH || !amountH || !currencyH || !accountH) {
-        return { row: {}, error: 'Colonnes DATE, TITLE, AMOUNT, CURRENCY ou ACCOUNT manquantes dans le fichier.' };
+      if (!dateH || !titleH || !amountH || !currencyH) {
+        return { row: {}, error: 'Colonnes DATE, TITLE, AMOUNT ou CURRENCY manquantes dans le fichier.' };
       }
 
       const headers = ensureHeadersForWrite(base.headers);
@@ -825,10 +809,10 @@ const Support: React.FC = () => {
       row[titleH] = titleTrim;
       row[amountH] = amountStr;
       row[currencyH] = cur;
-      row[accountH] = accountTrim;
+      if (accountH) row[accountH] = '';
       if (amountGbpH) row[amountGbpH] = amountGbpStr;
       row[typeH] = 'Support';
-      row[sourceH] = formatManualTransactionSource(draft.sourceLabel);
+      row[sourceH] = TRANSACTION_SOURCE_VALUE_MANUAL;
       if (!row[EXCLUDE_ANOMALY_COLUMN]) row[EXCLUDE_ANOMALY_COLUMN] = '';
       if (ignoreH) row[ignoreH] = '';
       if (projetH) row[projetH] = originalRow ? (originalRow[projetH] ?? '').trim() : '';
@@ -874,8 +858,6 @@ const Support: React.FC = () => {
       title: draftTitle,
       amount: draftAmount,
       currency: draftCurrency,
-      account: draftAccount,
-      sourceLabel: draftSourceLabel,
     };
     const built = buildManualSupportRow(draft, data, typeHeader, null);
     if (built.error || !built.row) {
@@ -906,8 +888,6 @@ const Support: React.FC = () => {
     draftTitle,
     draftAmount,
     draftCurrency,
-    draftAccount,
-    draftSourceLabel,
     buildManualSupportRow,
     persistMergedFiles,
     loadData,
@@ -925,17 +905,13 @@ const Support: React.FC = () => {
       const titleH = data.headers.find((h) => /^title$/i.test(h));
       const amountH = data.headers.find((h) => /^amount$/i.test(h));
       const currencyH = data.headers.find((h) => /^currency$/i.test(h));
-      const accountH = data.headers.find((h) => /^account$/i.test(h));
-      if (!dateH || !titleH || !amountH || !currencyH || !accountH) return;
+      if (!dateH || !titleH || !amountH || !currencyH) return;
 
       setEditDataRowIndex(dataRowIndex);
       setEditDate((row[dateH] ?? '').trim());
       setEditTitle((row[titleH] ?? '').trim());
       setEditAmount((row[amountH] ?? '').trim());
       setEditCurrency(((row[currencyH] ?? '').trim().toUpperCase() || 'EUR').slice(0, 3));
-      setEditAccount((row[accountH] ?? '').trim());
-      const sourceH = data.headers.find((h) => /^source$/i.test(h)) ?? TRANSACTION_SOURCE_COLUMN;
-      setEditSourceLabel(manualSourceOptionalLabel(row[sourceH] ?? ''));
       setEditMessage(null);
       setEditOpen(true);
     },
@@ -954,8 +930,6 @@ const Support: React.FC = () => {
       title: editTitle,
       amount: editAmount,
       currency: editCurrency,
-      account: editAccount,
-      sourceLabel: editSourceLabel,
     };
     const built = buildManualSupportRow(draft, data, typeHeader, original);
     if (built.error) {
@@ -985,8 +959,6 @@ const Support: React.FC = () => {
     editTitle,
     editAmount,
     editCurrency,
-    editAccount,
-    editSourceLabel,
     buildManualSupportRow,
     persistMergedFiles,
     loadData,
@@ -1092,9 +1064,8 @@ const Support: React.FC = () => {
           <p className="text-sm text-gray-600 max-w-3xl">
             Liste des transactions de type « Support » (fusion de {SOURCE_DATA_PATH} et de{' '}
             {SUPPORT_DATA_CSV_PATH}). Les lignes importées affichent « {TRANSACTION_SOURCE_VALUE_FILE} » ; une
-            saisie ajoutée ici est enregistrée dans Support_data.csv et utilise « {TRANSACTION_SOURCE_VALUE_MANUAL}{' '}
-            » avec un libellé libre optionnel (« {TRANSACTION_SOURCE_VALUE_MANUAL} — … »). Vous pouvez modifier ou
-            supprimer uniquement ces lignes saisies depuis cette page.
+            saisie ajoutée ici est enregistrée dans Support_data.csv avec la source « {TRANSACTION_SOURCE_VALUE_MANUAL}
+            ». Vous pouvez modifier ou supprimer uniquement ces lignes saisies depuis cette page.
           </p>
         </div>
 
@@ -1158,35 +1129,6 @@ const Support: React.FC = () => {
                     <option value="GBP">GBP</option>
                     <option value="CHF">CHF</option>
                   </select>
-                </label>
-                <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-                  <span className="font-medium text-gray-700">Compte (ACCOUNT)</span>
-                  <input
-                    type="text"
-                    value={draftAccount}
-                    onChange={(e) => setDraftAccount(e.target.value)}
-                    className="rounded border border-gray-300 px-2 py-1.5 text-sm"
-                    disabled={csvWriteLoading}
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-                  <span className="font-medium text-gray-700">Libellé pour la colonne Source (optionnel)</span>
-                  <input
-                    type="text"
-                    value={draftSourceLabel}
-                    onChange={(e) => setDraftSourceLabel(e.target.value)}
-                    placeholder="ex. don ponctuel, événement…"
-                    className="rounded border border-gray-300 px-2 py-1.5 text-sm"
-                    disabled={csvWriteLoading}
-                    autoComplete="off"
-                  />
-                  <span className="text-xs text-gray-500">
-                    Enregistré comme :{' '}
-                    <code className="text-gray-700">
-                      {TRANSACTION_SOURCE_VALUE_MANUAL}
-                      {draftSourceLabel.trim() ? ` — ${draftSourceLabel.trim()}` : ''}
-                    </code>
-                  </span>
                 </label>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -2120,35 +2062,6 @@ const Support: React.FC = () => {
                   <option value="GBP">GBP</option>
                   <option value="CHF">CHF</option>
                 </select>
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-gray-700">Compte (ACCOUNT)</span>
-                <input
-                  type="text"
-                  value={editAccount}
-                  onChange={(e) => setEditAccount(e.target.value)}
-                  className="rounded border border-gray-300 px-2 py-1.5 text-sm"
-                  disabled={csvWriteLoading}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-gray-700">Libellé pour la colonne Source (optionnel)</span>
-                <input
-                  type="text"
-                  value={editSourceLabel}
-                  onChange={(e) => setEditSourceLabel(e.target.value)}
-                  placeholder="ex. don ponctuel, événement…"
-                  className="rounded border border-gray-300 px-2 py-1.5 text-sm"
-                  disabled={csvWriteLoading}
-                  autoComplete="off"
-                />
-                <span className="text-xs text-gray-500">
-                  Valeur Source :{' '}
-                  <code className="text-gray-700">
-                    {TRANSACTION_SOURCE_VALUE_MANUAL}
-                    {editSourceLabel.trim() ? ` — ${editSourceLabel.trim()}` : ''}
-                  </code>
-                </span>
               </label>
             </div>
             {editMessage && (

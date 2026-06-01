@@ -6,12 +6,18 @@
 import { EXCLUDE_ANOMALY_COLUMN } from './excludeAnomalyColumn';
 import { TRANSACTION_SOURCE_COLUMN } from './transactionRowSource';
 import {
+  resolveAccountForDuplicateSignature,
+} from './accountAliasForDuplicates';
+import {
   applyImportFiatResolutionToValueMap,
   applyValidRowPostProcessMappingPolicy,
   DEFAULT_IMPORT_MAPPING_RATES,
   parseAmountNumericForImport,
   type ParseImportCsvOptions,
 } from './transactionsImportMappingPolicy';
+
+export type { AccountAliasEntry } from './accountAliasForDuplicates';
+export { buildAccountAliasLookup } from './accountAliasForDuplicates';
 
 export type { ParseImportCsvOptions } from './transactionsImportMappingPolicy';
 
@@ -193,14 +199,37 @@ export function emptyRow(): ValidRow {
   };
 }
 
-/** Signature d'une ligne pour la détection de doublons (même transaction = même DATE, TITLE, montants, compte). */
-export function rowSignature(row: ValidRow): string {
+export type RowSignatureOptions = {
+  /** Alias compte (Paramètres + défauts import) : ex. HSBC → HSBC OBS. */
+  accountAliasLookup?: ReadonlyMap<string, string>;
+};
+
+/**
+ * Signature d'une ligne pour la détection de doublons.
+ * - AMOUNT renseigné : DATE, TITLE, AMOUNT, ACCOUNT (AMOUNT GBP ignoré — taux FX variable entre import et app).
+ * - AMOUNT vide : DATE, TITLE, AMOUNT GBP, ACCOUNT.
+ * Les montants et comptes sont normalisés (ex. 200 ≡ 200,00 ; HSBC ≡ HSBC OBS si alias).
+ */
+function signatureAmountPart(raw: string): string {
+  const trimmed = (raw ?? '').trim();
+  if (trimmed === '') return '';
+  const norm = normalizeAmount(trimmed);
+  return norm !== null ? norm : trimmed;
+}
+
+export function rowSignature(row: ValidRow, options?: RowSignatureOptions): string {
   const d = (row.DATE ?? '').trim();
   const t = (row.TITLE ?? '').trim();
   const amt = (row.AMOUNT ?? '').trim();
   const amtGbp = (row['AMOUNT GBP'] ?? '').trim();
-  const acc = (row.ACCOUNT ?? '').trim();
-  return `${d}|${t}|${amt}|${amtGbp}|${acc}`;
+  const acc = resolveAccountForDuplicateSignature(
+    (row.ACCOUNT ?? '').trim(),
+    options?.accountAliasLookup
+  );
+  if (amt !== '') {
+    return `${d}|${t}|${signatureAmountPart(amt)}|${acc}`;
+  }
+  return `${d}|${t}|${signatureAmountPart(amtGbp)}|${acc}`;
 }
 
 export function parseCsvLine(line: string, delimiter: string): string[] {

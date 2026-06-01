@@ -7,7 +7,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const CSV_PATH = path.join(__dirname, '../data/TransactionsData/Processed/src_transaction_data.csv');
+const { resolveDataRoot } = require('./lib/resolve-data-root');
+const REPO_ROOT = path.join(__dirname, '..');
+const CSV_PATH = path.join(
+  resolveDataRoot(REPO_ROOT),
+  'TransactionsData/Processed/src_transaction_data.csv'
+);
 
 const SORTIE_TYPES = new Set([
   'Rent', 'Council', 'Comm', 'Electricity', 'Water', 'Service', 'SLCdebit',

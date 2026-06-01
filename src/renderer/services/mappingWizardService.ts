@@ -399,6 +399,7 @@ export type ImportWizardPreviewComputeParams = {
   model: ImportWizardModel;
   importColumnMapping: Record<string, WizardStandardKey>;
   existingTransactionSignatures: Set<string>;
+  accountAliasLookup?: ReadonlyMap<string, string>;
   importWizardCellOverrides: Record<string, Record<string, string>>;
   importWizardManualCellValues: Record<string, Partial<Record<ImportWizardResultField, string>>>;
   /** Saisie directe des champs src_transaction_data (colonnes jumelles éditables). */
@@ -460,7 +461,10 @@ function computeSingleImportWizardPreviewItem(
     };
   }
   const dup =
-    'valid' in processed && existingTransactionSignatures.has(rowSignature(processed.valid));
+    'valid' in processed &&
+    existingTransactionSignatures.has(
+      rowSignature(processed.valid, { accountAliasLookup: params.accountAliasLookup })
+    );
   return { row: effectiveRow, valueMap, processed, duplicateExisting: dup };
 }
 

@@ -18,7 +18,8 @@ import { AnomalyExceptionsModal } from '../components/AnomalyExceptionsModal';
 import TransactionsImportPrepSection from '../components/TransactionsImportPrepSection';
 import { useTransactionsImportPrepWizard } from '../hooks/useTransactionsImportPrepWizard';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
-import { formatDateDDMMYY, rowSignature, type ValidRow } from '@/shared/transactionsImportCore';
+import { formatDateDDMMYY, rowSignature, buildAccountAliasLookup, type ValidRow } from '@/shared/transactionsImportCore';
+import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
 
@@ -204,6 +205,12 @@ const TransactionsTable: React.FC = () => {
     loadData();
   }, [loadData]);
 
+  /** Alias compte (Paramètres + défauts) pour signatures doublons à l’import. */
+  const accountAliasLookup = useMemo(
+    () => buildAccountAliasLookup(loadRecognisedAccountsFromStorage()),
+    [data]
+  );
+
   /** Signatures des lignes déjà enregistrées (détection de doublons à l’import). */
   const existingTransactionSignatures = useMemo(() => {
     if (!data?.rows?.length) return new Set<string>();
@@ -225,13 +232,14 @@ const TransactionsTable: React.FC = () => {
         'AMOUNT GBP': cell(row, /^amount\s*gbp$/i),
         TYPE: cell(row, /^type$/i),
       };
-      sigs.add(rowSignature(vr));
+      sigs.add(rowSignature(vr, { accountAliasLookup }));
     }
     return sigs;
-  }, [data]);
+  }, [data, accountAliasLookup]);
 
   const prepWizard = useTransactionsImportPrepWizard({
     existingTransactionSignatures,
+    accountAliasLookup,
     onAfterSuccessfulAppend: loadData,
     folderReloadToken: importFolderReloadToken,
   });

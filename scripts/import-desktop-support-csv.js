@@ -72,10 +72,10 @@ function main() {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   const supportPath =
     process.argv[2] || path.join(home, 'Desktop', 'support.csv');
+  const { resolveDataRoot } = require('./lib/resolve-data-root');
   const repoRoot = path.resolve(__dirname, '..');
   const mainPath = path.join(
-    repoRoot,
-    'data',
+    resolveDataRoot(repoRoot),
     'TransactionsData',
     'Processed',
     'src_transaction_data.csv'

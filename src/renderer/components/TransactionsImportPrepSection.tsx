@@ -12,7 +12,8 @@ import {
   type ImportWizardColumn,
   type ImportWizardModel,
 } from '../services/mappingWizardService';
-import { getSuggestions } from '../services/SuggestInputService';
+import { getAccountSuggestions, getSuggestions, type SuggestionItem } from '../services/SuggestInputService';
+import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
 
 export type TransactionsImportPrepWizardProps = ReturnType<typeof useTransactionsImportPrepWizard>;
@@ -77,19 +78,16 @@ const PREP_WIZARD_SUGGESTION_HEADERS = [
   'INCOME',
 ] as const;
 
-/** Suggestions fréquentielles : aperçu wizard si dispo, sinon fichier traité. */
-function applyTabSuggestionFromRows(
+/** Applique la 1re suggestion au TAB (datalist / fréquence / alias compte). */
+function applyTabSuggestionFromSuggestions(
   e: React.KeyboardEvent<HTMLInputElement>,
   raw: string,
-  headerKey: string | null,
-  sourceRows: Record<string, string>[],
+  suggestions: SuggestionItem[],
   apply: (v: string) => void
 ): boolean {
   if (e.key !== 'Tab' || e.shiftKey) return false;
-  if (!headerKey || sourceRows.length === 0) return false;
-  const sugg = getSuggestions(sourceRows, headerKey, raw, 10);
-  if (sugg.length === 0) return false;
-  const first = sugg[0].value;
+  if (suggestions.length === 0) return false;
+  const first = suggestions[0].value;
   if (raw.trim() === first) return false;
   e.preventDefault();
   apply(first);
@@ -154,12 +152,15 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
     importWizardRowIds,
     importPrepIgnSkipHeader,
     importPrepAnomalySkipHeader,
+    importPrepDuplicateSkipHeader,
     visiblePrepColDefs,
     prepStickyKey,
     prepIgnHeaderCheckboxRef,
     prepAnomalyIgnHeaderCheckboxRef,
+    prepDuplicateIgnHeaderCheckboxRef,
     toggleImportPrepSkipAll,
     toggleSkipAllAnomalous,
+    toggleSkipAllDuplicates,
     updateWizardManualCell,
     updateMappedOutputCell,
     updateImportPrepCell,
@@ -169,6 +170,11 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
   const prepTableScrollRef = useRef<HTMLDivElement>(null);
   const [clipboardDraft, setClipboardDraft] = useState('');
   const [pasteFirstLineAsData, setPasteFirstLineAsData] = useState(false);
+
+  const recognisedAccountsForSuggestions = useMemo(
+    () => loadRecognisedAccountsFromStorage(),
+    []
+  );
 
   const defaultColumnMapping = useMemo(
     () => (importWizardModel ? buildDefaultColumnMapping(importWizardModel.columns) : {}),
@@ -187,14 +193,25 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
   const prepSuggestions = useCallback(
     (canonicalField: string, raw: string) => {
       const rows =
-        mappingWizardActive && importWizardSuggestionRows.length > 0
-          ? importWizardSuggestionRows
-          : sourceRowsForSuggestions;
-      const headers = mappingWizardActive
-        ? (PREP_WIZARD_SUGGESTION_HEADERS as readonly string[])
-        : sourceHeadersForSuggestions;
+        canonicalField === 'ACCOUNT'
+          ? sourceRowsForSuggestions
+          : mappingWizardActive && importWizardSuggestionRows.length > 0
+            ? importWizardSuggestionRows
+            : sourceRowsForSuggestions;
+      const headers =
+        canonicalField === 'ACCOUNT'
+          ? sourceHeadersForSuggestions
+          : mappingWizardActive
+            ? (PREP_WIZARD_SUGGESTION_HEADERS as readonly string[])
+            : sourceHeadersForSuggestions;
       const hk = findHeaderKeyForSuggestions([...headers], canonicalField);
-      if (!hk || rows.length === 0) return [] as ReturnType<typeof getSuggestions>;
+      if (!hk || rows.length === 0) return [] as SuggestionItem[];
+      if (canonicalField === 'ACCOUNT') {
+        return getAccountSuggestions(rows, hk, raw, {
+          limit: 10,
+          recognisedEntries: recognisedAccountsForSuggestions,
+        });
+      }
       return getSuggestions(rows, hk, raw, 10);
     },
     [
@@ -202,6 +219,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
       importWizardSuggestionRows,
       sourceRowsForSuggestions,
       sourceHeadersForSuggestions,
+      recognisedAccountsForSuggestions,
     ]
   );
 
@@ -413,6 +431,30 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                     Ignorer les lignes en anomalie
                     {importPrepAnomalySkipHeader.count > 0 && (
                       <span className="text-gray-500">({importPrepAnomalySkipHeader.count})</span>
+                    )}
+                  </label>
+                )}
+                {mappingWizardActive && (
+                  <label
+                    className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
+                    title={
+                      importPrepDuplicateSkipHeader.count === 0
+                        ? 'Aucun doublon détecté'
+                        : 'Cocher pour ignorer toutes les lignes déjà présentes dans src_transaction_data.csv ; décocher pour les rétablir'
+                    }
+                  >
+                    <input
+                      ref={prepDuplicateIgnHeaderCheckboxRef}
+                      type="checkbox"
+                      className="shrink-0"
+                      checked={importPrepDuplicateSkipHeader.allSkipped}
+                      disabled={importPrepDuplicateSkipHeader.count === 0}
+                      onChange={toggleSkipAllDuplicates}
+                      aria-label="Ignorer toutes les lignes en doublon"
+                    />
+                    Ignorer les doublons
+                    {importPrepDuplicateSkipHeader.count > 0 && (
+                      <span className="text-gray-500">({importPrepDuplicateSkipHeader.count})</span>
                     )}
                   </label>
                 )}
@@ -724,10 +766,6 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                         const raw =
                                           importWizardManualCellValues[p.row.id]?.[def.field] ?? '';
                                         const typeSuggestions = prepSuggestions('TYPE', raw);
-                                        const typeHeaderKey = findHeaderKeyForSuggestions(
-                                          prepSugHeaders,
-                                          'TYPE'
-                                        );
                                         const typeListId = `prep-wiz-type-${p.row.id}`;
                                         return (
                                           <>
@@ -740,11 +778,10 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                               }
                                               onKeyDown={(e) => {
                                                 if (
-                                                  applyTabSuggestionFromRows(
+                                                  applyTabSuggestionFromSuggestions(
                                                     e,
                                                     raw,
-                                                    typeHeaderKey,
-                                                    prepSugRows,
+                                                    typeSuggestions,
                                                     (v) =>
                                                       updateWizardManualCell(p.row.id, def.field, v)
                                                   )
@@ -780,7 +817,6 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                         const raw =
                                           importWizardManualCellValues[p.row.id]?.[def.field] ?? '';
                                         const suggestions = prepSuggestions(def.field, raw);
-                                        const hk = findHeaderKeyForSuggestions(prepSugHeaders, def.field);
                                         const listId = `prep-wiz-${def.field}-${p.row.id}`;
                                         return (
                                           <>
@@ -791,11 +827,10 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                               list={suggestions.length > 0 ? listId : undefined}
                                               onKeyDown={(e) => {
                                                 if (
-                                                  applyTabSuggestionFromRows(
+                                                  applyTabSuggestionFromSuggestions(
                                                     e,
                                                     raw,
-                                                    hk,
-                                                    prepSugRows,
+                                                    suggestions,
                                                     (v) =>
                                                       updateWizardManualCell(p.row.id, def.field, v)
                                                   )
@@ -868,12 +903,35 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                           ? outKey
                                           : null;
                                       const mappedHeaderKey = suggestCanonical
-                                        ? findHeaderKeyForSuggestions(prepSugHeaders, suggestCanonical) ??
-                                          suggestCanonical
+                                        ? findHeaderKeyForSuggestions(
+                                            suggestCanonical === 'ACCOUNT'
+                                              ? sourceHeadersForSuggestions
+                                              : prepSugHeaders,
+                                            suggestCanonical
+                                          ) ?? suggestCanonical
                                         : null;
+                                      const mappedSuggestionRows =
+                                        suggestCanonical === 'ACCOUNT'
+                                          ? sourceRowsForSuggestions
+                                          : prepSugRows;
                                       const mappedSuggestions =
-                                        mappedHeaderKey && prepSugRows.length > 0
-                                          ? getSuggestions(prepSugRows, mappedHeaderKey, rawMapped, 10)
+                                        mappedHeaderKey && mappedSuggestionRows.length > 0
+                                          ? suggestCanonical === 'ACCOUNT'
+                                            ? getAccountSuggestions(
+                                                mappedSuggestionRows,
+                                                mappedHeaderKey,
+                                                rawMapped,
+                                                {
+                                                  limit: 10,
+                                                  recognisedEntries: recognisedAccountsForSuggestions,
+                                                }
+                                              )
+                                            : getSuggestions(
+                                                mappedSuggestionRows,
+                                                mappedHeaderKey,
+                                                rawMapped,
+                                                10
+                                              )
                                           : [];
                                       const mappedListId = `prep-map-${outKey ?? 'x'}-${p.row.id}-${def.key}`;
                                       return (
@@ -887,12 +945,10 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                             }
                                             onKeyDown={(e) => {
                                               if (
-                                                mappedHeaderKey &&
-                                                applyTabSuggestionFromRows(
+                                                applyTabSuggestionFromSuggestions(
                                                   e,
                                                   rawMapped,
-                                                  mappedHeaderKey,
-                                                  prepSugRows,
+                                                  mappedSuggestions,
                                                   (v) =>
                                                     updateMappedOutputCell(p.row.id, def.mappedAs, v)
                                                 )

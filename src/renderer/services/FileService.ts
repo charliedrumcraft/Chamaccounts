@@ -12,9 +12,14 @@ export class FileService {
   }
 
   static async getAppPath(): Promise<string> {
-    if (!window.electronAPI?.getAppPath) {
+    const api = window.electronAPI;
+    if (api?.getDataRoot) {
+      const r = await api.getDataRoot();
+      if (r.success && r.path) return r.path;
+    }
+    if (!api?.getAppPath) {
       throw new Error('electronAPI.getAppPath non disponible');
     }
-    return window.electronAPI.getAppPath();
+    return api.getAppPath();
   }
 }

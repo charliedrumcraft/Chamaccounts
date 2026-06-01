@@ -31,6 +31,7 @@ export interface ParseImportCsvOptions {
 /**
  * Convertit une chaîne monétaire (EU: 1.234,56 / US: 1,234.56) en chaîne parsable par parseFloat (point décimal).
  * Les points entre la virgule et les chiffres sont des milliers (ex. € 1.675,69 → 1675.69).
+ * Plusieurs virgules sans point : dernière = décimale, les autres = milliers (ex. 1,675,69 → 1675.69).
  */
 export function amountStringToParseFloatNormalized(amountStr: string): string {
   let raw = amountStr
@@ -56,7 +57,12 @@ export function amountStringToParseFloatNormalized(amountStr: string): string {
       raw = raw.replace(/,/g, '');
     }
   } else if (lastComma !== -1) {
-    raw = raw.replace(',', '.');
+    const commaCount = (raw.match(/,/g) ?? []).length;
+    if (commaCount > 1) {
+      raw = raw.replace(/,(?=.*,)/g, '').replace(',', '.');
+    } else {
+      raw = raw.replace(',', '.');
+    }
   } else if (lastDot !== -1 && raw.indexOf('.') !== lastDot) {
     raw = raw.replace(/\./g, '');
   }

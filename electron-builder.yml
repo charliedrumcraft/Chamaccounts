@@ -14,12 +14,12 @@ files:
   - dist
   - dist-electron
   - parametre
-  - data
+  - data-template
   - package.json
 
 asarUnpack:
   - parametre/**/*
-  - data/**/*
+  - data-template/**/*
 
 win:
   target:

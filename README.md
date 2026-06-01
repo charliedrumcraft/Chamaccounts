@@ -19,7 +19,7 @@ Chamaccounts est une application desktop (Electron + React + TypeScript) pour ce
 - **Budget annuel** — Planification et suivi budgétaire
 - **Soutien** — Saisie et gestion des lignes de soutien (données séparées des transactions importées)
 - **Multi-devises** — Taux EUR/CHF vers GBP (manuel ou cours en direct), comptes en GBP, EUR ou CHF
-- **Réglages** — Comptes reconnus, projets, types d’entrées et de sorties, export/import du dossier `data/` (ZIP), sauvegarde des préférences
+- **Réglages** — Comptes reconnus, projets, types d’entrées et de sorties, **profils de données** (dossiers externes), export/import ZIP, sauvegarde des préférences
 - **Mises à jour** — Vérification et installation des versions publiées sur GitHub Releases
 
 ## Installation
@@ -49,26 +49,31 @@ Ouvrez le DMG, puis glissez Chamaccounts dans le dossier **Applications**. macOS
 2. Rendez-le exécutable : `chmod +x Chamaccounts-1.0.1-linux-x64.AppImage`
 3. Lancez-le : `./Chamaccounts-1.0.1-linux-x64.AppImage` ou double-clic dans le gestionnaire de fichiers
 
-**Note :** sous Linux, les données utilisateur sont stockées dans le répertoire Electron (`~/.config/Chamaccounts` ou équivalent selon la distribution).
+**Note :** la configuration des profils (`profiles.json`) est dans le répertoire Electron (`~/Library/Application Support/chamaccounts` sur macOS, `%APPDATA%\chamaccounts` sur Windows, `~/.config/chamaccounts` sur Linux). Vos CSV vivent dans le dossier que vous choisissez à la première utilisation (hors dépôt Git).
 
 ## Utilisation
 
 ### Première utilisation
 
 1. Lancez l’application
-2. Ouvrez **Réglages** pour configurer les comptes reconnus, les types d’entrées/sorties, les projets et les taux de change
-3. Depuis **Tableau des transactions** ou **Soldes des comptes**, utilisez l’assistant d’import pour déposer vos CSV dans `data/…/Import` et lancer la fusion
-4. Consultez le **Tableau de bord** pour visualiser soldes et mouvements
+2. **Choisissez ou créez un dossier de données** (assistant au premier lancement). Vous pouvez réutiliser un ancien dossier `data/` du dépôt si l’application le détecte.
+3. Ouvrez **Réglages** pour configurer les comptes reconnus, les types d’entrées/sorties, les projets et les taux de change
+4. Depuis **Tableau des transactions** ou **Soldes des comptes**, utilisez l’assistant d’import pour déposer vos CSV dans le dossier `…/Import` du profil actif et lancer la fusion
+5. Consultez le **Tableau de bord** pour visualiser soldes et mouvements
+
+### Profils de données
+
+Dans **Réglages → Profils de données**, vous pouvez créer plusieurs profils (ex. perso / pro), chacun avec son propre dossier sur le disque. L’activation d’un profil recharge les réglages navigateur associés à ce dossier.
 
 ### Import de fichiers
 
 1. Placez vos fichiers CSV dans le dossier d’import (géré par l’assistant dans l’application)
 2. Mappez les colonnes (date, libellé, montant, compte, type, etc.)
-3. Validez la fusion : un rapport de merge et, le cas échéant, un rapport d’anomalies sont générés sous `data/…/Processed/`
+3. Validez la fusion : un rapport de merge et, le cas échéant, un rapport d’anomalies sont générés sous `…/Processed/` du profil actif
 
 ### Sauvegarde et portabilité
 
-Dans **Réglages**, utilisez **Exporter le projet (ZIP)** pour archiver le dossier `data/` et vos préférences, puis **Importer projet (ZIP)** pour restaurer sur une autre machine.
+Dans **Réglages**, utilisez **Exporter le projet (ZIP)** pour archiver les données du profil actif et vos préférences, puis **Importer projet (ZIP)** pour restaurer sur une autre machine (même profil ou après création d’un profil pointant vers le dossier cible).
 
 ## Technologies utilisées
 
@@ -138,9 +143,8 @@ Chamaccounts/
 │   │   ├── pages/            # Routes : tableau de bord, transactions, soldes, budget…
 │   │   ├── services/         # Accès CSV, taux de change, assistants d’import
 │   │   └── hooks/            # Assistants d’import (transactions, soldes)
-│   └── shared/               # Chemins data/, logique d’import partagée
-├── data-template/            # Données vierges empaquetées pour les releases (versionné)
-├── data/                     # Données locales de dev (ignoré par git, non écrasé)
+│   └── shared/               # Chemins relatifs au profil, logique d’import partagée
+├── data-template/            # Arborescence CSV vide (versionné, copiée à la création d’un profil)
 ├── build/                    # Ressources de build (entitlements macOS, notes de release)
 ├── scripts/                  # CI, notes de release, migrations
 ├── electron-builder.yml      # Configuration des installateurs et publication GitHub
@@ -151,9 +155,10 @@ Chamaccounts/
 
 ### Données : release vs développement local
 
-- **`data-template/`** : CSV vides (en-têtes seuls) utilisés par la CI avant `electron-builder` (`scripts/prepare-release-data.sh`).
-- **`data/`** : votre dossier de travail local (ignoré par git). Un `git pull` ne modifie pas vos fichiers existants dans `data/`.
-- **Première installation** (release) : listes vides dans Paramètres (comptes, types d’entrées/sorties) à configurer par l’utilisateur.
+- **`data-template/`** : CSV vides (en-têtes seuls) empaquetés dans l’application pour initialiser un nouveau dossier de profil.
+- **Dossier de profil** : choisi par l’utilisateur (ex. `~/Documents/Chamaccounts/perso/`). Non versionné ; référencé dans `profiles.json` sous le répertoire Electron.
+- **Ancien `data/` à la racine du clone** : ignoré par git ; l’assistant de premier lancement peut l’adopter comme profil « Développement ».
+- **Scripts CLI** (`scripts/*.js`) : `--data-root <chemin>`, ou variable `CHAMACCOUNTS_DATA_ROOT`, ou lecture du profil actif dans `profiles.json`.
 
 ## Licence
 

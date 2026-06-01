@@ -7,7 +7,12 @@ const fs = require('fs');
 const path = require('path');
 const Papa = require('papaparse');
 
-const INPUT = path.join(__dirname, '../data/AccountBalanceData/Processed/src_account_balance.csv');
+const { resolveDataRoot } = require('./lib/resolve-data-root');
+const REPO_ROOT = path.join(__dirname, '..');
+const INPUT = path.join(
+  resolveDataRoot(REPO_ROOT),
+  'AccountBalanceData/Processed/src_account_balance.csv'
+);
 
 const OUTPUT_HEADERS = [
   'DATE',

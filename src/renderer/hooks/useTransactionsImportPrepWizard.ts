@@ -29,11 +29,12 @@ export type { ImportWizardResultField, PrepTableColDef };
 
 export function useTransactionsImportPrepWizard(options: {
   existingTransactionSignatures: Set<string>;
+  accountAliasLookup?: ReadonlyMap<string, string>;
   onAfterSuccessfulAppend?: () => void;
   /** Incrémenter depuis la page (ex. après vidage du dossier Import) pour forcer un rechargement du wizard. */
   folderReloadToken?: number;
 }) {
-  const { existingTransactionSignatures, onAfterSuccessfulAppend, folderReloadToken = 0 } = options;
+  const { existingTransactionSignatures, accountAliasLookup, onAfterSuccessfulAppend, folderReloadToken = 0 } = options;
 
   const [importWizardModel, setImportWizardModel] = useState<ImportWizardModel | null>(null);
   const [importWizardLoading, setImportWizardLoading] = useState(false);
@@ -118,6 +119,7 @@ export function useTransactionsImportPrepWizard(options: {
             model: importWizardModel,
             importColumnMapping,
             existingTransactionSignatures,
+            accountAliasLookup,
             importWizardCellOverrides,
             importWizardManualCellValues,
             importMappedOutputOverrides,
@@ -128,6 +130,7 @@ export function useTransactionsImportPrepWizard(options: {
       mappingWizardActive,
       importColumnMapping,
       existingTransactionSignatures,
+      accountAliasLookup,
       importWizardCellOverrides,
       importWizardManualCellValues,
       importMappedOutputOverrides,
@@ -223,6 +226,15 @@ export function useTransactionsImportPrepWizard(options: {
     return ids;
   }, [mappingWizardActive, importWizardPreview, importPreviewRowStatusByRowId]);
 
+  const duplicateRowIds = useMemo(() => {
+    if (!mappingWizardActive || !importWizardPreview?.list.length) return [] as string[];
+    const ids: string[] = [];
+    for (const p of importWizardPreview.list) {
+      if (p.duplicateExisting) ids.push(p.row.id);
+    }
+    return ids;
+  }, [mappingWizardActive, importWizardPreview]);
+
   /** Lignes dérivées de l’aperçu mapping (suggestions fréquentielles pendant le wizard). */
   const importWizardSuggestionRows = useMemo((): Record<string, string>[] => {
     if (!mappingWizardActive || !importWizardPreview?.list.length) return [];
@@ -272,6 +284,20 @@ export function useTransactionsImportPrepWizard(options: {
     };
   }, [anomalousRowIds, importRowSkip]);
 
+  const importPrepDuplicateSkipHeader = useMemo(() => {
+    const count = duplicateRowIds.length;
+    if (count === 0) return { allSkipped: false, someSkipped: false, count: 0 };
+    let skipped = 0;
+    for (const id of duplicateRowIds) {
+      if (importRowSkip.has(id)) skipped += 1;
+    }
+    return {
+      allSkipped: skipped === count,
+      someSkipped: skipped > 0,
+      count,
+    };
+  }, [duplicateRowIds, importRowSkip]);
+
   const prepTableColDefs = useMemo(
     () =>
       mappingWizardActive
@@ -292,6 +318,7 @@ export function useTransactionsImportPrepWizard(options: {
 
   const prepIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
   const prepAnomalyIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
+  const prepDuplicateIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const el = prepIgnHeaderCheckboxRef.current;
@@ -306,6 +333,13 @@ export function useTransactionsImportPrepWizard(options: {
     el.indeterminate =
       importPrepAnomalySkipHeader.someSkipped && !importPrepAnomalySkipHeader.allSkipped;
   }, [importPrepAnomalySkipHeader]);
+
+  useEffect(() => {
+    const el = prepDuplicateIgnHeaderCheckboxRef.current;
+    if (!el) return;
+    el.indeterminate =
+      importPrepDuplicateSkipHeader.someSkipped && !importPrepDuplicateSkipHeader.allSkipped;
+  }, [importPrepDuplicateSkipHeader]);
 
   const toggleImportPrepSkipAll = useCallback(() => {
     setImportRowSkip((prev) => {
@@ -335,6 +369,20 @@ export function useTransactionsImportPrepWizard(options: {
       return next;
     });
   }, [anomalousRowIds]);
+
+  const toggleSkipAllDuplicates = useCallback(() => {
+    setImportRowSkip((prev) => {
+      if (duplicateRowIds.length === 0) return prev;
+      const all = duplicateRowIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (all) {
+        for (const id of duplicateRowIds) next.delete(id);
+      } else {
+        for (const id of duplicateRowIds) next.add(id);
+      }
+      return next;
+    });
+  }, [duplicateRowIds]);
 
   const updateImportColumnMappingUser = useCallback((colKey: string, value: string) => {
     setImportColumnMappingUser((prev) => {
@@ -376,6 +424,7 @@ export function useTransactionsImportPrepWizard(options: {
           model: importWizardModel,
           importColumnMapping,
           existingTransactionSignatures,
+          accountAliasLookup,
           importWizardCellOverrides,
           importWizardManualCellValues,
           importMappedOutputOverrides,
@@ -401,6 +450,7 @@ export function useTransactionsImportPrepWizard(options: {
       mappingWizardActive,
       importColumnMapping,
       existingTransactionSignatures,
+      accountAliasLookup,
       importWizardCellOverrides,
       importWizardManualCellValues,
       importMappedOutputOverrides,
@@ -611,13 +661,16 @@ export function useTransactionsImportPrepWizard(options: {
     importWizardRowIds,
     importPrepIgnSkipHeader,
     importPrepAnomalySkipHeader,
+    importPrepDuplicateSkipHeader,
     prepTableColDefs,
     visiblePrepColDefs,
     prepStickyKey,
     prepIgnHeaderCheckboxRef,
     prepAnomalyIgnHeaderCheckboxRef,
+    prepDuplicateIgnHeaderCheckboxRef,
     toggleImportPrepSkipAll,
     toggleSkipAllAnomalous,
+    toggleSkipAllDuplicates,
     updateWizardManualCell,
     updateMappedOutputCell,
     updateImportPrepCell,

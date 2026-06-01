@@ -5,6 +5,7 @@ dist/
 dist-electron/
 # Données locales de dev (vos CSV réels) — ne pas committer
 /data/
+backup/
 .DS_Store
 *.log
 .env

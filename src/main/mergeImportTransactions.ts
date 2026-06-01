@@ -21,6 +21,7 @@ import {
   emptyRow,
   parseImportCsv,
   rowSignature,
+  buildAccountAliasLookup,
   rowToCsvLine,
   sortByDate,
 } from '../shared/transactionsImportCore';
@@ -127,7 +128,10 @@ export async function mergeImportTransactions(appPath: string): Promise<MergeRes
   const { rows: existingRows } = await readExistingProcessed(appPath);
   const allValid: ValidRow[] = [...existingRows];
   const allAnomalies: AnomalyRow[] = [];
-  const existingSignatures = new Set(existingRows.map(rowSignature));
+  const accountAliasLookup = buildAccountAliasLookup([]);
+  const existingSignatures = new Set(
+    existingRows.map((row) => rowSignature(row, { accountAliasLookup }))
+  );
 
   let totalImportDataRows = 0;
   for (const file of csvFiles) {
@@ -139,7 +143,7 @@ export async function mergeImportTransactions(appPath: string): Promise<MergeRes
     totalImportDataRows += valid.length + anomalies.length;
     allAnomalies.push(...anomalies);
     for (const item of valid) {
-      const sig = rowSignature(item.row);
+      const sig = rowSignature(item.row, { accountAliasLookup });
       if (existingSignatures.has(sig)) {
         allAnomalies.push({
           sourceFile: item.sourceFile,

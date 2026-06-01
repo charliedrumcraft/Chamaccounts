@@ -13,7 +13,12 @@ const fs = require('fs');
 const path = require('path');
 const Papa = require('papaparse');
 
-const CSV_PATH = path.join(__dirname, '../data/TransactionsData/Processed/src_transaction_data.csv');
+const { resolveDataRoot } = require('./lib/resolve-data-root');
+const REPO_ROOT = path.join(__dirname, '..');
+const CSV_PATH = path.join(
+  resolveDataRoot(REPO_ROOT),
+  'TransactionsData/Processed/src_transaction_data.csv'
+);
 
 function findAccountKey(fields) {
   for (const h of fields) {

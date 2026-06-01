@@ -12,12 +12,30 @@ import {
 } from './mergeImportTransactions';
 import AdmZip from 'adm-zip';
 import {
+  getInstallPath,
+  getDataRoot,
+  migrateLegacyPackagedDataIfNeeded,
+  writeDataFolderZip,
+  ensureDataTree,
+  detectLegacyDataLocations,
+} from './dataDirectory';
+import {
+  addProfile,
+  ensureConfigLoaded,
+  getActiveDataRoot,
+  getActiveProfileId,
+  getDataSetupStatus,
+  removeProfile,
+  renameProfile,
+  setActiveProfile,
+} from './appConfig';
+import { getProfileSessionPartition } from '../shared/profileSession';
+import {
   registerAppUpdaterIpc,
   scheduleStartupUpdateCheck,
   setAppUpdaterMainWindow,
 } from './appUpdater';
 import {
-  DATA_ROOT,
   LOCAL_STORAGE_SNAPSHOT_CSV_PATH,
   TRANSACTIONS_IMPORT_DIR,
   ANOMALY_REPORT_PATH,
@@ -27,6 +45,19 @@ import {
 } from '../shared/dataPaths';
 
 let mainWindow: BrowserWindow | null = null;
+let quitAfterAppStateFlush = false;
+let appStateFlushQuitTimer: ReturnType<typeof setTimeout> | null = null;
+
+function getActiveProfilePartition(): string | undefined {
+  const profileId = getActiveProfileId();
+  if (!profileId) return undefined;
+  return getProfileSessionPartition(profileId);
+}
+
+function resolveDataPath(filePath: string): string {
+  if (path.isAbsolute(filePath)) return filePath;
+  return path.join(getDataRoot(), filePath);
+}
 
 function resolveWindowIcon(): string | undefined {
   const candidates = app.isPackaged
@@ -38,10 +69,10 @@ function resolveWindowIcon(): string | undefined {
   return candidates.find((candidate) => existsSync(candidate));
 }
 
-const createWindow = () => {
+const createWindow = (savedBounds?: Electron.Rectangle) => {
   let preloadPath: string;
   if (app.isPackaged) {
-    const appPath = app.getAppPath();
+    const appPath = getInstallPath();
     preloadPath = path.join(appPath, 'dist-electron', 'preload.js');
     if (!existsSync(preloadPath)) {
       const altPath = path.join(process.resourcesPath, 'app.asar', 'dist-electron', 'preload.js');
@@ -51,17 +82,25 @@ const createWindow = () => {
     preloadPath = path.join(__dirname, 'preload.js');
   }
 
+  const partition = getActiveProfilePartition();
+  const webPreferences: Electron.WebPreferences = {
+    preload: preloadPath,
+    nodeIntegration: false,
+    contextIsolation: true,
+  };
+  if (partition) {
+    webPreferences.partition = partition;
+  }
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: savedBounds?.width ?? 1200,
+    height: savedBounds?.height ?? 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
     minWidth: 800,
     minHeight: 600,
     icon: resolveWindowIcon(),
-    webPreferences: {
-      preload: preloadPath,
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
+    webPreferences,
     title: 'Chamaccounts',
     frame: true,
     autoHideMenuBar: true,
@@ -72,7 +111,7 @@ const createWindow = () => {
     mainWindow.webContents.openDevTools();
   } else {
     if (app.isPackaged) {
-      const appPath = app.getAppPath();
+      const appPath = getInstallPath();
       mainWindow.loadFile(path.join(appPath, 'dist', 'index.html')).catch(console.error);
     } else {
       const htmlPath = path.join(__dirname, '../dist/index.html');
@@ -89,17 +128,14 @@ const createWindow = () => {
   scheduleStartupUpdateCheck();
 };
 
-const getAppPath = (): string => {
-  if (app.isPackaged && process.platform === 'linux') {
-    return app.getPath('userData');
+function reloadWindowForActiveProfile(): void {
+  const bounds = mainWindow?.getBounds();
+  if (mainWindow) {
+    mainWindow.destroy();
+    mainWindow = null;
   }
-  if (app.isPackaged) {
-    const unpackedPath = path.join(process.resourcesPath, 'app.asar.unpacked');
-    if (existsSync(unpackedPath)) return unpackedPath;
-    return process.resourcesPath;
-  }
-  return app.getAppPath();
-};
+  createWindow(bounds);
+}
 
 /** Ouvre un fichier dans l’éditeur de texte par défaut (évite l’association CSV → tableur). */
 function openFileInTextEditor(fullPath: string): void {
@@ -117,7 +153,7 @@ function registerIpcHandlers(): void {
   if (!ipcMain) return;
   ipcMain.handle('read-file', async (_, filePath: string) => {
     try {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(getAppPath(), filePath);
+    const fullPath = resolveDataPath(filePath);
     if (!existsSync(fullPath)) {
       return { success: false, error: `Fichier non trouvé: ${fullPath}` };
     }
@@ -131,7 +167,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('write-file', async (_, filePath: string, content: string) => {
   try {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(getAppPath(), filePath);
+    const fullPath = resolveDataPath(filePath);
     const dirPath = path.dirname(fullPath);
     if (!existsSync(dirPath)) {
       await fs.mkdir(dirPath, { recursive: true });
@@ -146,7 +182,7 @@ function registerIpcHandlers(): void {
 
 ipcMain.handle('read-directory', async (_, dirPath: string) => {
   try {
-    const fullPath = path.isAbsolute(dirPath) ? dirPath : path.join(getAppPath(), dirPath);
+    const fullPath = path.isAbsolute(dirPath) ? dirPath : resolveDataPath(dirPath);
     if (!existsSync(fullPath)) {
       return { success: false, error: `Dossier non trouvé: ${fullPath}` };
     }
@@ -160,7 +196,7 @@ ipcMain.handle('read-directory', async (_, dirPath: string) => {
 
 ipcMain.handle('delete-file', async (_, filePath: string) => {
   try {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(getAppPath(), filePath);
+    const fullPath = resolveDataPath(filePath);
     if (!existsSync(fullPath)) {
       return { success: false, error: `Fichier non trouvé: ${fullPath}` };
     }
@@ -174,8 +210,8 @@ ipcMain.handle('delete-file', async (_, filePath: string) => {
 
 ipcMain.handle('move-file', async (_, sourcePath: string, destPath: string) => {
   try {
-    const fullSource = path.isAbsolute(sourcePath) ? sourcePath : path.join(getAppPath(), sourcePath);
-    const fullDest = path.isAbsolute(destPath) ? destPath : path.join(getAppPath(), destPath);
+    const fullSource = path.isAbsolute(sourcePath) ? sourcePath : resolveDataPath(sourcePath);
+    const fullDest = path.isAbsolute(destPath) ? destPath : resolveDataPath(destPath);
     if (!existsSync(fullSource)) {
       return { success: false, error: `Fichier non trouvé: ${fullSource}` };
     }
@@ -196,7 +232,89 @@ ipcMain.handle('move-file', async (_, sourcePath: string, destPath: string) => {
   }
 });
 
-ipcMain.handle('get-app-path', async () => getAppPath());
+ipcMain.handle('get-app-path', async () => {
+  const root = getActiveDataRoot();
+  if (root) return root;
+  throw new Error('Aucun profil de données configuré.');
+});
+
+ipcMain.handle('get-data-root', async () => {
+  const root = getActiveDataRoot();
+  return { success: !!root, path: root ?? undefined };
+});
+
+ipcMain.handle('get-data-setup-status', async () => {
+  return getDataSetupStatus(detectLegacyDataLocations);
+});
+
+ipcMain.handle(
+  'register-data-profile',
+  async (
+    _,
+    payload: { name: string; dataRoot: string; initialize?: boolean; setActive?: boolean }
+  ) => {
+    try {
+      const dataRoot = path.resolve(payload.dataRoot);
+      if (payload.initialize) {
+        await fs.mkdir(dataRoot, { recursive: true });
+      }
+      if (!existsSync(dataRoot)) {
+        return { success: false, error: 'Dossier introuvable.' };
+      }
+      await ensureDataTree(dataRoot);
+      const setActive = payload.setActive !== false;
+      const profile = await addProfile(payload.name, dataRoot, setActive);
+      return { success: true, profile };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
+  }
+);
+
+ipcMain.handle('set-active-profile', async (_, profileId: string) => {
+  return setActiveProfile(profileId);
+});
+
+ipcMain.handle('reload-window-for-active-profile', async () => {
+  try {
+    reloadWindowForActiveProfile();
+    return { success: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+});
+
+ipcMain.handle('app-state-flush-complete', () => {
+  if (appStateFlushQuitTimer) {
+    clearTimeout(appStateFlushQuitTimer);
+    appStateFlushQuitTimer = null;
+  }
+  quitAfterAppStateFlush = true;
+  app.quit();
+  return { success: true };
+});
+
+ipcMain.handle('rename-data-profile', async (_, payload: { profileId: string; name: string }) => {
+  return renameProfile(payload.profileId, payload.name);
+});
+
+ipcMain.handle('remove-data-profile', async (_, profileId: string) => {
+  return removeProfile(profileId);
+});
+
+ipcMain.handle('initialize-data-folder', async (_, dataRoot: string) => {
+  try {
+    const resolved = path.resolve(dataRoot);
+    await fs.mkdir(resolved, { recursive: true });
+    await ensureDataTree(resolved);
+    return { success: true, path: resolved };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+});
 
 ipcMain.handle('select-folder', async () => {
   try {
@@ -246,7 +364,7 @@ ipcMain.handle('import-transaction-files', async () => {
     if (result.canceled || !result.filePaths?.length) {
       return { success: true, canceled: true, imported: [] };
     }
-    const destDir = path.join(getAppPath(), TRANSACTIONS_IMPORT_DIR);
+    const destDir = resolveDataPath(TRANSACTIONS_IMPORT_DIR);
     if (!existsSync(destDir)) {
       await fs.mkdir(destDir, { recursive: true });
     }
@@ -268,7 +386,7 @@ ipcMain.handle('import-transaction-files', async () => {
 
 ipcMain.handle('open-import-folder', async () => {
   try {
-    const fullPath = path.join(getAppPath(), TRANSACTIONS_IMPORT_DIR);
+    const fullPath = resolveDataPath(TRANSACTIONS_IMPORT_DIR);
     if (!existsSync(fullPath)) {
       await fs.mkdir(fullPath, { recursive: true });
     }
@@ -282,8 +400,7 @@ ipcMain.handle('open-import-folder', async () => {
 
 ipcMain.handle('trash-transactions-import-files', async () => {
   try {
-    const appPath = getAppPath();
-    const importDir = path.join(appPath, TRANSACTIONS_IMPORT_DIR);
+    const importDir = resolveDataPath(TRANSACTIONS_IMPORT_DIR);
     if (!existsSync(importDir)) {
       return { success: true, movedCount: 0, message: 'Aucun dossier Import.' };
     }
@@ -314,7 +431,7 @@ ipcMain.handle('trash-transactions-import-files', async () => {
 
 ipcMain.handle('open-account-balance-import-folder', async () => {
   try {
-    const fullPath = path.join(getAppPath(), ACCOUNT_BALANCE_IMPORT_DIR);
+    const fullPath = resolveDataPath(ACCOUNT_BALANCE_IMPORT_DIR);
     if (!existsSync(fullPath)) {
       await fs.mkdir(fullPath, { recursive: true });
     }
@@ -328,8 +445,7 @@ ipcMain.handle('open-account-balance-import-folder', async () => {
 
 ipcMain.handle('trash-account-balance-import-files', async () => {
   try {
-    const appPath = getAppPath();
-    const importDir = path.join(appPath, ACCOUNT_BALANCE_IMPORT_DIR);
+    const importDir = resolveDataPath(ACCOUNT_BALANCE_IMPORT_DIR);
     if (!existsSync(importDir)) {
       return { success: true, movedCount: 0, message: 'Aucun dossier Import.' };
     }
@@ -360,8 +476,7 @@ ipcMain.handle('trash-account-balance-import-files', async () => {
 
 ipcMain.handle('merge-import-transactions', async () => {
   try {
-    const appPath = getAppPath();
-    const result = await mergeImportTransactions(appPath);
+    const result = await mergeImportTransactions(getDataRoot());
     return result;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -378,8 +493,7 @@ ipcMain.handle('merge-import-transactions', async () => {
 
 ipcMain.handle('append-forced-transaction-rows', async (_, rows: ValidRow[]) => {
   try {
-    const appPath = getAppPath();
-    return await appendForcedTransactionRows(appPath, Array.isArray(rows) ? rows : []);
+    return await appendForcedTransactionRows(getDataRoot(), Array.isArray(rows) ? rows : []);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return { success: false, error: message, appendedCount: 0 };
@@ -388,8 +502,7 @@ ipcMain.handle('append-forced-transaction-rows', async (_, rows: ValidRow[]) => 
 
 ipcMain.handle('get-last-import-report-path', async () => {
   try {
-    const appPath = getAppPath();
-    const relativePath = await getLastImportReportPath(appPath);
+    const relativePath = await getLastImportReportPath(getDataRoot());
     return { success: true, path: relativePath };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -399,12 +512,12 @@ ipcMain.handle('get-last-import-report-path', async () => {
 
 ipcMain.handle('open-import-report', async () => {
   try {
-    const appPath = getAppPath();
-    const relativePath = await getLastImportReportPath(appPath);
+    const dataRoot = getDataRoot();
+    const relativePath = await getLastImportReportPath(dataRoot);
     if (!relativePath) {
       return { success: false, error: 'Aucun rapport de fusion trouvé.' };
     }
-    const fullPath = path.join(appPath, relativePath);
+    const fullPath = path.join(dataRoot, relativePath);
     if (!existsSync(fullPath)) {
       return { success: false, error: 'Fichier rapport introuvable.' };
     }
@@ -418,8 +531,7 @@ ipcMain.handle('open-import-report', async () => {
 
 ipcMain.handle('open-anomaly-report', async () => {
   try {
-    const appPath = getAppPath();
-    const fullPath = path.join(appPath, ANOMALY_REPORT_PATH);
+    const fullPath = resolveDataPath(ANOMALY_REPORT_PATH);
     if (!existsSync(fullPath)) {
       return { success: false, error: 'Aucun rapport d\'anomalies trouvé.' };
     }
@@ -433,8 +545,7 @@ ipcMain.handle('open-anomaly-report', async () => {
 
 ipcMain.handle('open-monthly-anomaly-report', async () => {
   try {
-    const appPath = getAppPath();
-    const fullPath = path.join(appPath, MONTHLY_ANOMALY_REPORT_PATH);
+    const fullPath = resolveDataPath(MONTHLY_ANOMALY_REPORT_PATH);
     if (!existsSync(fullPath)) {
       return { success: false, error: 'Aucun rapport d\'anomalies mensuel trouvé.' };
     }
@@ -448,8 +559,7 @@ ipcMain.handle('open-monthly-anomaly-report', async () => {
 
 ipcMain.handle('open-account-balance-anomaly-report', async () => {
   try {
-    const appPath = getAppPath();
-    const fullPath = path.join(appPath, ACCOUNT_BALANCE_ANOMALY_REPORT_PATH);
+    const fullPath = resolveDataPath(ACCOUNT_BALANCE_ANOMALY_REPORT_PATH);
     if (!existsSync(fullPath)) {
       return { success: false, error: 'Aucun rapport d\'anomalies (soldes) trouvé.' };
     }
@@ -463,12 +573,12 @@ ipcMain.handle('open-account-balance-anomaly-report', async () => {
 
 ipcMain.handle('download-import-report', async () => {
   try {
-    const appPath = getAppPath();
-    const relativePath = await getLastImportReportPath(appPath);
+    const dataRoot = getDataRoot();
+    const relativePath = await getLastImportReportPath(dataRoot);
     if (!relativePath) {
       return { success: false, error: 'Aucun rapport d\'importation trouvé.' };
     }
-    const fullPath = path.join(appPath, relativePath);
+    const fullPath = path.join(dataRoot, relativePath);
     if (!existsSync(fullPath)) {
       return { success: false, error: 'Fichier rapport introuvable.' };
     }
@@ -508,7 +618,8 @@ ipcMain.handle('save-file', async (_, options?: { defaultPath?: string; filters?
 ipcMain.handle('export-data-folder-zip', async () => {
   try {
     if (!mainWindow) return { success: false, error: 'Fenêtre non disponible' };
-    const dataDir = path.join(getAppPath(), DATA_ROOT);
+    await migrateLegacyPackagedDataIfNeeded();
+    const dataDir = getDataRoot();
     if (!existsSync(dataDir)) {
       await fs.mkdir(dataDir, { recursive: true });
     }
@@ -521,9 +632,7 @@ ipcMain.handle('export-data-folder-zip', async () => {
     if (result.canceled || !result.filePath) {
       return { success: false, canceled: true };
     }
-    const zip = new AdmZip();
-    zip.addLocalFolder(dataDir, DATA_ROOT);
-    zip.writeZip(result.filePath);
+    await writeDataFolderZip(dataDir, result.filePath);
     return { success: true, path: result.filePath };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -531,19 +640,25 @@ ipcMain.handle('export-data-folder-zip', async () => {
   }
 });
 
-function safeZipExtractTarget(appBase: string, entryName: string): string | null {
+function safeZipExtractTarget(dataRoot: string, entryName: string): string | null {
   const norm = entryName.replace(/\\/g, '/').replace(/^\/+/, '');
   const parts = norm.split('/').filter((p) => p.length > 0);
   if (parts.length === 0) return null;
-  if (parts[0].toLowerCase() !== 'data') return null;
-  if (parts.some((p) => p === '..')) return null;
-  return path.join(appBase, ...parts);
+  let relParts: string[];
+  if (parts[0].toLowerCase() === 'data') {
+    relParts = parts.slice(1);
+  } else {
+    relParts = parts;
+  }
+  if (relParts.length === 0 || relParts.some((p) => p === '..')) return null;
+  return path.join(dataRoot, ...relParts);
 }
 
 /** Importe une archive produite par « Exporter le projet » : uniquement les entrées sous data/. */
 ipcMain.handle('import-data-folder-zip', async () => {
   try {
     if (!mainWindow) return { success: false, error: 'Fenêtre non disponible' };
+    await migrateLegacyPackagedDataIfNeeded();
     const pick = await dialog.showOpenDialog(mainWindow, {
       title: 'Importer une archive du projet',
       filters: [{ name: 'Archives ZIP', extensions: ['zip'] }],
@@ -553,13 +668,13 @@ ipcMain.handle('import-data-folder-zip', async () => {
       return { success: false, canceled: true };
     }
     const zipPath = pick.filePaths[0];
-    const appBase = getAppPath();
+    const dataRoot = getDataRoot();
     const zip = new AdmZip(zipPath);
     const entries = zip.getEntries();
     let extractedFileCount = 0;
     for (const entry of entries) {
       if (entry.isDirectory) continue;
-      const dest = safeZipExtractTarget(appBase, entry.entryName);
+      const dest = safeZipExtractTarget(dataRoot, entry.entryName);
       if (!dest) continue;
       const buf = entry.getData();
       if (buf == null) continue;
@@ -575,7 +690,7 @@ ipcMain.handle('import-data-folder-zip', async () => {
           'Aucun fichier importé. Utilisez une archive créée avec « Exporter le projet (ZIP) » (racine data/).',
       };
     }
-    const snapshotFull = path.join(appBase, LOCAL_STORAGE_SNAPSHOT_CSV_PATH);
+    const snapshotFull = path.join(dataRoot, LOCAL_STORAGE_SNAPSHOT_CSV_PATH);
     const appStateSnapshotFound = existsSync(snapshotFull);
     return { success: true, extractedFileCount, appStateSnapshotFound };
   } catch (err: unknown) {
@@ -609,7 +724,7 @@ ipcMain.handle('write-external-file', async (_, filePath: string, content: strin
 
 ipcMain.handle('open-path', async (_, filePath: string) => {
   try {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(getAppPath(), filePath);
+    const fullPath = resolveDataPath(filePath);
     if (!existsSync(fullPath)) return { success: false, error: `Fichier non trouvé: ${fullPath}` };
     await shell.openPath(fullPath);
     return { success: true };
@@ -620,7 +735,7 @@ ipcMain.handle('open-path', async (_, filePath: string) => {
 
 ipcMain.handle('write-binary-file', async (_, filePath: string, base64Content: string) => {
   try {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(getAppPath(), filePath);
+    const fullPath = resolveDataPath(filePath);
     const dirPath = path.dirname(fullPath);
     if (!existsSync(dirPath)) await fs.mkdir(dirPath, { recursive: true });
     const buffer = Buffer.from(base64Content, 'base64');
@@ -634,7 +749,7 @@ ipcMain.handle('write-binary-file', async (_, filePath: string, base64Content: s
 
   ipcMain.handle('convert-xlsx-to-csv', async (_, filePath: string) => {
     try {
-      const fullPath = path.isAbsolute(filePath) ? filePath : path.join(getAppPath(), filePath);
+      const fullPath = resolveDataPath(filePath);
       if (!existsSync(fullPath)) {
         return { success: false, error: 'Fichier non trouvé' };
       }
@@ -669,13 +784,26 @@ ipcMain.handle('write-binary-file', async (_, filePath: string, base64Content: s
 
 // Ne lancer l'app que dans le processus Electron (pas quand Node exécute le script via le plugin Vite)
 if (process.versions.electron) {
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    await migrateLegacyPackagedDataIfNeeded();
+    await ensureConfigLoaded();
     registerAppUpdaterIpc();
     registerIpcHandlers();
     createWindow();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+  });
+
+  app.on('before-quit', (event) => {
+    if (quitAfterAppStateFlush || !mainWindow || mainWindow.isDestroyed()) return;
+    event.preventDefault();
+    mainWindow.webContents.send('flush-app-state-before-quit');
+    if (appStateFlushQuitTimer) clearTimeout(appStateFlushQuitTimer);
+    appStateFlushQuitTimer = setTimeout(() => {
+      quitAfterAppStateFlush = true;
+      app.quit();
+    }, 8000);
   });
 
   app.on('window-all-closed', () => {

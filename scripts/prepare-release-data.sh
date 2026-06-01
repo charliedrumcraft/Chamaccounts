@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Copie data-template/ → data/ pour les builds release (CI). N’écrase pas data-template/.
+# Vérifie que data-template/ est prêt pour le build (plus de copie vers data/ dans le repo).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-rm -rf "${root}/data"
-cp -R "${root}/data-template" "${root}/data"
-echo "Données release préparées depuis data-template/ → data/"
+template="${root}/data-template"
+if [[ ! -d "${template}" ]]; then
+  echo "Erreur : data-template/ introuvable." >&2
+  exit 1
+fi
+echo "data-template/ prêt pour l’empaquetage (aucun dossier data/ dans le dépôt)."

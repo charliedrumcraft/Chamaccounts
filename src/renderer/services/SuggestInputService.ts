@@ -5,10 +5,8 @@
  * Utilisable pour Date, Title, Type, Comptes (Account) ou toute colonne textuelle.
  */
 
-export interface SuggestionItem {
-  value: string;
-  count: number;
-}
+import type { RecognisedAccountEntry } from '../constants/recognisedAccountsStorage';
+import { DEFAULT_ACCOUNT_ALIASES_FOR_DUPLICATES } from '@/shared/accountAliasForDuplicates';
 
 /**
  * Indique si une colonne doit avoir des suggestions texte (Title, Type, Comptes/Account).
@@ -65,6 +63,60 @@ export function getSuggestions(
     }
   }
   items.sort((a, b) => b.count - a.count);
+  return items.slice(0, limit);
+}
+
+/**
+ * Suggestions pour la colonne ACCOUNT : fréquence dans src_transaction_data.csv,
+ * alias Paramètres, et alias d’import (ex. « HSBC » → « HSBC OBS »).
+ */
+export function getAccountSuggestions(
+  rows: Record<string, string>[],
+  header: string,
+  prefix: string,
+  options?: {
+    limit?: number;
+    recognisedEntries?: RecognisedAccountEntry[];
+  }
+): SuggestionItem[] {
+  const limit = options?.limit ?? 10;
+  const normalizedPrefix = prefix.trim().toLowerCase();
+  const byValue = new Map<string, SuggestionItem>();
+
+  for (const item of getSuggestions(rows, header, prefix, limit)) {
+    byValue.set(item.value.toLowerCase(), item);
+  }
+
+  if (normalizedPrefix) {
+    for (const entry of options?.recognisedEntries ?? []) {
+      const name = entry.name.trim();
+      if (!name) continue;
+      for (const label of [name, ...(entry.aliases ?? [])]) {
+        const lo = label.trim().toLowerCase();
+        if (lo.startsWith(normalizedPrefix) && !byValue.has(name.toLowerCase())) {
+          byValue.set(name.toLowerCase(), { value: name, count: 0 });
+        }
+      }
+    }
+
+    for (const [aliasLo, canonical] of Object.entries(DEFAULT_ACCOUNT_ALIASES_FOR_DUPLICATES)) {
+      if (aliasLo.startsWith(normalizedPrefix) || normalizedPrefix.startsWith(aliasLo)) {
+        if (!byValue.has(canonical.toLowerCase())) {
+          byValue.set(canonical.toLowerCase(), { value: canonical, count: 0 });
+        }
+      }
+    }
+  }
+
+  const exactAliasCanonical = DEFAULT_ACCOUNT_ALIASES_FOR_DUPLICATES[normalizedPrefix];
+  const items = [...byValue.values()];
+  items.sort((a, b) => {
+    if (exactAliasCanonical) {
+      if (a.value === exactAliasCanonical) return -1;
+      if (b.value === exactAliasCanonical) return 1;
+    }
+    return b.count - a.count;
+  });
   return items.slice(0, limit);
 }
 

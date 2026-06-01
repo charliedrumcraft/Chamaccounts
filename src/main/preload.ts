@@ -9,6 +9,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   moveFile: (sourcePath: string, destPath: string) =>
     ipcRenderer.invoke('move-file', sourcePath, destPath),
   getAppPath: () => ipcRenderer.invoke('get-app-path'),
+  getDataRoot: () => ipcRenderer.invoke('get-data-root'),
+  getDataSetupStatus: () => ipcRenderer.invoke('get-data-setup-status'),
+  registerDataProfile: (payload: {
+    name: string;
+    dataRoot: string;
+    initialize?: boolean;
+    setActive?: boolean;
+  }) => ipcRenderer.invoke('register-data-profile', payload),
+  setActiveProfile: (profileId: string) => ipcRenderer.invoke('set-active-profile', profileId),
+  reloadWindowForActiveProfile: () => ipcRenderer.invoke('reload-window-for-active-profile'),
+  notifyAppStateFlushComplete: () => ipcRenderer.invoke('app-state-flush-complete'),
+  onFlushAppStateBeforeQuit: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('flush-app-state-before-quit', listener);
+    return () => ipcRenderer.removeListener('flush-app-state-before-quit', listener);
+  },
+  renameDataProfile: (payload: { profileId: string; name: string }) =>
+    ipcRenderer.invoke('rename-data-profile', payload),
+  removeDataProfile: (profileId: string) => ipcRenderer.invoke('remove-data-profile', profileId),
+  initializeDataFolder: (dataRoot: string) => ipcRenderer.invoke('initialize-data-folder', dataRoot),
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   selectFile: (options?: { filters?: { name: string; extensions: string[] }[]; allowMultiple?: boolean }) =>
     ipcRenderer.invoke('select-file', options),
@@ -96,6 +116,25 @@ export interface ElectronAPI {
   moveFile: (sourcePath: string, destPath: string) =>
     Promise<{ success: boolean; error?: string }>;
   getAppPath: () => Promise<string>;
+  getDataRoot: () => Promise<{ success: boolean; path?: string }>;
+  getDataSetupStatus: () => Promise<import('../shared/profiles').DataSetupStatus>;
+  registerDataProfile: (payload: {
+    name: string;
+    dataRoot: string;
+    initialize?: boolean;
+    setActive?: boolean;
+  }) => Promise<{
+    success: boolean;
+    profile?: import('../shared/profiles').Profile;
+    error?: string;
+  }>;
+  setActiveProfile: (profileId: string) => Promise<{ ok: boolean; error?: string }>;
+  reloadWindowForActiveProfile: () => Promise<{ success: boolean; error?: string }>;
+  notifyAppStateFlushComplete: () => Promise<{ success: boolean }>;
+  onFlushAppStateBeforeQuit: (callback: () => void) => () => void;
+  renameDataProfile: (payload: { profileId: string; name: string }) => Promise<{ ok: boolean; error?: string }>;
+  removeDataProfile: (profileId: string) => Promise<{ ok: boolean; error?: string }>;
+  initializeDataFolder: (dataRoot: string) => Promise<{ success: boolean; path?: string; error?: string }>;
   selectFolder: () => Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>;
   selectFile: (options?: { filters?: { name: string; extensions: string[] }[]; allowMultiple?: boolean }) =>
     Promise<{ success: boolean; path?: string; paths?: string[]; canceled?: boolean; error?: string }>;

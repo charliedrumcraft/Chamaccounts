@@ -36,8 +36,10 @@ import {
   exportLocalStorageSnapshotToDataFile,
   importLocalStorageSnapshotFromDataFile,
 } from '../services/localStorageSnapshotService';
+import { describeProjectCsvDataForExport } from '../services/projectDataExportService';
 import { LOCAL_STORAGE_SNAPSHOT_CSV_PATH } from '@/shared/dataPaths';
 import AppUpdatesSection from '../components/Settings/AppUpdatesSection';
+import ProfilesSection from '../components/Settings/ProfilesSection';
 
 const STORAGE_KEYS = {
   eurGbpManual: 'settings-eurgbp-manual',
@@ -370,6 +372,7 @@ const Settings: React.FC = () => {
         setSnapshotMessage(snap.error ?? 'Export snapshot impossible');
         return;
       }
+      const csvCheck = await describeProjectCsvDataForExport();
       const api = window.electronAPI;
       if (!api?.exportDataFolderZip) {
         setSnapshotMessage('Export ZIP indisponible (hors application desktop).');
@@ -384,8 +387,12 @@ const Settings: React.FC = () => {
         setSnapshotMessage(z.error ?? 'Erreur lors de la création du ZIP');
         return;
       }
+      const emptyHint =
+        csvCheck.emptyLabels.length > 0
+          ? ` Attention : CSV sans lignes de données — ${csvCheck.emptyLabels.join(', ')}.`
+          : '';
       setSnapshotMessage(
-        `Archive créée : ${z.path ?? ''} (snapshot ${snap.keyCount} clé(s) + dossier data/).`
+        `Archive créée : ${z.path ?? ''} (snapshot ${snap.keyCount} clé(s) ; transactions ${csvCheck.transactionRows}, soldes ${csvCheck.balanceRows}, soutien ${csvCheck.supportRows}).${emptyHint}`
       );
     } finally {
       setSnapshotLoading(false);
@@ -394,7 +401,9 @@ const Settings: React.FC = () => {
 
   const handleImportProjectZip = useCallback(async () => {
     const ok = window.confirm(
-      'Les fichiers du dossier data/ (transactions, soldes, AppState, etc.) seront fusionnés avec le contenu de l’archive (les fichiers existants portant le même chemin seront remplacés). Ensuite, si l’archive contient un snapshot AppState, tous les réglages du navigateur seront remplacés par ce fichier. Continuer ?'
+      'Cette opération remplace les fichiers du dossier du profil actif (transactions, soldes, AppState, etc.) par ceux de l’archive.\n\n' +
+        'Avez-vous exporté le projet (ZIP) pour conserver l’état actuel ?\n\n' +
+        'Si l’archive contient un snapshot AppState, vos réglages navigateur seront aussi remplacés. Continuer ?'
     );
     if (!ok) return;
     setSnapshotMessage(null);
@@ -417,7 +426,7 @@ const Settings: React.FC = () => {
       const n = z.extractedFileCount ?? 0;
       if (!z.appStateSnapshotFound) {
         setSnapshotMessage(
-          `${n} fichier(s) importé(s) sous data/. Aucun local_storage_snapshot.csv — réglages navigateur inchangés. Rechargement…`
+          `${n} fichier(s) importé(s). Aucun local_storage_snapshot.csv — réglages navigateur inchangés. Rechargement…`
         );
         window.setTimeout(() => {
           window.location.reload();
@@ -427,7 +436,7 @@ const Settings: React.FC = () => {
       const ls = await importLocalStorageSnapshotFromDataFile('replace');
       if (!ls.ok) {
         setSnapshotMessage(
-          `${n} fichier(s) importé(s) sous data/. Échec import des réglages : ${ls.error ?? 'erreur'}. Rechargement…`
+          `${n} fichier(s) importé(s). Échec import des réglages : ${ls.error ?? 'erreur'}. Rechargement…`
         );
         window.setTimeout(() => {
           window.location.reload();
@@ -843,13 +852,15 @@ const Settings: React.FC = () => {
           <div className="w-full flex flex-col gap-6">
             <AppUpdatesSection />
 
+            <ProfilesSection />
+
             <div className="w-full bg-white rounded-lg shadow border border-gray-200 p-5">
               <h2 className="text-lg font-semibold text-gray-800 mb-1">Projet complet (données + snapshot)</h2>
               <p className="text-sm text-gray-600 mb-4 max-w-3xl">
-                Archive ZIP de tout le dossier <code className="text-xs bg-slate-100 px-1 py-0.5 rounded">data/</code>{' '}
-                : transactions, soldes de comptes, rapports, ainsi que le fichier AppState (réglages navigateur). « Exporter
-                le projet » met d’abord à jour le snapshot puis crée l’archive. « Importer projet (ZIP) » restaure ces
-                fichiers sur cette machine puis applique le snapshot navigateur s’il est présent dans l’archive.
+                Archive ZIP du dossier de données du profil actif (celui indiqué dans Profils), y compris{' '}
+                <code className="text-xs bg-slate-100 px-1 py-0.5 rounded">AppState/</code> (réglages). « Exporter le
+                projet » met d’abord à jour le snapshot puis crée l’archive — à utiliser avant un import ou une
+                restauration sur une autre machine. « Importer projet (ZIP) » écrase les fichiers du profil actif.
               </p>
               <div className="flex flex-wrap gap-2 items-center">
                 <button
@@ -887,7 +898,7 @@ const Settings: React.FC = () => {
                   disabled={snapshotLoading}
                   className="rounded border border-slate-600 bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
                 >
-                  {snapshotLoading ? 'Traitement…' : 'Exporter vers data/AppState'}
+                  {snapshotLoading ? 'Traitement…' : 'Exporter vers AppState'}
                 </button>
                 <button
                   type="button"

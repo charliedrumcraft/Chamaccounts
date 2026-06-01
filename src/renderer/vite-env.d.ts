@@ -1,10 +1,28 @@
 /// <reference types="vite/client" />
 
+import type { DataSetupStatus, Profile } from '@/shared/profiles';
+
 interface ElectronAPI {
   readFile: (filePath: string) => Promise<{ success: boolean; data?: string; error?: string }>;
   readDirectory?: (dirPath: string) => Promise<{ success: boolean; data?: string[]; error?: string }>;
   writeFile: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
   getAppPath: () => Promise<string>;
+  getDataRoot?: () => Promise<{ success: boolean; path?: string }>;
+  getDataSetupStatus?: () => Promise<DataSetupStatus>;
+  registerDataProfile?: (payload: {
+    name: string;
+    dataRoot: string;
+    initialize?: boolean;
+    setActive?: boolean;
+  }) => Promise<{ success: boolean; profile?: Profile; error?: string }>;
+  setActiveProfile?: (profileId: string) => Promise<{ ok: boolean; error?: string }>;
+  reloadWindowForActiveProfile?: () => Promise<{ success: boolean; error?: string }>;
+  notifyAppStateFlushComplete?: () => Promise<{ success: boolean }>;
+  onFlushAppStateBeforeQuit?: (callback: () => void) => () => void;
+  renameDataProfile?: (payload: { profileId: string; name: string }) => Promise<{ ok: boolean; error?: string }>;
+  removeDataProfile?: (profileId: string) => Promise<{ ok: boolean; error?: string }>;
+  initializeDataFolder?: (dataRoot: string) => Promise<{ success: boolean; path?: string; error?: string }>;
+  selectFolder?: () => Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>;
   importTransactionFiles?: () => Promise<{
     success: boolean;
     canceled?: boolean;
