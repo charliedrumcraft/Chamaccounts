@@ -1,3 +1,27 @@
+# Chamaccounts v1.0.3
+
+Profils de données desktop : dossier externe par profil, réglages (`AppState/`) attachés au profil, export/import ZIP portable.
+
+### Changements par rapport à v1.0.2
+- **Profils de données** : choix d’un dossier externe par profil (transactions, soldes, soutien, réglages)
+- **Assistant de premier lancement** pour configurer ou migrer un dossier existant
+- **AppState par profil** : snapshot CSV dans le dossier du profil, partition Electron dédiée, sync au démarrage et à la fermeture
+- **Export / import projet (ZIP)** : archive complète du profil actif (CSV + `AppState/`) ; rappel d’exporter avant import
+- Scripts CLI : résolution du dossier de données via `--data-root`, `CHAMACCOUNTS_DATA_ROOT` ou profil actif
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.3-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.3-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.3-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.3-linux-x64.AppImage` |
+
+[Télécharger v1.0.3](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.3)
+
+---
+
 # Chamaccounts v1.0.1
 
 Release recommandée : dépôt open source **sans données personnelles**, installateurs construits à partir de **`data-template/`** (CSV vierges, en-têtes seuls).
