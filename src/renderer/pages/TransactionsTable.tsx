@@ -22,6 +22,12 @@ import { formatDateDDMMYY, rowSignature, buildAccountAliasLookup, type ValidRow 
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
+import { ResizableTableHeadCell } from '../components/Common/ResizableTableHeadCell';
+import {
+  defaultEditColumnWidth,
+  useResizableTableColumns,
+  type ResizableColumnDef,
+} from '../hooks/useResizableTableColumns';
 
 const ANOMALY_STATUS_STORAGE_KEY = 'transactions-anomaly-status';
 const ANOMALY_LAST_REPORT_STORAGE_KEY = 'transactions-anomaly-last-report';
@@ -34,6 +40,7 @@ const ANOMALY_FILTER_COLUMN_KEY = '__anomaly_filter__';
 /** Persistance replier/déplier des blocs Import wizard et détection d’anomalies. */
 const TX_IMPORT_MODULE_EXPANDED_KEY = 'transactions-import-module-expanded';
 const TX_ANOMALY_MODULE_EXPANDED_KEY = 'transactions-anomaly-module-expanded';
+const TX_TABLE_COL_WIDTHS_KEY = 'transactions-table-col-widths';
 
 function readModuleExpandedFromStorage(key: string): boolean {
   try {
@@ -270,6 +277,30 @@ const TransactionsTable: React.FC = () => {
       ),
     [data?.headers]
   );
+
+  const resizableColumnDefs = useMemo((): ResizableColumnDef[] => {
+    const cols: ResizableColumnDef[] = [];
+    if (editMode) {
+      cols.push({ key: ANOMALY_SORT_COLUMN_KEY, defaultWidth: 160 });
+    }
+    for (const h of displayHeaders) {
+      cols.push({ key: h, defaultWidth: defaultEditColumnWidth(h) });
+    }
+    if (editMode) {
+      cols.push(
+        { key: '__exclude_anomaly__', defaultWidth: 120, resizable: false },
+        { key: '__delete__', defaultWidth: 130, resizable: false }
+      );
+    }
+    return cols;
+  }, [displayHeaders, editMode]);
+
+  const {
+    getWidth: getColWidth,
+    handleResizeStart: handleColResizeStart,
+    resetWidths: resetColWidths,
+    hasCustomWidths: hasCustomColWidths,
+  } = useResizableTableColumns(TX_TABLE_COL_WIDTHS_KEY, resizableColumnDefs, editMode);
 
   const { minDate, maxDate } = useMemo(() => {
     if (!data?.rows?.length || !dateColumn) {
@@ -1226,15 +1257,41 @@ const TransactionsTable: React.FC = () => {
               {editMode && (
                 <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
               )}
+              {editMode && hasCustomColWidths && (
+                <button
+                  type="button"
+                  onClick={resetColWidths}
+                  className="text-sm text-gray-600 hover:text-gray-900 underline"
+                >
+                  Réinitialiser les largeurs de colonnes
+                </button>
+              )}
             </div>
             <div className="overflow-auto flex-1 min-h-0">
-              <table className="w-full border-collapse text-sm">
+              <table
+                className="w-full border-collapse text-sm"
+                style={editMode ? { tableLayout: 'fixed', minWidth: '100%' } : undefined}
+              >
+                {editMode && (
+                  <colgroup>
+                    <col style={{ width: getColWidth(ANOMALY_SORT_COLUMN_KEY) }} />
+                    {displayHeaders.map((h) => (
+                      <col key={h} style={{ width: getColWidth(h) }} />
+                    ))}
+                    <col style={{ width: getColWidth('__exclude_anomaly__') }} />
+                    <col style={{ width: getColWidth('__delete__') }} />
+                  </colgroup>
+                )}
                 <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 z-10">
                   <tr>
                     {editMode && (
-                      <th
+                      <ResizableTableHeadCell
+                        columnKey={ANOMALY_SORT_COLUMN_KEY}
+                        width={getColWidth(ANOMALY_SORT_COLUMN_KEY)}
+                        enabled={editMode}
+                        onResizeStart={handleColResizeStart}
                         onClick={() => handleSort(ANOMALY_SORT_COLUMN_KEY)}
-                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-amber-50/80 min-w-[10rem] max-w-md align-bottom cursor-pointer select-none hover:bg-amber-100/80 transition-colors"
+                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-amber-50/80 align-bottom cursor-pointer select-none hover:bg-amber-100/80 transition-colors overflow-hidden"
                       >
                         <span className="inline-flex items-center gap-1">
                           Anomalie
@@ -1244,33 +1301,68 @@ const TransactionsTable: React.FC = () => {
                             </span>
                           )}
                         </span>
-                      </th>
+                      </ResizableTableHeadCell>
                     )}
-                    {displayHeaders.map((h) => (
-                      <th
-                        key={h}
-                        onClick={() => handleSort(h)}
-                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors"
+                    {displayHeaders.map((h) =>
+                      editMode ? (
+                        <ResizableTableHeadCell
+                          key={h}
+                          columnKey={h}
+                          width={getColWidth(h)}
+                          enabled={editMode}
+                          onResizeStart={handleColResizeStart}
+                          onClick={() => handleSort(h)}
+                          className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors overflow-hidden"
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {h}
+                            {sortColumn === h && (
+                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                                {sortDirection === 'asc' ? '↑' : '↓'}
+                              </span>
+                            )}
+                          </span>
+                        </ResizableTableHeadCell>
+                      ) : (
+                        <th
+                          key={h}
+                          onClick={() => handleSort(h)}
+                          className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors"
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {h}
+                            {sortColumn === h && (
+                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                                {sortDirection === 'asc' ? '↑' : '↓'}
+                              </span>
+                            )}
+                          </span>
+                        </th>
+                      )
+                    )}
+                    {editMode && (
+                      <ResizableTableHeadCell
+                        columnKey="__exclude_anomaly__"
+                        width={getColWidth('__exclude_anomaly__')}
+                        resizable={false}
+                        enabled={editMode}
+                        onResizeStart={handleColResizeStart}
+                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                       >
-                        <span className="inline-flex items-center gap-1">
-                          {h}
-                          {sortColumn === h && (
-                            <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
-                              {sortDirection === 'asc' ? '↑' : '↓'}
-                            </span>
-                          )}
-                        </span>
-                      </th>
-                    ))}
-                    {editMode && (
-                      <th className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
                         Exclure Anomalie
-                      </th>
+                      </ResizableTableHeadCell>
                     )}
                     {editMode && (
-                      <th className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
+                      <ResizableTableHeadCell
+                        columnKey="__delete__"
+                        width={getColWidth('__delete__')}
+                        resizable={false}
+                        enabled={editMode}
+                        onResizeStart={handleColResizeStart}
+                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
+                      >
                         Supprimer
-                      </th>
+                      </ResizableTableHeadCell>
                     )}
                   </tr>
                 </thead>
@@ -1294,7 +1386,7 @@ const TransactionsTable: React.FC = () => {
                       >
                         {editMode && (
                           <td
-                            className="px-3 py-2 align-top bg-amber-50/40 text-xs text-amber-900 max-w-md break-words whitespace-pre-wrap"
+                            className="px-3 py-2 align-top bg-amber-50/40 text-xs text-amber-900 break-words whitespace-pre-wrap overflow-hidden"
                             title={anomalyText || undefined}
                           >
                             {anomalyText || '—'}
@@ -1321,7 +1413,7 @@ const TransactionsTable: React.FC = () => {
                           if (editMode && dataRowIndex >= 0 && !/^index$/i.test(header)) {
                             if (/^projet$/i.test(header)) {
                               return (
-                                <td key={header} className="px-1 py-0.5">
+                                <td key={header} className="px-1 py-0.5 overflow-hidden">
                                   <ProjetSelectCell
                                     rawId={raw}
                                     projects={projects}
@@ -1343,13 +1435,13 @@ const TransactionsTable: React.FC = () => {
                                 return !Number.isNaN(a) && a !== 0 && (effectiveCurrency === 'EUR' || effectiveCurrency === 'CHF');
                               })();
                             return (
-                              <td key={header} className="px-1 py-0.5">
+                              <td key={header} className="px-1 py-0.5 overflow-hidden">
                                 <input
                                   type="text"
                                   value={raw}
                                   readOnly={!!isAmountGbpReadOnly}
                                   onChange={(e) => handleCellChange(dataRowIndex, header, e.target.value)}
-                                  className={`w-full min-w-[4rem] rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
+                                  className={`w-full rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
                                   aria-label={isAmountGbpReadOnly ? `${header} (calculé)` : `Éditer ${header}`}
                                   title={isAmountGbpReadOnly ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
                                 />

@@ -55,7 +55,7 @@ export const ProjetSelectCell: React.FC<ProjetSelectCellProps> = ({
         value={id}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        className="w-full min-w-[10rem] max-w-xs rounded bg-transparent px-2 py-1 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-0"
+        className="w-full min-w-0 rounded bg-transparent px-2 py-1 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 border-0"
         aria-label="Projet"
       >
         <option value="">— Aucun —</option>

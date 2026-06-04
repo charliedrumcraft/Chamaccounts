@@ -20,6 +20,12 @@ import { useAccountBalanceImportPrepWizard } from '../hooks/useAccountBalanceImp
 import { detectAccountBalanceAnomalies } from '../services/AnomalyDetectionService';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { formatBalanceAmountForUi } from '../utils/format';
+import { ResizableTableHeadCell } from '../components/Common/ResizableTableHeadCell';
+import {
+  defaultEditColumnWidth,
+  useResizableTableColumns,
+  type ResizableColumnDef,
+} from '../hooks/useResizableTableColumns';
 
 const AB_ANOMALY_STATUS_KEY = 'account-balance-anomaly-status';
 const AB_ANOMALY_LAST_REPORT_KEY = 'account-balance-anomaly-last-report';
@@ -32,6 +38,7 @@ const ANOMALY_FILTER_COLUMN_KEY = '__anomaly_filter__';
 /** Persistance replier/déplier des blocs Import wizard et détection d’anomalies. */
 const AB_IMPORT_MODULE_EXPANDED_KEY = 'account-balance-import-module-expanded';
 const AB_ANOMALY_MODULE_EXPANDED_KEY = 'account-balance-anomaly-module-expanded';
+const AB_TABLE_COL_WIDTHS_KEY = 'account-balance-table-col-widths';
 
 function readModuleExpandedFromStorage(key: string): boolean {
   try {
@@ -339,6 +346,27 @@ const AccountBalanceTable: React.FC = () => {
   }, [editMode, displayAccountCodes, orderedAccountCodes, rows]);
 
   const headers = useMemo(() => ['date', ...tableAccountCodes], [tableAccountCodes]);
+
+  const resizableColumnDefs = useMemo((): ResizableColumnDef[] => {
+    const cols: ResizableColumnDef[] = [];
+    if (editMode) {
+      cols.push({ key: ANOMALY_SORT_COLUMN_KEY, defaultWidth: 160 });
+    }
+    for (const h of headers) {
+      cols.push({ key: h, defaultWidth: defaultEditColumnWidth(h) });
+    }
+    if (editMode) {
+      cols.push({ key: '__delete__', defaultWidth: 130, resizable: false });
+    }
+    return cols;
+  }, [headers, editMode]);
+
+  const {
+    getWidth: getColWidth,
+    handleResizeStart: handleColResizeStart,
+    resetWidths: resetColWidths,
+    hasCustomWidths: hasCustomColWidths,
+  } = useResizableTableColumns(AB_TABLE_COL_WIDTHS_KEY, resizableColumnDefs, editMode);
 
   const fiatForCode = useCallback(
     (code: string): AccountFiatCurrency => {
@@ -1231,15 +1259,40 @@ const AccountBalanceTable: React.FC = () => {
               {editMode && (
                 <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
               )}
+              {editMode && hasCustomColWidths && (
+                <button
+                  type="button"
+                  onClick={resetColWidths}
+                  className="text-sm text-gray-600 hover:text-gray-900 underline"
+                >
+                  Réinitialiser les largeurs de colonnes
+                </button>
+              )}
             </div>
             <div className="overflow-auto flex-1 min-h-0">
-              <table className="w-full border-collapse text-sm">
+              <table
+                className="w-full border-collapse text-sm"
+                style={editMode ? { tableLayout: 'fixed', minWidth: '100%' } : undefined}
+              >
+                {editMode && (
+                  <colgroup>
+                    <col style={{ width: getColWidth(ANOMALY_SORT_COLUMN_KEY) }} />
+                    {headers.map((h) => (
+                      <col key={h} style={{ width: getColWidth(h) }} />
+                    ))}
+                    <col style={{ width: getColWidth('__delete__') }} />
+                  </colgroup>
+                )}
                 <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 z-10">
                   <tr>
                     {editMode && (
-                      <th
+                      <ResizableTableHeadCell
+                        columnKey={ANOMALY_SORT_COLUMN_KEY}
+                        width={getColWidth(ANOMALY_SORT_COLUMN_KEY)}
+                        enabled={editMode}
+                        onResizeStart={handleColResizeStart}
                         onClick={() => handleSort(ANOMALY_SORT_COLUMN_KEY)}
-                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-amber-50/80 min-w-[10rem] max-w-md align-bottom cursor-pointer select-none hover:bg-amber-100/80 transition-colors"
+                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-amber-50/80 align-bottom cursor-pointer select-none hover:bg-amber-100/80 transition-colors overflow-hidden"
                       >
                         <span className="inline-flex items-center gap-1">
                           Anomalie
@@ -1249,30 +1302,48 @@ const AccountBalanceTable: React.FC = () => {
                             </span>
                           )}
                         </span>
-                      </th>
+                      </ResizableTableHeadCell>
                     )}
-                    {headers.map((h) => (
-                      <th
-                        key={h}
-                        onClick={() => !editMode && handleSort(h)}
-                        className={`text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap select-none transition-colors ${
-                          editMode ? '' : 'cursor-pointer hover:bg-gray-200'
-                        }`}
-                      >
-                        <span className="inline-flex items-center gap-1">
-                          {columnLabel(h)}
-                          {!editMode && sortColumn === h && (
-                            <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
-                              {sortDirection === 'asc' ? '↑' : '↓'}
-                            </span>
-                          )}
-                        </span>
-                      </th>
-                    ))}
+                    {headers.map((h) =>
+                      editMode ? (
+                        <ResizableTableHeadCell
+                          key={h}
+                          columnKey={h}
+                          width={getColWidth(h)}
+                          enabled={editMode}
+                          onResizeStart={handleColResizeStart}
+                          className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap select-none transition-colors overflow-hidden"
+                        >
+                          <span className="inline-flex items-center gap-1">{columnLabel(h)}</span>
+                        </ResizableTableHeadCell>
+                      ) : (
+                        <th
+                          key={h}
+                          onClick={() => handleSort(h)}
+                          className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors"
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {columnLabel(h)}
+                            {sortColumn === h && (
+                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                                {sortDirection === 'asc' ? '↑' : '↓'}
+                              </span>
+                            )}
+                          </span>
+                        </th>
+                      )
+                    )}
                     {editMode && (
-                      <th className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
+                      <ResizableTableHeadCell
+                        columnKey="__delete__"
+                        width={getColWidth('__delete__')}
+                        resizable={false}
+                        enabled={editMode}
+                        onResizeStart={handleColResizeStart}
+                        className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
+                      >
                         Supprimer
-                      </th>
+                      </ResizableTableHeadCell>
                     )}
                   </tr>
                 </thead>
@@ -1291,14 +1362,14 @@ const AccountBalanceTable: React.FC = () => {
                       >
                         {editMode && (
                           <td
-                            className="px-3 py-2 align-top bg-amber-50/40 text-xs text-amber-900 max-w-md break-words whitespace-pre-wrap"
+                            className="px-3 py-2 align-top bg-amber-50/40 text-xs text-amber-900 break-words whitespace-pre-wrap overflow-hidden"
                             title={anomalyText || undefined}
                           >
                             {anomalyText || '—'}
                           </td>
                         )}
                         {headers.map((col) => (
-                          <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap align-middle">
+                          <td key={col} className="px-3 py-2 text-gray-800 whitespace-nowrap align-middle overflow-hidden">
                             {editMode && dataRowIndex >= 0 ? (
                               <input
                                 type="text"
@@ -1321,7 +1392,7 @@ const AccountBalanceTable: React.FC = () => {
                                   });
                                   applyBlurValue(dataRowIndex, col, e.target.value);
                                 }}
-                                className="w-full min-w-[4rem] rounded border border-gray-300 px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                className="w-full rounded border border-gray-300 px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500"
                                 aria-label={col === 'date' ? 'Date' : columnLabel(col)}
                               />
                             ) : (
@@ -1351,13 +1422,13 @@ const AccountBalanceTable: React.FC = () => {
                       >
                         <td className="px-3 py-2 align-middle bg-amber-50/40 text-xs text-gray-400">—</td>
                         {headers.map((col) => (
-                          <td key={col} className="px-1 py-0.5 align-middle">
+                          <td key={col} className="px-1 py-0.5 align-middle overflow-hidden">
                             <input
                               type="text"
                               value={draft[col] ?? ''}
                               onChange={(e) => handleNewRowDraftChange(draftIndex, col, e.target.value)}
                               placeholder="Nouvelle ligne…"
-                              className="w-full min-w-[4rem] rounded border border-dashed border-gray-400 px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                              className="w-full rounded border border-dashed border-gray-400 px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                               aria-label={col === 'date' ? 'Nouvelle ligne — date' : `Nouvelle ligne — ${columnLabel(col)}`}
                             />
                           </td>

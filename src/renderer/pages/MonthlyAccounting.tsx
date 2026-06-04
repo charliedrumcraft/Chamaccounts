@@ -22,6 +22,12 @@ import type { CurrencySymbol } from '../services/EffectiveExchangeRates';
 import Papa from 'papaparse';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
+import { ResizableTableHeadCell } from '../components/Common/ResizableTableHeadCell';
+import {
+  defaultEditColumnWidth,
+  useResizableTableColumns,
+  type ResizableColumnDef,
+} from '../hooks/useResizableTableColumns';
 
 ChartJS.register(...registerables, Filler);
 
@@ -38,6 +44,7 @@ const OVERVIEW_AVERAGE_PERIOD = 'monthly-accounting-overview-average-period';
 const SECTION_MONTHLY_CHART = 'monthly-accounting-section-chart-expanded';
 const SECTION_MONTHLY_OVERVIEW = 'monthly-accounting-section-overview-expanded';
 const SECTION_MONTHLY_TABLE = 'monthly-accounting-section-table-expanded';
+const MA_TABLE_COL_WIDTHS_KEY = 'monthly-accounting-table-col-widths';
 
 function loadMonthlySectionExpanded(key: string, defaultOpen = true): boolean {
   try {
@@ -556,6 +563,28 @@ const MonthlyAccounting: React.FC = () => {
       ),
     [data?.headers, isHiddenMonthlyColumn]
   );
+
+  const resizableColumnDefs = useMemo((): ResizableColumnDef[] => {
+    const cols: ResizableColumnDef[] = displayHeaders.map((h) => ({
+      key: h,
+      defaultWidth: defaultEditColumnWidth(h),
+    }));
+    if (editMode) {
+      cols.push(
+        { key: '__duplicate__', defaultWidth: 72, resizable: false },
+        { key: '__exclude_anomaly__', defaultWidth: 120, resizable: false },
+        { key: '__delete__', defaultWidth: 130, resizable: false }
+      );
+    }
+    return cols;
+  }, [displayHeaders, editMode]);
+
+  const {
+    getWidth: getColWidth,
+    handleResizeStart: handleColResizeStart,
+    resetWidths: resetColWidths,
+    hasCustomWidths: hasCustomColWidths,
+  } = useResizableTableColumns(MA_TABLE_COL_WIDTHS_KEY, resizableColumnDefs, editMode);
 
   /** Mois présents dans les données (année-mois), du plus récent au plus ancien. */
   const availableMonths = useMemo(() => {
@@ -2503,49 +2532,113 @@ const MonthlyAccounting: React.FC = () => {
                   {editMode && (
                     <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
                   )}
+                  {editMode && hasCustomColWidths && (
+                    <button
+                      type="button"
+                      onClick={resetColWidths}
+                      className="text-sm text-gray-600 hover:text-gray-900 underline"
+                    >
+                      Réinitialiser les largeurs de colonnes
+                    </button>
+                  )}
                 </div>
                 <div className="overflow-auto flex-1 min-h-0">
-                  <table className="w-full border-collapse text-sm">
+                  <table
+                    className="w-full border-collapse text-sm"
+                    style={editMode ? { tableLayout: 'fixed', minWidth: '100%' } : undefined}
+                  >
+                    {editMode && (
+                      <colgroup>
+                        {displayHeaders.map((h) => (
+                          <col key={h} style={{ width: getColWidth(h) }} />
+                        ))}
+                        <col style={{ width: getColWidth('__duplicate__') }} />
+                        <col style={{ width: getColWidth('__exclude_anomaly__') }} />
+                        <col style={{ width: getColWidth('__delete__') }} />
+                      </colgroup>
+                    )}
                     <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 z-10">
                       <tr>
-                        {displayHeaders.map((h) => (
-                          <th
-                            key={h}
-                            onClick={() => handleSort(h)}
-                            className={`text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors ${
-                              /^(titres?|titles?)$/i.test(h)
-                                ? 'min-w-[18rem]'
-                                : /^(types?)$/i.test(h)
-                                  ? 'min-w-[calc(8.25ch+1rem+2px)]'
-                                  : /date/i.test(h)
-                                    ? 'min-w-[calc(10ch+1rem+2px)]'
-                                  : ''
-                            }`}
+                        {displayHeaders.map((h) =>
+                          editMode ? (
+                            <ResizableTableHeadCell
+                              key={h}
+                              columnKey={h}
+                              width={getColWidth(h)}
+                              enabled={editMode}
+                              onResizeStart={handleColResizeStart}
+                              onClick={() => handleSort(h)}
+                              className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors overflow-hidden"
+                            >
+                              <span className="inline-flex items-center gap-1">
+                                {h}
+                                {sortColumn === h && (
+                                  <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                                    {sortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </span>
+                            </ResizableTableHeadCell>
+                          ) : (
+                            <th
+                              key={h}
+                              onClick={() => handleSort(h)}
+                              className={`text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors ${
+                                /^(titres?|titles?)$/i.test(h)
+                                  ? 'min-w-[18rem]'
+                                  : /^(types?)$/i.test(h)
+                                    ? 'min-w-[calc(8.25ch+1rem+2px)]'
+                                    : /date/i.test(h)
+                                      ? 'min-w-[calc(10ch+1rem+2px)]'
+                                    : ''
+                              }`}
+                            >
+                              <span className="inline-flex items-center gap-1">
+                                {h}
+                                {sortColumn === h && (
+                                  <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                                    {sortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </span>
+                            </th>
+                          )
+                        )}
+                        {editMode && (
+                          <ResizableTableHeadCell
+                            columnKey="__duplicate__"
+                            width={getColWidth('__duplicate__')}
+                            resizable={false}
+                            enabled={editMode}
+                            onResizeStart={handleColResizeStart}
+                            className="text-left font-semibold text-gray-700 px-0.5 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                           >
-                            <span className="inline-flex items-center gap-1">
-                              {h}
-                              {sortColumn === h && (
-                                <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
-                                  {sortDirection === 'asc' ? '↑' : '↓'}
-                                </span>
-                              )}
-                            </span>
-                          </th>
-                        ))}
-                        {editMode && (
-                          <th className="text-left font-semibold text-gray-700 px-0.5 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
                             Dupliquer
-                          </th>
+                          </ResizableTableHeadCell>
                         )}
                         {editMode && (
-                          <th className="text-left font-semibold text-gray-700 px-1 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
+                          <ResizableTableHeadCell
+                            columnKey="__exclude_anomaly__"
+                            width={getColWidth('__exclude_anomaly__')}
+                            resizable={false}
+                            enabled={editMode}
+                            onResizeStart={handleColResizeStart}
+                            className="text-left font-semibold text-gray-700 px-1 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
+                          >
                             Exclure Anomalie
-                          </th>
+                          </ResizableTableHeadCell>
                         )}
                         {editMode && (
-                          <th className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 w-[1%]">
+                          <ResizableTableHeadCell
+                            columnKey="__delete__"
+                            width={getColWidth('__delete__')}
+                            resizable={false}
+                            enabled={editMode}
+                            onResizeStart={handleColResizeStart}
+                            className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
+                          >
                             Supprimer
-                          </th>
+                          </ResizableTableHeadCell>
                         )}
                       </tr>
                     </thead>
@@ -2571,8 +2664,6 @@ const MonthlyAccounting: React.FC = () => {
                               const isAmountColumn = /^amount$/i.test(header);
                               const isCurrencyColumn = /^currency$/i.test(header);
                               const isAmountGbpColumn = /^amount\s*gbp$/i.test(header);
-                              const isWideEntryColumn = /^(titres?|titles?)$/i.test(header);
-                              const isTypeColumn = /^(types?)$/i.test(header);
                               const isDateEntryColumn = /date/i.test(header);
                               const isAccountColumn = /^account$/i.test(header) || /compte/i.test(header);
                               const display = isDateColumn
@@ -2589,7 +2680,7 @@ const MonthlyAccounting: React.FC = () => {
                               if (editMode && dataRowIndex >= 0 && !/^index$/i.test(header)) {
                                 if (/^projet$/i.test(header)) {
                                   return (
-                                    <td key={header} className="px-1 py-0.5">
+                                    <td key={header} className="px-1 py-0.5 overflow-hidden">
                                       <ProjetSelectCell
                                         rawId={raw}
                                         projects={projects}
@@ -2647,7 +2738,7 @@ const MonthlyAccounting: React.FC = () => {
                                   }
                                 };
                                 return (
-                                  <td key={header} className="px-1 py-0.5">
+                                  <td key={header} className="px-1 py-0.5 overflow-hidden">
                                     <input
                                       type="text"
                                       value={raw}
@@ -2655,7 +2746,7 @@ const MonthlyAccounting: React.FC = () => {
                                       onChange={(e) => handleCellChange(dataRowIndex, header, e.target.value)}
                                       onKeyDown={handleKeyDown}
                                       list={useSuggestions ? listId : isDateEntryColumn && dateSuggestions.length > 0 ? dateListId : undefined}
-                                      className={`w-full ${isWideEntryColumn ? 'min-w-[18rem]' : isTypeColumn ? 'min-w-[calc(8.25ch+1rem+2px)]' : isDateEntryColumn ? 'min-w-[calc(10ch+1rem+2px)]' : 'min-w-[4rem]'} rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
+                                      className={`w-full rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
                                       aria-label={isAmountGbpReadOnly ? `${header} (calculé)` : `Éditer ${header}`}
                                       title={isAmountGbpReadOnly ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
                                     />
@@ -2751,7 +2842,7 @@ const MonthlyAccounting: React.FC = () => {
                             }
                             if (/^projet$/i.test(header)) {
                               return (
-                                <td key={header} className="px-1 py-0.5">
+                                <td key={header} className="px-1 py-0.5 overflow-hidden">
                                   <ProjetSelectCell
                                     rawId={raw}
                                     projects={projects}
@@ -2764,9 +2855,6 @@ const MonthlyAccounting: React.FC = () => {
                             const draftAmountHeader = displayHeaders.find((h) => /^amount$/i.test(h));
                             const draftCurrencyHeader = displayHeaders.find((h) => /^currency$/i.test(h));
                             const isAmountGbpColumnDraft = /^amount\s*gbp$/i.test(header);
-                            const isWideEntryColumnDraft = /^(titres?|titles?)$/i.test(header);
-                            const isTypeColumnDraft = /^(types?)$/i.test(header);
-                            const isDateEntryColumnDraft = /date/i.test(header);
                             const effectiveCurrencyDraft = draftCurrencyHeader ? ((draft[draftCurrencyHeader] ?? '').trim().toUpperCase() || 'EUR') : 'EUR';
                             const isAmountGbpReadOnlyDraft =
                               isAmountGbpColumnDraft &&
@@ -2814,7 +2902,7 @@ const MonthlyAccounting: React.FC = () => {
                               }
                             };
                             return (
-                              <td key={header} className="px-1 py-0.5">
+                              <td key={header} className="px-1 py-0.5 overflow-hidden">
                                 <input
                                   type="text"
                                   value={raw}
@@ -2823,7 +2911,7 @@ const MonthlyAccounting: React.FC = () => {
                                   onKeyDown={handleKeyDown}
                                   placeholder="Nouvelle ligne…"
                                   list={useSuggestions ? listId : isDateColumn && dateSuggestions.length > 0 ? dateListId : undefined}
-                                  className={`w-full ${isWideEntryColumnDraft ? 'min-w-[18rem]' : isTypeColumnDraft ? 'min-w-[calc(8.25ch+1rem+2px)]' : isDateEntryColumnDraft ? 'min-w-[calc(10ch+1rem+2px)]' : 'min-w-[4rem]'} rounded border px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isAmountGbpReadOnlyDraft ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-dashed border-gray-400'}`}
+                                  className={`w-full rounded border px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isAmountGbpReadOnlyDraft ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-dashed border-gray-400'}`}
                                   aria-label={isAmountGbpReadOnlyDraft ? `${header} (calculé)` : `Nouvelle ligne — ${header}`}
                                   title={isAmountGbpReadOnlyDraft ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
                                 />
