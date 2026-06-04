@@ -332,16 +332,86 @@ const TransactionsTable: React.FC = () => {
     return map;
   }, [data]);
 
+  /** Valeurs figées pour le filtre recherche en mode édition (pas de re-filtrage à chaque frappe). */
+  const [editFilterRowSnapshot, setEditFilterRowSnapshot] = useState<Record<string, string>[] | null>(
+    null
+  );
+  const [editFilterAnomalySnapshot, setEditFilterAnomalySnapshot] = useState<Map<number, string> | null>(
+    null
+  );
+  const [editFilterDateBounds, setEditFilterDateBounds] = useState<{
+    minDate: Date;
+    maxDate: Date;
+  } | null>(null);
+  const dataForFilterSnapshotRef = useRef(data);
+  dataForFilterSnapshotRef.current = data;
+
+  const applyEditFilterSnapshot = useCallback(() => {
+    const d = dataForFilterSnapshotRef.current;
+    if (!d?.rows?.length) {
+      setEditFilterRowSnapshot(null);
+      setEditFilterAnomalySnapshot(null);
+      setEditFilterDateBounds(null);
+      return;
+    }
+    setEditFilterRowSnapshot(d.rows.map((row) => ({ ...row })));
+    const { anomalies } = detectAnomalies(d);
+    const anomalyMap = new Map<number, string>();
+    for (const a of anomalies) {
+      anomalyMap.set(a.rowIndex - 1, a.reasons.join(' ; '));
+    }
+    setEditFilterAnomalySnapshot(anomalyMap);
+    const dc = d.headers.find((h) => /date/i.test(h)) ?? null;
+    if (dc) {
+      const dates: Date[] = [];
+      for (const row of d.rows) {
+        const parsed = parseDateFromCell(row[dc] ?? '');
+        if (parsed) dates.push(parsed);
+      }
+      if (dates.length > 0) {
+        const sorted = [...dates].sort((a, b) => a.getTime() - b.getTime());
+        setEditFilterDateBounds({
+          minDate: sorted[0]!,
+          maxDate: sorted[sorted.length - 1]!,
+        });
+      } else {
+        setEditFilterDateBounds(null);
+      }
+    } else {
+      setEditFilterDateBounds(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!editMode) {
+      setEditFilterRowSnapshot(null);
+      setEditFilterAnomalySnapshot(null);
+      setEditFilterDateBounds(null);
+      return;
+    }
+    applyEditFilterSnapshot();
+  }, [editMode, filterText, filterColumn, applyEditFilterSnapshot]);
+
   const filteredRows = useMemo(() => {
     if (!data?.rows) return [];
-    return data.rows.filter((row) => {
+    const stableFilter = editMode && editFilterRowSnapshot !== null;
+    const filterMinDate =
+      stableFilter && editFilterDateBounds ? editFilterDateBounds.minDate : minDate;
+    const filterMaxDate =
+      stableFilter && editFilterDateBounds ? editFilterDateBounds.maxDate : maxDate;
+    const anomalyMapForFilter =
+      stableFilter && editFilterAnomalySnapshot
+        ? editFilterAnomalySnapshot
+        : transactionAnomalyByDataRowIndex;
+
+    return data.rows.filter((row, index) => {
+      const rowForFilter = stableFilter ? (editFilterRowSnapshot[index] ?? row) : row;
       const q = filterText.trim().toLowerCase();
       const colSel =
         !editMode && filterColumn === ANOMALY_FILTER_COLUMN_KEY ? '__all__' : filterColumn;
       if (q) {
         if (editMode && colSel === ANOMALY_FILTER_COLUMN_KEY) {
-          const idx = data.rows.findIndex((r) => r === row);
-          const text = idx >= 0 ? (transactionAnomalyByDataRowIndex.get(idx) ?? '') : '';
+          const text = anomalyMapForFilter.get(index) ?? '';
           if (!text.toLowerCase().includes(q)) return false;
         } else {
           const cols =
@@ -353,14 +423,14 @@ const TransactionsTable: React.FC = () => {
                     !/^source$/i.test(h)
                 )
               : [colSel];
-          if (!cols.some((h) => (row[h] ?? '').toLowerCase().includes(q))) return false;
+          if (!cols.some((h) => (rowForFilter[h] ?? '').toLowerCase().includes(q))) return false;
         }
       }
-      if (dateColumn && minDate != null && maxDate != null) {
-        const cellDate = parseDateFromCell(row[dateColumn] ?? '');
+      if (dateColumn && filterMinDate != null && filterMaxDate != null) {
+        const cellDate = parseDateFromCell(rowForFilter[dateColumn] ?? '');
         if (!cellDate) return false;
         const t = cellDate.getTime();
-        if (t < minDate.getTime() || t > maxDate.getTime()) return false;
+        if (t < filterMinDate.getTime() || t > filterMaxDate.getTime()) return false;
       }
       return true;
     });
@@ -369,6 +439,9 @@ const TransactionsTable: React.FC = () => {
     filterText,
     filterColumn,
     editMode,
+    editFilterRowSnapshot,
+    editFilterAnomalySnapshot,
+    editFilterDateBounds,
     transactionAnomalyByDataRowIndex,
     dateColumn,
     minDate,
@@ -719,12 +792,14 @@ const TransactionsTable: React.FC = () => {
       const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
       if (result.success) {
         setData(normalized);
+        dataForFilterSnapshotRef.current = normalized;
         editSessionBaselineRef.current = cloneSourceDataResult(normalized);
         setRowsToDelete(new Set());
         /* Comme à la sortie du mode édition : repartir d’un affichage aligné sur les données enregistrées
          * (filtre « anomalies seulement » + lignes collantes après correction d’anomalie). */
         setEditShowAnomaliesOnly(false);
         setAnomalyFilterStickyIndices(new Set());
+        applyEditFilterSnapshot();
         setEditExitConfirmOpen(false);
         setSaveMessage('Fichier src_transaction_data.csv enregistré.');
       } else {
