@@ -1,6 +1,6 @@
 {
   "name": "chamaccounts",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Comptabilité multi-plateforme : transactions, soldes, budget et import CSV (dérivé de Comptal2)",
   "main": "dist-electron/main.js",
   "scripts": {

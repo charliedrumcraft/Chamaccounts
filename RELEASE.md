@@ -1,3 +1,24 @@
+# Chamaccounts v1.0.5
+
+Correction du filtre de recherche en mode édition sur le tableau des transactions.
+
+### Changements par rapport à v1.0.4
+- **Mode édition (transactions)** : le filtre de la barre de recherche ne se réapplique plus à chaque frappe ; les lignes restent visibles pendant la saisie
+- Le tableau se met à jour après **enregistrement** ou lors d’un **changement du filtre** (texte ou colonne)
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.5-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.5-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.5-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.5-linux-x64.AppImage` |
+
+[Télécharger v1.0.5](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.5)
+
+---
+
 # Chamaccounts v1.0.4
 
 Colonnes redimensionnables en mode édition pour une meilleure lisibilité des tableaux.
