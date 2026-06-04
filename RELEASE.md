@@ -1,3 +1,25 @@
+# Chamaccounts v1.0.4
+
+Colonnes redimensionnables en mode édition pour une meilleure lisibilité des tableaux.
+
+### Changements par rapport à v1.0.3
+- **Mode édition** : glisser le bord droit d’un en-tête pour ajuster la largeur des colonnes (Transactions, Soldes, Comptabilité mensuelle)
+- Largeurs mémorisées entre les sessions (localStorage)
+- Bouton « Réinitialiser les largeurs de colonnes » lorsque des tailles personnalisées sont actives
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.4-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.4-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.4-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.4-linux-x64.AppImage` |
+
+[Télécharger v1.0.4](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.4)
+
+---
+
 # Chamaccounts v1.0.3
 
 Profils de données desktop : dossier externe par profil, réglages (`AppState/`) attachés au profil, export/import ZIP portable.
