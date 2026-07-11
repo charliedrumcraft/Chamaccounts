@@ -15,11 +15,13 @@ files:
   - dist-electron
   - parametre
   - data-template
+  - data-template-profile
   - package.json
 
 asarUnpack:
   - parametre/**/*
   - data-template/**/*
+  - data-template-profile/**/*
 
 win:
   target:

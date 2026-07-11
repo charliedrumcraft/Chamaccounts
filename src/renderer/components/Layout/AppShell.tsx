@@ -2,6 +2,8 @@ import React, { useCallback, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import UpdateAvailableBanner from './UpdateAvailableBanner';
+import { GuidedTourProvider } from '../../guidedTour/GuidedTourContext';
+import GuidedTourOverlay from '../../guidedTour/GuidedTourOverlay';
 import {
   readAppSidebarCollapsedFromStorage,
   writeAppSidebarCollapsedToStorage,
@@ -9,6 +11,7 @@ import {
 
 const AppShell: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readAppSidebarCollapsedFromStorage);
+  const [guidedTourActive, setGuidedTourActive] = useState(false);
 
   const handleSidebarCollapsedPreferenceToggle = useCallback(() => {
     setSidebarCollapsed((c) => {
@@ -19,18 +22,21 @@ const AppShell: React.FC = () => {
   }, []);
 
   return (
-    <div className="h-screen flex overflow-hidden bg-gray-50">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onCollapsedPreferenceToggle={handleSidebarCollapsedPreferenceToggle}
-      />
-      <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
-        <UpdateAvailableBanner />
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <Outlet />
+    <GuidedTourProvider onTourActiveChange={setGuidedTourActive}>
+      <div className="h-screen flex overflow-hidden bg-gray-50">
+        <Sidebar
+          collapsed={guidedTourActive ? false : sidebarCollapsed}
+          onCollapsedPreferenceToggle={handleSidebarCollapsedPreferenceToggle}
+        />
+        <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
+          <UpdateAvailableBanner />
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <Outlet />
+          </div>
         </div>
       </div>
-    </div>
+      <GuidedTourOverlay />
+    </GuidedTourProvider>
   );
 };
 

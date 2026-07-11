@@ -332,7 +332,7 @@ const TransactionsTable: React.FC = () => {
     return map;
   }, [data]);
 
-  /** Valeurs figées pour le filtre recherche en mode édition (pas de re-filtrage à chaque frappe). */
+  /** Valeurs figées pour filtre et tri en mode édition (pas de re-classement à chaque frappe). */
   const [editFilterRowSnapshot, setEditFilterRowSnapshot] = useState<Record<string, string>[] | null>(
     null
   );
@@ -390,7 +390,7 @@ const TransactionsTable: React.FC = () => {
       return;
     }
     applyEditFilterSnapshot();
-  }, [editMode, filterText, filterColumn, applyEditFilterSnapshot]);
+  }, [editMode, filterText, filterColumn, sortColumn, sortDirection, applyEditFilterSnapshot]);
 
   const filteredRows = useMemo(() => {
     if (!data?.rows) return [];
@@ -490,21 +490,32 @@ const TransactionsTable: React.FC = () => {
   };
 
   const sortedRows = useMemo(() => {
+    const stableSort = editMode && editFilterRowSnapshot !== null;
+    const snapshotRow = (row: Record<string, string>): Record<string, string> => {
+      if (!stableSort || !data?.rows) return row;
+      const idx = data.rows.findIndex((r) => r === row);
+      return idx >= 0 ? (editFilterRowSnapshot[idx] ?? row) : row;
+    };
+    const anomalyMapForSort =
+      stableSort && editFilterAnomalySnapshot
+        ? editFilterAnomalySnapshot
+        : transactionAnomalyByDataRowIndex;
+
     if (sortColumn === ANOMALY_SORT_COLUMN_KEY) {
       if (!editMode || !data?.rows) return filteredRows;
       return [...filteredRows].sort((a, b) => {
         const ia = data.rows.findIndex((r) => r === a);
         const ib = data.rows.findIndex((r) => r === b);
-        const ta = ia >= 0 ? (transactionAnomalyByDataRowIndex.get(ia) ?? '') : '';
-        const tb = ib >= 0 ? (transactionAnomalyByDataRowIndex.get(ib) ?? '') : '';
+        const ta = ia >= 0 ? (anomalyMapForSort.get(ia) ?? '') : '';
+        const tb = ib >= 0 ? (anomalyMapForSort.get(ib) ?? '') : '';
         const cmp = ta.localeCompare(tb, undefined, { sensitivity: 'base' });
         return sortDirection === 'asc' ? cmp : -cmp;
       });
     }
     if (!sortColumn || !data?.headers.includes(sortColumn)) return filteredRows;
     return [...filteredRows].sort((a, b) => {
-      const va = getCompareValue(sortColumn, a[sortColumn] ?? '');
-      const vb = getCompareValue(sortColumn, b[sortColumn] ?? '');
+      const va = getCompareValue(sortColumn, snapshotRow(a)[sortColumn] ?? '');
+      const vb = getCompareValue(sortColumn, snapshotRow(b)[sortColumn] ?? '');
       const na = typeof va === 'number';
       const nb = typeof vb === 'number';
       let cmp: number;
@@ -521,6 +532,8 @@ const TransactionsTable: React.FC = () => {
     data?.headers,
     data?.rows,
     editMode,
+    editFilterRowSnapshot,
+    editFilterAnomalySnapshot,
     transactionAnomalyByDataRowIndex,
   ]);
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { Profile } from '@/shared/profiles';
+import { DATA_TEMPLATE_PROFILE_NAME } from '@/shared/dataTemplateProfile';
 import {
   syncAppStateOnProfileLeave,
 } from '../../services/profileAppStateSync';
@@ -127,7 +128,7 @@ const ProfilesSection: React.FC = () => {
   );
 
   return (
-    <div className="w-full bg-white rounded-lg shadow border border-gray-200 p-5">
+    <div className="w-full bg-white rounded-lg shadow border border-gray-200 p-5" data-tour="settings-profiles">
       <h2 className="text-lg font-semibold text-gray-800 mb-1">Profils de données</h2>
       <p className="text-sm text-gray-600 mb-4 max-w-3xl">
         Chaque profil pointe vers un dossier que vous choisissez (transactions, soldes, soutien,
@@ -172,7 +173,7 @@ const ProfilesSection: React.FC = () => {
                 Activer
               </button>
             )}
-            {profiles.length > 1 && (
+            {profiles.length > 1 && p.name !== DATA_TEMPLATE_PROFILE_NAME && (
               <button
                 type="button"
                 disabled={loading}

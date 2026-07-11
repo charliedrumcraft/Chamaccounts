@@ -29,6 +29,7 @@ import {
   renameProfile,
   setActiveProfile,
 } from './appConfig';
+import { ensureDataTemplateProfile } from './dataTemplateProfile';
 import { getProfileSessionPartition } from '../shared/profileSession';
 import {
   registerAppUpdaterIpc,
@@ -787,6 +788,7 @@ if (process.versions.electron) {
   app.whenReady().then(async () => {
     await migrateLegacyPackagedDataIfNeeded();
     await ensureConfigLoaded();
+    await ensureDataTemplateProfile();
     registerAppUpdaterIpc();
     registerIpcHandlers();
     createWindow();

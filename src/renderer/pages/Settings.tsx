@@ -1059,7 +1059,7 @@ const Settings: React.FC = () => {
             </div>
           </div>
 
-          <div className="w-full bg-white rounded-lg shadow border border-gray-200 p-5">
+          <div className="w-full bg-white rounded-lg shadow border border-gray-200 p-5" data-tour="settings-projects">
             <h2 className="text-lg font-semibold text-gray-800 mb-1">Projets</h2>
             <p className="text-sm text-gray-600 mb-4 max-w-3xl">
               Définissez des projets et une couleur chacun. Ils apparaissent en liste déroulante dans la colonne PROJET
@@ -1119,7 +1119,10 @@ const Settings: React.FC = () => {
             </button>
           </div>
 
-          <div className="bg-white rounded-xl shadow-md border border-gray-200/80 overflow-hidden w-full min-w-0">
+          <div
+            className="bg-white rounded-xl shadow-md border border-gray-200/80 overflow-hidden w-full min-w-0"
+            data-tour="settings-recognised-data"
+          >
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 px-5 py-4 border-b border-gray-200 bg-gradient-to-r from-slate-50 to-gray-50/80">
               <div>
                 <h2 className="text-xl font-bold text-gray-900 tracking-tight">Données reconnues</h2>
@@ -1173,7 +1176,10 @@ const Settings: React.FC = () => {
             )}
 
               <div className="p-5 grid grid-cols-1 xl:grid-cols-3 gap-6">
-                <section className="rounded-xl border border-slate-200 bg-slate-50/40 p-4 shadow-sm ring-1 ring-slate-100">
+                <section
+                  className="rounded-xl border border-slate-200 bg-slate-50/40 p-4 shadow-sm ring-1 ring-slate-100"
+                  data-tour="settings-accounts"
+                >
                   <h3 className="text-base font-bold text-slate-900 mb-1 flex items-center gap-2 border-b border-slate-200 pb-3">
                     <span className="flex h-8 w-1 shrink-0 rounded-full bg-slate-600" aria-hidden />
                     Comptes actifs
@@ -1418,7 +1424,10 @@ const Settings: React.FC = () => {
                   )}
                 </section>
 
-                <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 shadow-sm ring-1 ring-emerald-100">
+                <section
+                  className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 shadow-sm ring-1 ring-emerald-100"
+                  data-tour="settings-entry-types"
+                >
                   <h3 className="text-base font-bold text-emerald-900 mb-1 flex items-center gap-2 border-b border-emerald-200/80 pb-3">
                     <span className="flex h-8 w-1 shrink-0 rounded-full bg-emerald-600" aria-hidden />
                     Types d&apos;entrées
@@ -1489,7 +1498,10 @@ const Settings: React.FC = () => {
                   )}
                 </section>
 
-                <section className="rounded-xl border border-red-200 bg-red-50/50 p-4 shadow-sm ring-1 ring-red-100">
+                <section
+                  className="rounded-xl border border-red-200 bg-red-50/50 p-4 shadow-sm ring-1 ring-red-100"
+                  data-tour="settings-output-types"
+                >
                   <h3 className="text-base font-bold text-red-900 mb-1 flex items-center gap-2 border-b border-red-200/80 pb-3">
                     <span className="flex h-8 w-1 shrink-0 rounded-full bg-red-600" aria-hidden />
                     Types de sorties

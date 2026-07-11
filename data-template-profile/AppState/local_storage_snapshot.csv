@@ -1,0 +1,5 @@
+key;value
+settings-recognised-accounts;"[{""name"":""Revolut Perso"",""currency"":""EUR""},{""name"":""HSBC Joint"",""currency"":""GBP""}]"
+settings-recognised-entry-types;"[""Lampton"",""Other Inc"",""Refund"",""Support""]"
+settings-recognised-output-types;"[""Rent"",""Food"",""Leisure"",""Donation"",""Misc""]"
+chamaccounts-projects-v1;"[{""id"":""maison-01"",""name"":""Maison"",""color"":""#6366f1""}]"

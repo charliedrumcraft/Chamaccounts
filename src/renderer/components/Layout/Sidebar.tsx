@@ -1,5 +1,8 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { GITHUB_REPO_NAME } from '@/shared/githubApp';
+import { useSidebarAppInfo } from '../../hooks/useSidebarAppInfo';
+import { useGuidedTour } from '../../guidedTour/GuidedTourContext';
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -92,8 +95,95 @@ function ChevronIcon({ left }: { left: boolean }) {
   );
 }
 
+function TourIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 20l-5.447-2.724A2 2 0 013 15.382V6.618a2 2 0 011.553-1.894L9 2m0 18l6-3m-6 3V2m6 15l5.447 2.724A2 2 0 0021 17.382V8.618a2 2 0 00-1.553-1.894L15 4m0 13V4m0 0L9 2"
+      />
+    </svg>
+  );
+}
+
+function SidebarFooter({
+  collapsed,
+  appVersion,
+  activeProfileName,
+  onStartTour,
+  tourActive,
+}: {
+  collapsed: boolean;
+  appVersion: string | null;
+  activeProfileName: string | null;
+  onStartTour: () => void;
+  tourActive: boolean;
+}) {
+  const versionLabel = appVersion ? `v${appVersion}` : null;
+  const profileLabel = activeProfileName ?? 'Profil non configuré';
+  const tooltip = [profileLabel, versionLabel].filter(Boolean).join(' · ');
+
+  if (collapsed) {
+    return (
+      <div className="shrink-0 border-t border-gray-100 py-2 flex flex-col items-center gap-1">
+        <button
+          type="button"
+          onClick={onStartTour}
+          disabled={tourActive}
+          className="flex h-8 w-8 items-center justify-center rounded-md text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+          title="Visite guidée"
+          aria-label="Visite guidée"
+        >
+          <TourIcon className="w-4 h-4" />
+        </button>
+        <span
+          className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400"
+          title={tooltip || undefined}
+          aria-label={tooltip || 'Informations application'}
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="shrink-0 border-t border-gray-100 px-3 py-3 space-y-2">
+      <button
+        type="button"
+        onClick={onStartTour}
+        disabled={tourActive}
+        className="w-full flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-2 py-2 text-xs font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50 transition-colors"
+      >
+        <TourIcon className="w-4 h-4 shrink-0" />
+        Visite guidée
+      </button>
+      <div className="min-w-0">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-gray-400">Profil actif</p>
+        <p className="text-xs font-medium text-gray-700 truncate" title={profileLabel}>
+          {profileLabel}
+        </p>
+      </div>
+      {versionLabel && (
+        <p className="text-[11px] text-gray-400 tabular-nums" title={`Version ${versionLabel}`}>
+          {versionLabel}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggle }) => {
   const location = useLocation();
+  const { appVersion, activeProfileName } = useSidebarAppInfo();
+  const { startTour, active: tourActive } = useGuidedTour();
 
   return (
     <aside
@@ -106,7 +196,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
       {/* En-tête avec bouton réduire */}
       <div className={`flex items-center h-12 border-b border-gray-100 shrink-0 ${collapsed ? 'justify-center px-0' : 'justify-between px-3'}`}>
         {!collapsed && (
-          <span className="text-sm font-semibold text-gray-700 truncate">Menu</span>
+          <span className="text-sm font-semibold text-gray-700 truncate">{GITHUB_REPO_NAME}</span>
         )}
         <button
           type="button"
@@ -120,7 +210,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
       </div>
 
       {/* Liens de navigation */}
-      <nav className="flex-1 py-2 overflow-y-auto">
+      <nav className="flex-1 py-2 overflow-y-auto" data-tour="sidebar-nav">
         <ul className={`space-y-0.5 ${collapsed ? 'flex flex-col items-center px-0' : 'px-2'}`}>
           {navItems.map(({ to, label, icon: Icon }) => {
             const isActive = location.pathname === to || (to !== '/' && location.pathname.startsWith(to));
@@ -128,6 +218,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
               <li key={to} className={collapsed ? 'w-full flex justify-center' : ''}>
                 <Link
                   to={to}
+                  data-tour={`nav-${to}`}
                   className={`
                     flex items-center gap-3 rounded-lg py-2 text-sm font-medium transition-colors
                     ${collapsed ? 'justify-center px-0 w-10' : 'px-3'}
@@ -145,6 +236,14 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
           })}
         </ul>
       </nav>
+
+      <SidebarFooter
+        collapsed={collapsed}
+        appVersion={appVersion}
+        activeProfileName={activeProfileName}
+        onStartTour={startTour}
+        tourActive={tourActive}
+      />
     </aside>
   );
 };
