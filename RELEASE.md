@@ -1,3 +1,26 @@
+# Chamaccounts v1.0.6
+
+Visite guidée intégrée, profil de démonstration **Data Template** et informations utiles dans le menu latéral.
+
+### Changements par rapport à v1.0.5
+- **Visite guidée** : parcours en 15 étapes (navigation, Réglages, format des données, pages métier) avec surlignage des zones et fiches centrées
+- **Profil Data Template** : données fictives préinstallées pour la démo ; bascule automatique pendant la visite, puis retour au profil précédent
+- **Menu latéral** : nom de l’app, profil actif, version installée, bouton pour relancer la visite
+- **Mode édition (transactions)** : le tri ne se réapplique plus à chaque frappe (lignes stables pendant la saisie)
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.6-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.6-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.6-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.6-linux-x64.AppImage` |
+
+[Télécharger v1.0.6](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.6)
+
+---
+
 # Chamaccounts v1.0.5
 
 Correction du filtre de recherche en mode édition sur le tableau des transactions.
