@@ -137,7 +137,8 @@ const AppUpdatesSection: React.FC = () => {
         >
           GitHub
         </a>{' '}
-        (releases). En production, l’app peut vérifier et télécharger une nouvelle version depuis cette page.
+        (releases). En production, l’app vérifie et télécharge la nouvelle version. Sur Mac, sans certificat
+        Apple, l’app se remplace elle-même au redémarrage.
       </p>
       <label className="flex items-center gap-2 text-sm text-gray-700 mb-4 cursor-pointer">
         <input

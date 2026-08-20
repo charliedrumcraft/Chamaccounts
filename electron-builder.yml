@@ -52,14 +52,20 @@ mac:
       arch:
         - x64
         - arm64
+    # electron-updater macOS exige un .zip (le .dmg sert à l’install initiale).
+    - target: zip
+      arch:
+        - x64
+        - arm64
   icon: build/icon.icns
   category: public.app-category.finance
   artifactName: ${productName}-${version}-mac-${arch}.${ext}
-  hardenedRuntime: true
+  # Pas de Developer ID : Squirrel.Mac est inutilisable ; MAJ = remplacement du .app (zip).
+  identity: null
+  hardenedRuntime: false
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Notarisation auto si APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID (CI ou local)
 
 dmg:
   # Titre sans espace : évite les collisions /Volumes sur les runners arm64 (APFS).

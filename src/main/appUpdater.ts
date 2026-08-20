@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
-import type { UpdateInfo } from 'electron-updater';
+import type { UpdateDownloadedEvent, UpdateInfo } from 'electron-updater';
 import { GITHUB_RELEASES_PAGE_URL } from '../shared/githubApp';
+import { installMacUpdateFromZip } from './macUnsignedUpdate';
 
 export type AppUpdateStatus = 'dev' | 'up-to-date' | 'update-available' | 'error';
 
@@ -57,6 +58,16 @@ function notifyRendererUpdateAvailable(info: UpdateInfo): void {
 
 function sendDownloadProgress(percent: number): void {
   mainWindow?.webContents.send('app-update-download-progress', percent);
+}
+
+function formatDownloadError(raw: string): string {
+  if (/ZIP file not provided/i.test(raw)) {
+    return 'Impossible d’installer automatiquement : le paquet macOS .zip est absent de la release GitHub. Ouverture de la page des releases pour installer le .dmg.';
+  }
+  if (/code signature for running application/i.test(raw)) {
+    return 'Impossible d’installer automatiquement depuis cette version. Installez une fois le .dmg depuis GitHub (glisser dans Applications) : les mises à jour suivantes se feront dans l’app, sans certificat Apple.';
+  }
+  return raw;
 }
 
 function checkForUpdatesOnce(options?: { silent?: boolean }): Promise<AppUpdateCheckResult> {
@@ -165,14 +176,17 @@ function downloadAndInstallUpdate(): Promise<AppUpdateDownloadResult> {
       }
     };
 
-    const onDownloaded = async () => {
+    const onDownloaded = async (event: UpdateDownloadedEvent) => {
       cleanup();
       sendDownloadProgress(100);
+      const replaceMacApp = process.platform === 'darwin';
       const dialogOptions = {
         type: 'info' as const,
         title: 'Mise à jour prête',
         message: 'La nouvelle version a été téléchargée.',
-        detail: 'Redémarrer maintenant pour installer la mise à jour ?',
+        detail: replaceMacApp
+          ? 'Redémarrer maintenant pour remplacer Chamaccounts et relancer l’application ?'
+          : 'Redémarrer maintenant pour installer la mise à jour ?',
         buttons: ['Redémarrer', 'Plus tard'],
         defaultId: 0,
         cancelId: 1,
@@ -181,14 +195,30 @@ function downloadAndInstallUpdate(): Promise<AppUpdateDownloadResult> {
         ? await dialog.showMessageBox(mainWindow, dialogOptions)
         : await dialog.showMessageBox(dialogOptions);
       if (response === 0) {
-        autoUpdater.quitAndInstall(false, true);
+        if (replaceMacApp) {
+          try {
+            await installMacUpdateFromZip(event.downloadedFile);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            void shell.openExternal(GITHUB_RELEASES_PAGE_URL);
+            resolve({ success: false, error: message });
+            return;
+          }
+        } else {
+          autoUpdater.quitAndInstall(false, true);
+        }
       }
       resolve({ success: true });
     };
 
     const onError = (err: Error) => {
       cleanup();
-      resolve({ success: false, error: err.message });
+      const raw = err.message;
+      const message = formatDownloadError(raw);
+      if (/ZIP file not provided|code signature for running application/i.test(raw)) {
+        void shell.openExternal(GITHUB_RELEASES_PAGE_URL);
+      }
+      resolve({ success: false, error: message });
     };
 
     const timeout = setTimeout(() => {
@@ -220,7 +250,8 @@ export function scheduleStartupUpdateCheck(): void {
 
 export function registerAppUpdaterIpc(): void {
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // macOS : pas de Squirrel (exige un certificat Apple). Windows/Linux : install native.
+  autoUpdater.autoInstallOnAppQuit = process.platform !== 'darwin';
 
   ipcMain.handle('get-app-version', () => app.getVersion());
 
