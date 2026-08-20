@@ -10,8 +10,8 @@ import {
 import { SupportDataCSVService, SUPPORT_DATA_CSV_PATH } from '../services/SupportDataCSVService';
 import { EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
 import { canonicalAccountFromSource, accountLabelFromSource } from '../constants/accountSourceLabels';
-import { formatDateDDMMYYYY, formatEur, formatFx, formatGbp, formatAmountGbpForCsv } from '../utils/format';
-import { amountToGbp } from '../services/EffectiveExchangeRates';
+import { formatDateDDMMYYYY, formatEur, formatGbp, formatAmountGbpForCsv, formatCurrency } from '../utils/format';
+import { amountToGbp, convertToAxisCurrency, type CurrencySymbol } from '../services/EffectiveExchangeRates';
 import Papa from 'papaparse';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
 import {
@@ -33,16 +33,108 @@ import {
   type SoutienTitleCombineGroup,
   type SoutienTitleCombinePersisted,
 } from '../constants/soutienTitleCombineGroupsStorage';
+import {
+  readSoutienProjectSubtotalFromStorage,
+  writeSoutienProjectSubtotalToStorage,
+  rebalanceProjectSubtotalGroups,
+  type SoutienProjectSubtotalGroup,
+  type SoutienProjectSubtotalPersisted,
+} from '../constants/soutienProjectSubtotalGroupsStorage';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { projetLabelForId, projetBackgroundStyle } from '../constants/projectsStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
+import {
+  getSuggestions,
+  getDateSuggestionsForMonth,
+  completeDateForMonth,
+} from '../services/SuggestInputService';
+import SupportImportPrepSection from '../components/SupportImportPrepSection';
+import { useSupportImportPrepWizard } from '../hooks/useSupportImportPrepWizard';
+import type { SupportImportDraft } from '../services/supportImportWizardService';
 
 type DraftFields = {
   date: string;
   title: string;
   amount: string;
   currency: string;
+  projet: string;
 };
+
+const DISPLAY_CURRENCY_STORAGE_KEY = 'support-display-currency';
+const SUPPORT_IMPORT_MODULE_EXPANDED_KEY = 'support-import-module-expanded';
+
+function readSupportImportModuleExpanded(): boolean {
+  try {
+    const v = localStorage.getItem(SUPPORT_IMPORT_MODULE_EXPANDED_KEY);
+    if (v === 'false') return false;
+    if (v === 'true') return true;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+const DISPLAY_CURRENCIES: { value: CurrencySymbol; label: string }[] = [
+  { value: '£', label: 'GBP' },
+  { value: '€', label: 'EUR' },
+  { value: 'CHF', label: 'CHF' },
+];
+
+function readStoredDisplayCurrency(): CurrencySymbol {
+  try {
+    const saved = localStorage.getItem(DISPLAY_CURRENCY_STORAGE_KEY);
+    if (saved === '£' || saved === '€' || saved === 'CHF') return saved;
+  } catch {}
+  return '£';
+}
+
+/** Mois YYYY-MM déduit de la saisie date (sinon mois courant) pour les suggestions de date. */
+function inferMonthKeyFromDateDraft(raw: string): string {
+  const s = (raw ?? '').trim();
+  const dmy = /^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?/.exec(s);
+  if (dmy) {
+    const month = parseInt(dmy[2], 10);
+    let year = dmy[3] ? parseInt(dmy[3], 10) : new Date().getFullYear();
+    if (year < 100) year += 2000;
+    if (month >= 1 && month <= 12) {
+      return `${year}-${String(month).padStart(2, '0')}`;
+    }
+  }
+  const iso = /^(\d{4})-(\d{2})/.exec(s);
+  if (iso) return `${iso[1]}-${iso[2]}`;
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function mergeDateSuggestionValues(
+  fromRows: ReturnType<typeof getSuggestions>,
+  fromMonth: string[],
+  limit: number = 10
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of fromRows) {
+    if (seen.has(s.value)) continue;
+    seen.add(s.value);
+    out.push(s.value);
+  }
+  for (const d of fromMonth) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    out.push(d);
+  }
+  return out.slice(0, limit);
+}
+
+function focusNextSupportDraftInput(current: HTMLInputElement) {
+  setTimeout(() => {
+    const form = current.closest('[data-support-add-form]');
+    const inputs = form?.querySelectorAll<HTMLInputElement>('input:not([disabled])');
+    if (!inputs) return;
+    const idx = Array.from(inputs).indexOf(current);
+    inputs[idx + 1]?.focus();
+  }, 0);
+}
 
 /** Extrait l’année (AAAA) d’une cellule date (formats ISO, JJ/MM/AAAA, JJ.MM.AAAA, JJ.MM.AA). */
 function parseYearFromCell(raw: string): number | null {
@@ -65,40 +157,86 @@ function parseYearFromCell(raw: string): number | null {
   return null;
 }
 
-function sumAmountGbpForRows(rows: Record<string, string>[], amountGbpHeader: string | null): number | null {
-  if (!amountGbpHeader) return null;
+function parseNumericCell(raw: string | null | undefined): number | null {
+  const s = (raw ?? '').trim().replace(/\s/g, '').replace(',', '.');
+  if (s === '') return null;
+  const n = parseFloat(s);
+  return Number.isNaN(n) ? null : n;
+}
+
+function currencyCodeToSymbol(currency: string | null | undefined): CurrencySymbol | null {
+  const code = (currency ?? '').trim().toUpperCase();
+  if (code === 'GBP') return '£';
+  if (code === 'EUR') return '€';
+  if (code === 'CHF') return 'CHF';
+  return null;
+}
+
+function formatDisplayAmount(amount: number, displayCurrency: CurrencySymbol): string {
+  return formatCurrency(amount, displayCurrency);
+}
+
+function getDisplayCurrencyCode(displayCurrency: CurrencySymbol): 'GBP' | 'EUR' | 'CHF' {
+  return displayCurrency === '£' ? 'GBP' : displayCurrency === '€' ? 'EUR' : 'CHF';
+}
+
+function getSupportRowDisplayAmount(
+  row: Record<string, string>,
+  displayCurrency: CurrencySymbol,
+  amountHeader: string | null,
+  currencyHeader: string | null,
+  amountGbpHeader: string | null
+): number | null {
+  const amount = amountHeader ? parseNumericCell(row[amountHeader]) : null;
+  const amountGbp = amountGbpHeader ? parseNumericCell(row[amountGbpHeader]) : null;
+  const nativeCurrency = currencyCodeToSymbol(currencyHeader ? row[currencyHeader] : '');
+
+  if (nativeCurrency === displayCurrency && amount !== null) return amount;
+  if (displayCurrency === '£' && amountGbp !== null) return amountGbp;
+  if (nativeCurrency && amount !== null) return convertToAxisCurrency(amount, nativeCurrency, displayCurrency);
+  if (amountGbp !== null) return convertToAxisCurrency(amountGbp, '£', displayCurrency);
+  return null;
+}
+
+function sumDisplayAmountForRows(
+  rows: Record<string, string>[],
+  displayCurrency: CurrencySymbol,
+  amountHeader: string | null,
+  currencyHeader: string | null,
+  amountGbpHeader: string | null
+): number | null {
+  if (!amountHeader && !amountGbpHeader) return null;
   let total = 0;
   let any = false;
   for (const row of rows) {
-    const raw = (row[amountGbpHeader] ?? '').trim().replace(/\s/g, '').replace(',', '.');
-    if (raw === '') continue;
-    const n = parseFloat(raw);
-    if (!Number.isNaN(n)) {
-      total += n;
+    const amount = getSupportRowDisplayAmount(row, displayCurrency, amountHeader, currencyHeader, amountGbpHeader);
+    if (amount !== null) {
+      total += amount;
       any = true;
     }
   }
   return any ? total : 0;
 }
 
-/** Sommes AMOUNT GBP regroupées par libellé (colonne TITLE), pour les lignes données. */
-function aggregateAmountGbpByTitle(
+/** Sommes dans la devise d'affichage regroupées par libellé (colonne TITLE), pour les lignes données. */
+function aggregateDisplayAmountByTitle(
   rows: Record<string, string>[],
   titleHeader: string,
-  amountGbpHeader: string
-): { title: string; totalGbp: number }[] {
+  displayCurrency: CurrencySymbol,
+  amountHeader: string | null,
+  currencyHeader: string | null,
+  amountGbpHeader: string | null
+): { title: string; totalAmount: number }[] {
   const map = new Map<string, number>();
   for (const row of rows) {
     const rawTitle = (row[titleHeader] ?? '').trim();
     const key = rawTitle || '(Sans titre)';
-    const raw = (row[amountGbpHeader] ?? '').trim().replace(/\s/g, '').replace(',', '.');
-    if (raw === '') continue;
-    const n = parseFloat(raw);
-    if (Number.isNaN(n)) continue;
-    map.set(key, (map.get(key) ?? 0) + n);
+    const amount = getSupportRowDisplayAmount(row, displayCurrency, amountHeader, currencyHeader, amountGbpHeader);
+    if (amount === null) continue;
+    map.set(key, (map.get(key) ?? 0) + amount);
   }
   return [...map.entries()]
-    .map(([title, totalGbp]) => ({ title, totalGbp }))
+    .map(([title, totalAmount]) => ({ title, totalAmount }))
     .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
 }
 
@@ -107,12 +245,12 @@ type SoutienTitleTotalDisplayRow = {
   displayTitle: string;
   /** Détail sous le libellé (ex. titres d’origine pour une ligne combinée). */
   detail?: string;
-  totalGbp: number;
+  totalAmount: number;
 };
 
 /** Applique les regroupements : chaque titre n’apparaît que dans un groupe au plus ; le reste reste ligne à ligne. */
 function buildTitleTotalsDisplayRows(
-  base: { title: string; totalGbp: number }[],
+  base: { title: string; totalAmount: number }[],
   applyCombine: boolean,
   groups: SoutienTitleCombineGroup[]
 ): SoutienTitleTotalDisplayRow[] {
@@ -120,11 +258,11 @@ function buildTitleTotalsDisplayRows(
     return base.map((x) => ({
       rowKey: `raw:${x.title}`,
       displayTitle: x.title,
-      totalGbp: x.totalGbp,
+      totalAmount: x.totalAmount,
     }));
   }
 
-  const amountByTitle = new Map(base.map((x) => [x.title, x.totalGbp]));
+  const amountByTitle = new Map(base.map((x) => [x.title, x.totalAmount]));
   const consumed = new Set<string>();
   const out: SoutienTitleTotalDisplayRow[] = [];
 
@@ -148,7 +286,7 @@ function buildTitleTotalsDisplayRows(
       rowKey: `combine:${g.id}`,
       displayTitle: label,
       detail: matched.join(' + '),
-      totalGbp: sum,
+      totalAmount: sum,
     });
   }
 
@@ -157,7 +295,7 @@ function buildTitleTotalsDisplayRows(
       out.push({
         rowKey: `raw:${x.title}`,
         displayTitle: x.title,
-        totalGbp: x.totalGbp,
+        totalAmount: x.totalAmount,
       });
     }
   }
@@ -169,39 +307,119 @@ function newTitleCombineGroupId(): string {
   return `tcg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Sommes AMOUNT GBP regroupées par PROJET (`__sans_projet__` si cellule vide). */
-function aggregateAmountGbpByProject(
+function newProjectSubtotalGroupId(): string {
+  return `psg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+type ProjectTotalRow = {
+  projectKey: string;
+  displayName: string;
+  color: string | null;
+  totalAmount: number;
+};
+
+type ProjectSubtotalDisplayRow = {
+  rowKey: string;
+  displayLabel: string;
+  detail: string;
+  totalAmount: number;
+};
+
+/**
+ * Construit les lignes de sous-total à afficher après les projets et avant le total général.
+ * Les lignes projets restent inchangées ; chaque sous-total additionne les projets sélectionnés.
+ */
+function buildProjectSubtotalDisplayRows(
+  base: ProjectTotalRow[],
+  applySubtotals: boolean,
+  groups: SoutienProjectSubtotalGroup[]
+): ProjectSubtotalDisplayRow[] {
+  if (!applySubtotals || !groups.length) return [];
+
+  const amountByKey = new Map(base.map((x) => [x.projectKey, x.totalAmount]));
+  const nameByKey = new Map(base.map((x) => [x.projectKey, x.displayName]));
+  const out: ProjectSubtotalDisplayRow[] = [];
+
+  for (const g of groups) {
+    const keys = g.projectKeys.map((t) => t.trim()).filter(Boolean);
+    if (!keys.length) continue;
+
+    let sum = 0;
+    const matchedNames: string[] = [];
+    for (const k of keys) {
+      if (!amountByKey.has(k)) continue;
+      sum += amountByKey.get(k)!;
+      matchedNames.push(nameByKey.get(k) ?? k);
+    }
+
+    if (!matchedNames.length) continue;
+
+    const label = (g.label ?? '').trim() || matchedNames.join(' + ');
+    out.push({
+      rowKey: `subtotal:${g.id}`,
+      displayLabel: label,
+      detail: matchedNames.join(' + '),
+      totalAmount: sum,
+    });
+  }
+
+  return out;
+}
+
+/** Sommes dans la devise d'affichage regroupées par PROJET (`__sans_projet__` si cellule vide). */
+function aggregateDisplayAmountByProject(
   rows: Record<string, string>[],
   projetHeader: string,
-  amountGbpHeader: string
-): { projectKey: string; totalGbp: number }[] {
+  displayCurrency: CurrencySymbol,
+  amountHeader: string | null,
+  currencyHeader: string | null,
+  amountGbpHeader: string | null
+): { projectKey: string; totalAmount: number }[] {
   const map = new Map<string, number>();
   for (const row of rows) {
     const pid = (row[projetHeader] ?? '').trim();
     const key = pid || '__sans_projet__';
-    const raw = (row[amountGbpHeader] ?? '').trim().replace(/\s/g, '').replace(',', '.');
-    if (raw === '') continue;
-    const n = parseFloat(raw);
-    if (Number.isNaN(n)) continue;
-    map.set(key, (map.get(key) ?? 0) + n);
+    const amount = getSupportRowDisplayAmount(row, displayCurrency, amountHeader, currencyHeader, amountGbpHeader);
+    if (amount === null) continue;
+    map.set(key, (map.get(key) ?? 0) + amount);
   }
-  return [...map.entries()].map(([projectKey, totalGbp]) => ({ projectKey, totalGbp }));
+  return [...map.entries()].map(([projectKey, totalAmount]) => ({ projectKey, totalAmount }));
 }
 
-function soutienCellDisplay(header: string, raw: string): React.ReactNode {
+function soutienCellDisplay(
+  header: string,
+  raw: string,
+  row: Record<string, string>,
+  displayCurrency: CurrencySymbol,
+  amountHeader: string | null,
+  currencyHeader: string | null,
+  amountGbpHeader: string | null
+): React.ReactNode {
   const isDateColumn = /date/i.test(header);
   const isAmountColumn = /^amount$/i.test(header);
   const isCurrencyColumn = /^currency$/i.test(header);
   const isAmountGbpColumn = /^amount\s*gbp$/i.test(header);
   const isAccountColumn = /^account$/i.test(header) || /compte/i.test(header);
   const isSourceCol = /^source$/i.test(header);
+  const nativeCurrency = currencyCodeToSymbol(currencyHeader ? row[currencyHeader] : '');
+  const nativeAmount = amountHeader ? parseNumericCell(row[amountHeader]) : null;
   if (isDateColumn) return formatDateDDMMYYYY(raw);
-  if (isAmountColumn) return formatEur(raw);
-  if (isCurrencyColumn) return formatFx(raw);
-  if (isAmountGbpColumn) return formatGbp(raw);
+  if (isAmountColumn) {
+    return nativeCurrency && nativeAmount !== null ? formatDisplayAmount(nativeAmount, nativeCurrency) : formatEur(raw);
+  }
+  if (isCurrencyColumn) return (raw ?? '').trim().toUpperCase();
+  if (isAmountGbpColumn) {
+    const amount = getSupportRowDisplayAmount(row, displayCurrency, amountHeader, currencyHeader, amountGbpHeader);
+    return amount === null ? formatGbp(raw) : formatDisplayAmount(amount, displayCurrency);
+  }
   if (isAccountColumn) return accountLabelFromSource(raw) || raw;
   if (isSourceCol) return raw || TRANSACTION_SOURCE_VALUE_FILE;
   return raw;
+}
+
+function displaySupportHeaderLabel(header: string, displayCurrency: CurrencySymbol): string {
+  if (/^amount\s*gbp$/i.test(header)) return `AMOUNT ${getDisplayCurrencyCode(displayCurrency)}`;
+  return header;
 }
 
 function getCompareValue(header: string, raw: string): number | string {
@@ -392,6 +610,16 @@ const Support: React.FC = () => {
       }
     );
   });
+  /** Sous-totaux par projet pour le tableau « sommes par projet » (persisté, localStorage). */
+  const [projectSubtotalState, setProjectSubtotalState] = useState<SoutienProjectSubtotalPersisted>(() => {
+    return (
+      readSoutienProjectSubtotalFromStorage() ?? {
+        applySubtotals: true,
+        groups: [],
+        panelExpanded: true,
+      }
+    );
+  });
   /** Bloc « sommes par projet » (persisté). */
   const [projectTotalsBlockExpanded, setProjectTotalsBlockExpanded] = useState(() => {
     const s = readSoutienBlocksFromStorage();
@@ -400,10 +628,12 @@ const Support: React.FC = () => {
 
   const [csvWriteLoading, setCsvWriteLoading] = useState(false);
   const [addMessage, setAddMessage] = useState<string | null>(null);
+  const [importModuleExpanded, setImportModuleExpanded] = useState(() => readSupportImportModuleExpanded());
   const [draftDate, setDraftDate] = useState('');
   const [draftTitle, setDraftTitle] = useState('');
   const [draftAmount, setDraftAmount] = useState('');
   const [draftCurrency, setDraftCurrency] = useState('EUR');
+  const [draftProjet, setDraftProjet] = useState('');
   const [editOpen, setEditOpen] = useState(false);
   const [editDataRowIndex, setEditDataRowIndex] = useState<number | null>(null);
   const [editDate, setEditDate] = useState('');
@@ -411,6 +641,7 @@ const Support: React.FC = () => {
   const [editAmount, setEditAmount] = useState('');
   const [editCurrency, setEditCurrency] = useState('EUR');
   const [editMessage, setEditMessage] = useState<string | null>(null);
+  const [displayCurrency, setDisplayCurrency] = useState<CurrencySymbol>(() => readStoredDisplayCurrency());
 
   const loadData = useCallback((options?: { silent?: boolean }) => {
     const silent = options?.silent === true;
@@ -491,6 +722,10 @@ const Support: React.FC = () => {
     writeSoutienTitleCombineToStorage(titleCombineState);
   }, [titleCombineState]);
 
+  useEffect(() => {
+    writeSoutienProjectSubtotalToStorage(projectSubtotalState);
+  }, [projectSubtotalState]);
+
   const typeHeader = useMemo(() => data?.headers.find((h) => /^type$/i.test(h)) ?? null, [data?.headers]);
 
   const sourceHeader = useMemo(
@@ -536,6 +771,62 @@ const Support: React.FC = () => {
     [data?.headers]
   );
 
+  const amountColumnHeader = useMemo(
+    () => data?.headers.find((h) => /^amount$/i.test(h)) ?? null,
+    [data?.headers]
+  );
+
+  const currencyColumnHeader = useMemo(
+    () => data?.headers.find((h) => /^currency$/i.test(h)) ?? null,
+    [data?.headers]
+  );
+
+  const setDisplayCurrencyPersist = useCallback((currency: CurrencySymbol) => {
+    setDisplayCurrency(currency);
+    try {
+      localStorage.setItem(DISPLAY_CURRENCY_STORAGE_KEY, currency);
+    } catch {}
+  }, []);
+
+  const draftDateSuggestions = useMemo(() => {
+    if (!dateColumn) return [] as string[];
+    const fromRows = getSuggestions(supportRowsOnly, dateColumn, draftDate, 10);
+    const monthKey = inferMonthKeyFromDateDraft(draftDate);
+    const fromMonth = getDateSuggestionsForMonth(monthKey, draftDate);
+    return mergeDateSuggestionValues(fromRows, fromMonth, 10);
+  }, [supportRowsOnly, dateColumn, draftDate]);
+
+  const draftTitleSuggestions = useMemo(() => {
+    if (!titleColumnHeader) return [] as ReturnType<typeof getSuggestions>;
+    return getSuggestions(supportRowsOnly, titleColumnHeader, draftTitle, 10);
+  }, [supportRowsOnly, titleColumnHeader, draftTitle]);
+
+  const draftAmountSuggestions = useMemo(() => {
+    if (!amountColumnHeader) return [] as ReturnType<typeof getSuggestions>;
+    return getSuggestions(supportRowsOnly, amountColumnHeader, draftAmount, 10);
+  }, [supportRowsOnly, amountColumnHeader, draftAmount]);
+
+  const isSupportDraftEmpty = useMemo(
+    () =>
+      !draftDate.trim() &&
+      !draftTitle.trim() &&
+      !draftAmount.trim() &&
+      draftCurrency === 'EUR' &&
+      !draftProjet.trim(),
+    [draftDate, draftTitle, draftAmount, draftCurrency, draftProjet]
+  );
+
+  const isSupportDraftComplete = useMemo(() => {
+    const dateTrim = draftDate.trim();
+    const titleTrim = draftTitle.trim();
+    const amountTrim = draftAmount.trim().replace(',', '.');
+    if (!dateTrim || !titleTrim || !amountTrim) return false;
+    const amountNum = parseFloat(amountTrim);
+    if (Number.isNaN(amountNum) || amountNum === 0) return false;
+    const cur = (draftCurrency ?? '').trim().toUpperCase() || 'EUR';
+    return ['EUR', 'GBP', 'CHF'].includes(cur);
+  }, [draftDate, draftTitle, draftAmount, draftCurrency]);
+
   const projetColumnHeader = useMemo(
     () => data?.headers.find((h) => /^projet$/i.test(h)) ?? null,
     [data?.headers]
@@ -556,12 +847,21 @@ const Support: React.FC = () => {
   }, [supportRowsForAggregates, globalSearchText, data?.headers]);
 
   const titleTotalsByTitle = useMemo(() => {
-    if (!titleColumnHeader || !amountGbpHeader) return [] as { title: string; totalGbp: number }[];
-    return aggregateAmountGbpByTitle(supportRowsForTitleTotals, titleColumnHeader, amountGbpHeader);
-  }, [supportRowsForTitleTotals, titleColumnHeader, amountGbpHeader]);
+    if (!titleColumnHeader || (!amountColumnHeader && !amountGbpHeader)) {
+      return [] as { title: string; totalAmount: number }[];
+    }
+    return aggregateDisplayAmountByTitle(
+      supportRowsForTitleTotals,
+      titleColumnHeader,
+      displayCurrency,
+      amountColumnHeader,
+      currencyColumnHeader,
+      amountGbpHeader
+    );
+  }, [supportRowsForTitleTotals, titleColumnHeader, displayCurrency, amountColumnHeader, currencyColumnHeader, amountGbpHeader]);
 
   const titleTotalsGrand = useMemo(
-    () => titleTotalsByTitle.reduce((s, x) => s + x.totalGbp, 0),
+    () => titleTotalsByTitle.reduce((s, x) => s + x.totalAmount, 0),
     [titleTotalsByTitle]
   );
 
@@ -585,7 +885,7 @@ const Support: React.FC = () => {
       );
     } else {
       list.sort((a, b) => {
-        const cmp = mult * (a.totalGbp - b.totalGbp);
+        const cmp = mult * (a.totalAmount - b.totalAmount);
         if (cmp !== 0) return cmp;
         return a.displayTitle.localeCompare(b.displayTitle, undefined, { sensitivity: 'base' });
       });
@@ -614,14 +914,21 @@ const Support: React.FC = () => {
     titleCombineState.applyCombine && titleCombineState.groups.some((g) => g.titles.length > 0);
 
   const projectTotalsList = useMemo(() => {
-    if (!projetColumnHeader || !amountGbpHeader) {
-      return [] as { projectKey: string; displayName: string; color: string | null; totalGbp: number }[];
+    if (!projetColumnHeader || (!amountColumnHeader && !amountGbpHeader)) {
+      return [] as ProjectTotalRow[];
     }
-    const list = aggregateAmountGbpByProject(supportRowsForTitleTotals, projetColumnHeader, amountGbpHeader);
+    const list = aggregateDisplayAmountByProject(
+      supportRowsForTitleTotals,
+      projetColumnHeader,
+      displayCurrency,
+      amountColumnHeader,
+      currencyColumnHeader,
+      amountGbpHeader
+    );
     return list
       .map((x) => ({
         projectKey: x.projectKey,
-        totalGbp: x.totalGbp,
+        totalAmount: x.totalAmount,
         displayName:
           x.projectKey === '__sans_projet__'
             ? '(Sans projet)'
@@ -636,10 +943,51 @@ const Support: React.FC = () => {
         if (b.projectKey === '__sans_projet__') return -1;
         return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
       });
-  }, [supportRowsForTitleTotals, projetColumnHeader, amountGbpHeader, projects]);
+  }, [supportRowsForTitleTotals, projetColumnHeader, displayCurrency, amountColumnHeader, currencyColumnHeader, amountGbpHeader, projects]);
+
+  const projectSubtotalDisplayRows = useMemo(
+    () =>
+      buildProjectSubtotalDisplayRows(
+        projectTotalsList,
+        projectSubtotalState.applySubtotals,
+        projectSubtotalState.groups
+      ),
+    [projectTotalsList, projectSubtotalState.applySubtotals, projectSubtotalState.groups]
+  );
+
+  const projectKeysInCurrentTotals = useMemo(
+    () => new Set(projectTotalsList.map((x) => x.projectKey)),
+    [projectTotalsList]
+  );
+
+  const projectOptionsForSubtotalUi = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const x of projectTotalsList) map.set(x.projectKey, x.displayName);
+    for (const g of projectSubtotalState.groups) {
+      for (const k of g.projectKeys) {
+        const key = k.trim();
+        if (!key || map.has(key)) continue;
+        map.set(
+          key,
+          key === '__sans_projet__' ? '(Sans projet)' : projetLabelForId(projects, key) || key
+        );
+      }
+    }
+    return [...map.entries()]
+      .map(([projectKey, displayName]) => ({ projectKey, displayName }))
+      .sort((a, b) => {
+        if (a.projectKey === '__sans_projet__') return 1;
+        if (b.projectKey === '__sans_projet__') return -1;
+        return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
+      });
+  }, [projectTotalsList, projectSubtotalState.groups, projects]);
+
+  const projectSubtotalActive =
+    projectSubtotalState.applySubtotals &&
+    projectSubtotalState.groups.some((g) => g.projectKeys.length > 0);
 
   const projectTotalsGrand = useMemo(
-    () => projectTotalsList.reduce((s, x) => s + x.totalGbp, 0),
+    () => projectTotalsList.reduce((s, x) => s + x.totalAmount, 0),
     [projectTotalsList]
   );
 
@@ -667,9 +1015,9 @@ const Support: React.FC = () => {
         byYear.get(y)!.push(row);
       }
     }
-    const yearsAsc = [...byYear.keys()].sort((a, b) => a - b);
+    const yearsDesc = [...byYear.keys()].sort((a, b) => b - a);
     const out: YearGroupBase[] = [];
-    for (const y of yearsAsc) {
+    for (const y of yearsDesc) {
       out.push({
         yearKey: `y${y}`,
         year: y,
@@ -735,6 +1083,7 @@ const Support: React.FC = () => {
     setDraftTitle('');
     setDraftAmount('');
     setDraftCurrency('EUR');
+    setDraftProjet('');
   }, []);
 
   const closeEditModal = useCallback(() => {
@@ -815,7 +1164,7 @@ const Support: React.FC = () => {
       row[sourceH] = TRANSACTION_SOURCE_VALUE_MANUAL;
       if (!row[EXCLUDE_ANOMALY_COLUMN]) row[EXCLUDE_ANOMALY_COLUMN] = '';
       if (ignoreH) row[ignoreH] = '';
-      if (projetH) row[projetH] = originalRow ? (originalRow[projetH] ?? '').trim() : '';
+      if (projetH) row[projetH] = (draft.projet ?? '').trim();
       return { row, error: null };
     },
     []
@@ -858,6 +1207,7 @@ const Support: React.FC = () => {
       title: draftTitle,
       amount: draftAmount,
       currency: draftCurrency,
+      projet: draftProjet,
     };
     const built = buildManualSupportRow(draft, data, typeHeader, null);
     if (built.error || !built.row) {
@@ -888,12 +1238,73 @@ const Support: React.FC = () => {
     draftTitle,
     draftAmount,
     draftCurrency,
+    draftProjet,
     buildManualSupportRow,
     persistMergedFiles,
     loadData,
     resetDraft,
     rowOrigins,
   ]);
+
+  const handleImportSupportWizardLines = useCallback(
+    async (
+      drafts: SupportImportDraft[]
+    ): Promise<{ success: boolean; error?: string; appendedCount?: number }> => {
+      if (!data?.headers?.length || !typeHeader) {
+        return { success: false, error: 'Données non chargées ou colonne TYPE absente.' };
+      }
+      setCsvWriteLoading(true);
+      setAddMessage(null);
+      try {
+        const newRows: Record<string, string>[] = [];
+        for (const d of drafts) {
+          const built = buildManualSupportRow(
+            { date: d.date, title: d.title, amount: d.amount, currency: d.currency, projet: '' },
+            data,
+            typeHeader,
+            null
+          );
+          if (built.error || !built.row) {
+            return { success: false, error: built.error ?? 'Erreur sur une ligne du lot.' };
+          }
+          if (d.account.trim()) {
+            const accountH =
+              ensureHeadersForWrite(data.headers).find((h) => /^account$/i.test(h)) ??
+              data.headers.find((h) => /^account$/i.test(h));
+            if (accountH) built.row[accountH] = d.account.trim();
+          }
+          newRows.push(built.row);
+        }
+        const mergedRows = [...data.rows.map((r) => ({ ...r })), ...newRows];
+        const nextOrigins = [...rowOrigins, ...newRows.map(() => 'support' as const)];
+        const result = await persistMergedFiles(mergedRows, data.headers, nextOrigins);
+        if (result.success) {
+          loadData({ silent: true });
+          return { success: true, appendedCount: newRows.length };
+        }
+        return { success: false, error: result.error ?? "Erreur lors de l'enregistrement." };
+      } finally {
+        setCsvWriteLoading(false);
+      }
+    },
+    [data, typeHeader, buildManualSupportRow, persistMergedFiles, loadData, rowOrigins]
+  );
+
+  const supportPrepWizard = useSupportImportPrepWizard({
+    onImportLines: handleImportSupportWizardLines,
+  });
+
+  const toggleImportModuleExpanded = useCallback(() => {
+    setImportModuleExpanded((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(SUPPORT_IMPORT_MODULE_EXPANDED_KEY, String(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
 
   const openEditModal = useCallback(
     (dataRowIndex: number) => {
@@ -925,11 +1336,13 @@ const Support: React.FC = () => {
       setEditMessage('Ligne introuvable ou non modifiable.');
       return;
     }
+    const projetH = data.headers.find((h) => /^projet$/i.test(h));
     const draft: DraftFields = {
       date: editDate,
       title: editTitle,
       amount: editAmount,
       currency: editCurrency,
+      projet: projetH ? (original[projetH] ?? '').trim() : '',
     };
     const built = buildManualSupportRow(draft, data, typeHeader, original);
     if (built.error) {
@@ -1059,14 +1472,109 @@ const Support: React.FC = () => {
   return (
     <>
       <main className="flex-1 flex flex-col min-w-0 p-4">
-        <div className="mb-4 space-y-3">
-          <h1 className="text-2xl font-bold text-gray-800">Soutien</h1>
-          <p className="text-sm text-gray-600 max-w-3xl">
-            Liste des transactions de type « Support » (fusion de {SOURCE_DATA_PATH} et de{' '}
-            {SUPPORT_DATA_CSV_PATH}). Les lignes importées affichent « {TRANSACTION_SOURCE_VALUE_FILE} » ; une
-            saisie ajoutée ici est enregistrée dans Support_data.csv avec la source « {TRANSACTION_SOURCE_VALUE_MANUAL}
-            ». Vous pouvez modifier ou supprimer uniquement ces lignes saisies depuis cette page.
-          </p>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-3">
+            <h1 className="text-2xl font-bold text-gray-800">Soutien</h1>
+            <p className="text-sm text-gray-600 max-w-3xl">
+              Liste des transactions de type « Support » (fusion de {SOURCE_DATA_PATH} et de{' '}
+              {SUPPORT_DATA_CSV_PATH}). Les lignes importées affichent « {TRANSACTION_SOURCE_VALUE_FILE} » ; une
+              saisie ajoutée ici est enregistrée dans Support_data.csv avec la source « {TRANSACTION_SOURCE_VALUE_MANUAL}
+              ». Vous pouvez modifier ou supprimer uniquement ces lignes saisies depuis cette page.
+            </p>
+          </div>
+          <div
+            className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5 shadow-sm"
+            role="group"
+            aria-label="Devise d'affichage"
+          >
+            {DISPLAY_CURRENCIES.map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setDisplayCurrencyPersist(value)}
+                aria-pressed={displayCurrency === value}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  displayCurrency === value
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-4 bg-white rounded-lg shadow p-4 border border-gray-200">
+          <div
+            className="flex items-center justify-between gap-3 mb-0 cursor-pointer select-none"
+            onClick={toggleImportModuleExpanded}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleImportModuleExpanded();
+              }
+            }}
+            aria-expanded={importModuleExpanded}
+            aria-controls="support-import-module"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className="inline-block transition-transform duration-200 text-gray-500 shrink-0"
+                style={{ transform: importModuleExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+                aria-hidden
+              >
+                ▼
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-gray-800">Import wizard</h2>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  {importModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;importation vers{' '}
+                  Support_data.csv (collage tableur)
+                </p>
+              </div>
+            </div>
+          </div>
+          {importModuleExpanded && (
+            <div id="support-import-module" className="mt-3">
+              <div
+                className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
+                aria-label="Zone Import wizard"
+              >
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-2">Préparation de l&apos;import</h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void supportPrepWizard.handleImportLinesToSupport()}
+                        disabled={
+                          csvWriteLoading ||
+                          supportPrepWizard.importLinesLoading ||
+                          !supportPrepWizard.mappingWizardActive ||
+                          !supportPrepWizard.supportImportWizardModel?.rows.length ||
+                          supportPrepWizard.importPreviewImportableRows.length === 0
+                        }
+                        title={
+                          !supportPrepWizard.mappingWizardActive
+                            ? 'Activez le mapping wizard pour préparer l’import vers Support_data.csv'
+                            : supportPrepWizard.importPreviewImportableRows.length === 0
+                              ? 'Aucune ligne importable (ignorées ou invalides) avec les réglages actuels'
+                              : undefined
+                        }
+                        className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {supportPrepWizard.importLinesLoading ? 'Import…' : 'Importer les lignes'}
+                      </button>
+                    </div>
+                  </div>
+                  <SupportImportPrepSection {...supportPrepWizard} />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {loading && (
@@ -1084,17 +1592,48 @@ const Support: React.FC = () => {
                 La ligne est ajoutée à la fin du fichier (réindexation automatique). Les autres lignes (fichier importé) ne
                 sont pas modifiables ici.
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-4xl">
+              <div
+                className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-4xl"
+                data-support-add-form
+              >
                 <label className="flex flex-col gap-1 text-sm">
                   <span className="font-medium text-gray-700">Date</span>
                   <input
                     type="text"
                     value={draftDate}
                     onChange={(e) => setDraftDate(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Tab' || e.shiftKey) return;
+                      const monthKey = inferMonthKeyFromDateDraft(draftDate);
+                      const completed = completeDateForMonth(draftDate, monthKey);
+                      if (completed && draftDate.trim() !== completed) {
+                        e.preventDefault();
+                        setDraftDate(completed);
+                        focusNextSupportDraftInput(e.currentTarget);
+                        return;
+                      }
+                      if (draftDateSuggestions.length > 0) {
+                        const first = draftDateSuggestions[0];
+                        if (draftDate.trim() !== first) {
+                          e.preventDefault();
+                          setDraftDate(first);
+                          focusNextSupportDraftInput(e.currentTarget);
+                        }
+                      }
+                    }}
+                    list={draftDateSuggestions.length > 0 ? 'support-draft-date-suggestions' : undefined}
                     placeholder="JJ.MM.AAAA ou JJ/MM/AAAA"
+                    autoComplete="off"
                     className="rounded border border-gray-300 px-2 py-1.5 text-sm"
                     disabled={csvWriteLoading}
                   />
+                  {draftDateSuggestions.length > 0 && (
+                    <datalist id="support-draft-date-suggestions">
+                      {draftDateSuggestions.map((value) => (
+                        <option key={value} value={value} />
+                      ))}
+                    </datalist>
+                  )}
                 </label>
                 <label className="flex flex-col gap-1 text-sm sm:col-span-2">
                   <span className="font-medium text-gray-700">Libellé (TITLE)</span>
@@ -1102,9 +1641,27 @@ const Support: React.FC = () => {
                     type="text"
                     value={draftTitle}
                     onChange={(e) => setDraftTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Tab' || e.shiftKey) return;
+                      if (draftTitleSuggestions.length === 0) return;
+                      const first = draftTitleSuggestions[0].value;
+                      if (draftTitle.trim() === first) return;
+                      e.preventDefault();
+                      setDraftTitle(first);
+                      focusNextSupportDraftInput(e.currentTarget);
+                    }}
+                    list={draftTitleSuggestions.length > 0 ? 'support-draft-title-suggestions' : undefined}
+                    autoComplete="off"
                     className="rounded border border-gray-300 px-2 py-1.5 text-sm"
                     disabled={csvWriteLoading}
                   />
+                  {draftTitleSuggestions.length > 0 && (
+                    <datalist id="support-draft-title-suggestions">
+                      {draftTitleSuggestions.map((s) => (
+                        <option key={`${s.value}-${s.count}`} value={s.value} />
+                      ))}
+                    </datalist>
+                  )}
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
                   <span className="font-medium text-gray-700">Montant (AMOUNT)</span>
@@ -1113,9 +1670,27 @@ const Support: React.FC = () => {
                     inputMode="decimal"
                     value={draftAmount}
                     onChange={(e) => setDraftAmount(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Tab' || e.shiftKey) return;
+                      if (draftAmountSuggestions.length === 0) return;
+                      const first = draftAmountSuggestions[0].value;
+                      if (draftAmount.trim() === first) return;
+                      e.preventDefault();
+                      setDraftAmount(first);
+                      focusNextSupportDraftInput(e.currentTarget);
+                    }}
+                    list={draftAmountSuggestions.length > 0 ? 'support-draft-amount-suggestions' : undefined}
+                    autoComplete="off"
                     className="rounded border border-gray-300 px-2 py-1.5 text-sm"
                     disabled={csvWriteLoading}
                   />
+                  {draftAmountSuggestions.length > 0 && (
+                    <datalist id="support-draft-amount-suggestions">
+                      {draftAmountSuggestions.map((s) => (
+                        <option key={`${s.value}-${s.count}`} value={s.value} />
+                      ))}
+                    </datalist>
+                  )}
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
                   <span className="font-medium text-gray-700">Devise</span>
@@ -1130,23 +1705,33 @@ const Support: React.FC = () => {
                     <option value="CHF">CHF</option>
                   </select>
                 </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="font-medium text-gray-700">Projet</span>
+                  <ProjetSelectCell
+                    rawId={draftProjet}
+                    projects={projects}
+                    disabled={csvWriteLoading}
+                    onChange={setDraftProjet}
+                    className="border-gray-300"
+                  />
+                </label>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => void handleAppendSupportLine()}
-                  disabled={csvWriteLoading}
-                  className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  disabled={csvWriteLoading || !isSupportDraftComplete}
+                  className="rounded border px-3 py-1.5 text-sm font-medium border-blue-600 bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-blue-300 disabled:bg-blue-300 disabled:text-white/80 disabled:hover:bg-blue-300"
                 >
                   {csvWriteLoading ? 'Enregistrement…' : 'Ajouter la ligne dans Support_data.csv'}
                 </button>
                 <button
                   type="button"
                   onClick={resetDraft}
-                  disabled={csvWriteLoading}
-                  className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  disabled={csvWriteLoading || isSupportDraftEmpty}
+                  className="rounded border px-3 py-1.5 text-sm font-medium border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:hover:bg-gray-100"
                 >
-                  Effacer le formulaire
+                  Effacer la saisie
                 </button>
                 {addMessage && (
                   <p className={`text-sm rounded border px-2 py-1 ${uiMessageClass(getUiMessageTone(addMessage))}`}>
@@ -1275,17 +1860,17 @@ const Support: React.FC = () => {
                       role="region"
                       aria-label="Sommes par libellé"
                     >
-                      {!titleColumnHeader || !amountGbpHeader ? (
+                      {!titleColumnHeader || (!amountColumnHeader && !amountGbpHeader) ? (
                         <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                          {!titleColumnHeader && !amountGbpHeader
-                            ? 'Colonnes TITLE et AMOUNT GBP introuvables — récapitulatif indisponible.'
+                          {!titleColumnHeader && !amountColumnHeader && !amountGbpHeader
+                            ? 'Colonnes TITLE, AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'
                             : !titleColumnHeader
                               ? 'Colonne TITLE introuvable — récapitulatif par titre indisponible.'
-                              : 'Colonne AMOUNT GBP introuvable — récapitulatif indisponible.'}
+                              : 'Colonnes AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'}
                         </p>
                       ) : titleTotalsByTitle.length === 0 ? (
                         <p className="text-sm text-gray-500 py-4 text-center border border-dashed border-gray-200 rounded-lg">
-                          Aucune ligne avec montant GBP pour construire le récapitulatif.
+                          Aucune ligne avec montant exploitable pour construire le récapitulatif.
                         </p>
                       ) : (
                         <div className="flex flex-col gap-3">
@@ -1519,7 +2104,7 @@ const Support: React.FC = () => {
                                           )
                                         }
                                       >
-                                        Σ AMOUNT GBP
+                                        {`Σ ${getDisplayCurrencyCode(displayCurrency)}`}
                                         {titleTotalsTableSort.key === 'amount' ? (
                                           <span className="tabular-nums text-xs font-normal text-gray-500" aria-hidden>
                                             {titleTotalsTableSort.dir === 'asc' ? '↑' : '↓'}
@@ -1545,7 +2130,7 @@ const Support: React.FC = () => {
                                       ) : null}
                                     </td>
                                     <td className="px-3 py-2 text-right tabular-nums font-medium text-gray-900 whitespace-nowrap">
-                                      {formatGbp(String(tot.totalGbp))}
+                                      {formatDisplayAmount(tot.totalAmount, displayCurrency)}
                                     </td>
                                   </tr>
                                 ))}
@@ -1554,7 +2139,7 @@ const Support: React.FC = () => {
                                 <tr className="bg-slate-100/90 border-t-2 border-slate-300">
                                   <td className="px-3 py-2.5 font-semibold text-gray-900">Total général</td>
                                   <td className="px-3 py-2.5 text-right text-base sm:text-lg font-bold text-slate-900 tabular-nums whitespace-nowrap">
-                                    {formatGbp(String(titleTotalsGrand))}
+                                    {formatDisplayAmount(titleTotalsGrand, displayCurrency)}
                                   </td>
                                 </tr>
                               </tfoot>
@@ -1606,7 +2191,11 @@ const Support: React.FC = () => {
                                   : ''
                               }`}
                           {projectTotalsList.length > 0
-                            ? ` · ${projectTotalsList.length} regroupement${projectTotalsList.length !== 1 ? 's' : ''}`
+                            ? ` · ${projectTotalsList.length} projet${projectTotalsList.length !== 1 ? 's' : ''}${
+                                projectSubtotalActive && projectSubtotalDisplayRows.length > 0
+                                  ? ` · ${projectSubtotalDisplayRows.length} sous-total${projectSubtotalDisplayRows.length !== 1 ? 's' : ''}`
+                                  : ''
+                              }`
                             : ''}
                         </span>
                       </span>
@@ -1619,65 +2208,252 @@ const Support: React.FC = () => {
                       role="region"
                       aria-label="Sommes par projet"
                     >
-                      {!projetColumnHeader || !amountGbpHeader ? (
+                      {!projetColumnHeader || (!amountColumnHeader && !amountGbpHeader) ? (
                         <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                          {!projetColumnHeader && !amountGbpHeader
-                            ? 'Colonnes PROJET et AMOUNT GBP introuvables — récapitulatif indisponible.'
+                          {!projetColumnHeader && !amountColumnHeader && !amountGbpHeader
+                            ? 'Colonnes PROJET, AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'
                             : !projetColumnHeader
                               ? 'Colonne PROJET introuvable — récapitulatif par projet indisponible.'
-                              : 'Colonne AMOUNT GBP introuvable — récapitulatif indisponible.'}
+                              : 'Colonnes AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'}
                         </p>
                       ) : projectTotalsList.length === 0 ? (
                         <p className="text-sm text-gray-500 py-4 text-center border border-dashed border-gray-200 rounded-lg">
-                          Aucune ligne avec montant GBP pour construire le récapitulatif par projet.
+                          Aucune ligne avec montant exploitable pour construire le récapitulatif par projet.
                         </p>
                       ) : (
-                        <div className="rounded-lg border border-gray-200 bg-white overflow-hidden shadow-inner">
-                          <div className="overflow-auto max-h-[min(40vh,360px)] overscroll-contain">
-                            <table className="w-full border-collapse text-sm min-w-[280px]">
-                              <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 z-10">
-                                <tr>
-                                  <th className="text-left font-semibold text-gray-700 px-3 py-2">Projet</th>
-                                  <th className="text-right font-semibold text-gray-700 px-3 py-2 whitespace-nowrap">
-                                    Σ AMOUNT GBP
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {projectTotalsList.map((row) => (
-                                  <tr
-                                    key={row.projectKey}
-                                    className="border-b border-gray-100 hover:bg-gray-50/80"
-                                  >
-                                    <td
-                                      className="px-3 py-2 text-gray-800 align-top font-medium"
-                                      style={row.color ? projetBackgroundStyle(row.color, 0.22) : undefined}
-                                    >
-                                      <span
-                                        className={
-                                          row.projectKey === '__sans_projet__'
-                                            ? 'inline-flex rounded px-2 py-0.5 bg-gray-100 text-gray-700'
-                                            : 'inline-flex rounded px-2 py-0.5'
+                        <div className="flex flex-col gap-3">
+                          {(projectTotalsList.length > 0 || projectSubtotalState.groups.length > 0) && (
+                            <div className="rounded-lg border border-slate-200 bg-slate-50/90 overflow-hidden">
+                              <button
+                                type="button"
+                                className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-slate-100/80 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset"
+                                aria-expanded={projectSubtotalState.panelExpanded}
+                                onClick={() =>
+                                  setProjectSubtotalState((s) => ({
+                                    ...s,
+                                    panelExpanded: !s.panelExpanded,
+                                  }))
+                                }
+                              >
+                                <span
+                                  className={`mt-0.5 shrink-0 text-gray-500 text-xs leading-none transition-transform duration-200 ${
+                                    projectSubtotalState.panelExpanded ? 'rotate-90' : ''
+                                  }`}
+                                  aria-hidden
+                                >
+                                  ▶
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-sm font-semibold text-gray-900">
+                                    Calculer un sous-total
+                                  </span>
+                                  {!projectSubtotalState.panelExpanded ? (
+                                    <span className="block text-xs text-gray-500 mt-0.5">
+                                      {projectSubtotalState.groups.length === 0
+                                        ? 'Aucun sous-total'
+                                        : `${projectSubtotalState.groups.length} sous-total${
+                                            projectSubtotalState.groups.length !== 1 ? 's' : ''
+                                          }`}
+                                      {projectSubtotalState.applySubtotals
+                                        ? ' · appliqué au tableau'
+                                        : ' · non appliqué'}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </button>
+                              {projectSubtotalState.panelExpanded ? (
+                                <div className="px-3 pb-3 pt-0 space-y-3 border-t border-slate-200/80">
+                                  <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+                                    <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none shrink-0">
+                                      <input
+                                        type="checkbox"
+                                        checked={projectSubtotalState.applySubtotals}
+                                        onChange={(e) =>
+                                          setProjectSubtotalState((s) => ({
+                                            ...s,
+                                            applySubtotals: e.target.checked,
+                                          }))
                                         }
+                                        disabled={csvWriteLoading}
+                                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                      />
+                                      Appliquer au tableau
+                                    </label>
+                                  </div>
+                                  <p className="text-xs text-gray-600 leading-relaxed">
+                                    Additionnez plusieurs projets sous un nom affiché pour obtenir un sous-total. Les
+                                    projets proposés correspondent au récapitulatif actuel (recherche globale incluse).
+                                    Un même projet ne peut figurer que dans un seul sous-total ; le choix dans un
+                                    sous-total le retire des autres. Les lignes projets restent affichées ; les
+                                    sous-totaux apparaissent juste avant le total général.
+                                  </p>
+                                  <div className="space-y-2">
+                                    {projectSubtotalState.groups.map((g) => (
+                                      <div
+                                        key={g.id}
+                                        className="rounded-md border border-gray-200 bg-white p-2.5 space-y-2 shadow-sm"
                                       >
-                                        {row.displayName}
-                                      </span>
-                                    </td>
-                                    <td className="px-3 py-2 text-right tabular-nums font-medium text-gray-900 whitespace-nowrap">
-                                      {formatGbp(String(row.totalGbp))}
+                                        <div className="flex flex-wrap items-start gap-2 justify-between">
+                                          <label className="flex flex-col gap-1 text-xs font-medium text-gray-700 flex-1 min-w-[12rem]">
+                                            Nom du sous-total
+                                            <input
+                                              type="text"
+                                              value={g.label}
+                                              onChange={(e) =>
+                                                setProjectSubtotalState((s) => ({
+                                                  ...s,
+                                                  groups: s.groups.map((x) =>
+                                                    x.id === g.id ? { ...x, label: e.target.value } : x
+                                                  ),
+                                                }))
+                                              }
+                                              placeholder="ex. Projets Europe (sous-total)"
+                                              disabled={csvWriteLoading}
+                                              className="rounded border border-gray-300 px-2 py-1.5 text-sm font-normal"
+                                            />
+                                          </label>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setProjectSubtotalState((s) => ({
+                                                ...s,
+                                                groups: s.groups.filter((x) => x.id !== g.id),
+                                              }))
+                                            }
+                                            disabled={csvWriteLoading}
+                                            className="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 shrink-0"
+                                          >
+                                            Supprimer
+                                          </button>
+                                        </div>
+                                        <div className="flex flex-col gap-1 text-xs font-medium text-gray-700">
+                                          <span>Projets à additionner (cases à cocher)</span>
+                                          <div className="rounded border border-gray-300 bg-white p-2 max-h-52 overflow-auto space-y-1.5">
+                                            {projectOptionsForSubtotalUi.length === 0 ? (
+                                              <p className="text-xs text-gray-500">Aucun projet disponible.</p>
+                                            ) : (
+                                              projectOptionsForSubtotalUi.map((opt) => {
+                                                const checked = g.projectKeys.includes(opt.projectKey);
+                                                return (
+                                                  <label
+                                                    key={opt.projectKey}
+                                                    className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer"
+                                                  >
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={checked}
+                                                      disabled={csvWriteLoading}
+                                                      onChange={(e) => {
+                                                        const nextKeys = e.target.checked
+                                                          ? [...g.projectKeys, opt.projectKey]
+                                                          : g.projectKeys.filter((t) => t !== opt.projectKey);
+                                                        setProjectSubtotalState((s) => ({
+                                                          ...s,
+                                                          groups: rebalanceProjectSubtotalGroups(
+                                                            s.groups,
+                                                            g.id,
+                                                            nextKeys
+                                                          ),
+                                                        }));
+                                                      }}
+                                                      className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                    />
+                                                    <span>
+                                                      {opt.displayName}
+                                                      {!projectKeysInCurrentTotals.has(opt.projectKey) ? (
+                                                        <span className="text-gray-500"> — hors filtre actuel</span>
+                                                      ) : null}
+                                                    </span>
+                                                  </label>
+                                                );
+                                              })
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setProjectSubtotalState((s) => ({
+                                        ...s,
+                                        groups: [
+                                          ...s.groups,
+                                          { id: newProjectSubtotalGroupId(), label: '', projectKeys: [] },
+                                        ],
+                                      }))
+                                    }
+                                    disabled={csvWriteLoading}
+                                    className="rounded border border-blue-600 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                                  >
+                                    Ajouter un sous-total
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                          <div className="rounded-lg border border-gray-200 bg-white overflow-hidden shadow-inner">
+                            <div className="overflow-auto max-h-[min(40vh,360px)] overscroll-contain">
+                              <table className="w-full border-collapse text-sm min-w-[280px]">
+                                <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 z-10">
+                                  <tr>
+                                    <th className="text-left font-semibold text-gray-700 px-3 py-2">Projet</th>
+                                    <th className="text-right font-semibold text-gray-700 px-3 py-2 whitespace-nowrap">
+                                      {`Σ ${getDisplayCurrencyCode(displayCurrency)}`}
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {projectTotalsList.map((row) => (
+                                    <tr
+                                      key={row.projectKey}
+                                      className="border-b border-gray-100 hover:bg-gray-50/80"
+                                    >
+                                      <td
+                                        className="px-3 py-2 text-gray-800 align-top font-medium"
+                                        style={row.color ? projetBackgroundStyle(row.color, 0.22) : undefined}
+                                      >
+                                        <span
+                                          className={
+                                            row.projectKey === '__sans_projet__'
+                                              ? 'inline-flex rounded px-2 py-0.5 bg-gray-100 text-gray-700'
+                                              : 'inline-flex rounded px-2 py-0.5'
+                                          }
+                                        >
+                                          {row.displayName}
+                                        </span>
+                                      </td>
+                                      <td className="px-3 py-2 text-right tabular-nums font-medium text-gray-900 whitespace-nowrap">
+                                        {formatDisplayAmount(row.totalAmount, displayCurrency)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {projectSubtotalDisplayRows.map((sub) => (
+                                    <tr
+                                      key={sub.rowKey}
+                                      className="border-b border-gray-100 bg-blue-50/50 hover:bg-blue-50/80"
+                                    >
+                                      <td className="px-3 py-2 text-gray-800 align-top">
+                                        <div className="font-medium text-gray-900">{sub.displayLabel}</div>
+                                        <div className="text-xs text-gray-500 mt-0.5 leading-snug">{sub.detail}</div>
+                                      </td>
+                                      <td className="px-3 py-2 text-right tabular-nums font-medium text-gray-900 whitespace-nowrap">
+                                        {formatDisplayAmount(sub.totalAmount, displayCurrency)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                                <tfoot>
+                                  <tr className="bg-slate-100/90 border-t-2 border-slate-300">
+                                    <td className="px-3 py-2.5 font-semibold text-gray-900">Total général</td>
+                                    <td className="px-3 py-2.5 text-right text-base sm:text-lg font-bold text-slate-900 tabular-nums whitespace-nowrap">
+                                      {formatDisplayAmount(projectTotalsGrand, displayCurrency)}
                                     </td>
                                   </tr>
-                                ))}
-                              </tbody>
-                              <tfoot>
-                                <tr className="bg-slate-100/90 border-t-2 border-slate-300">
-                                  <td className="px-3 py-2.5 font-semibold text-gray-900">Total général</td>
-                                  <td className="px-3 py-2.5 text-right text-base sm:text-lg font-bold text-slate-900 tabular-nums whitespace-nowrap">
-                                    {formatGbp(String(projectTotalsGrand))}
-                                  </td>
-                                </tr>
-                              </tfoot>
-                            </table>
+                                </tfoot>
+                              </table>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -1701,7 +2477,13 @@ const Support: React.FC = () => {
                 const sortedForSum = sorted.filter(
                   (row) => !isRowIgnoredForSoutienTotals(row, soutienIgnoreHeader)
                 );
-                const yearTotal = sumAmountGbpForRows(sortedForSum, amountGbpHeader);
+                const yearTotal = sumDisplayAmountForRows(
+                  sortedForSum,
+                  displayCurrency,
+                  amountColumnHeader,
+                  currencyColumnHeader,
+                  amountGbpHeader
+                );
                 const ignoredInSortedView = sorted.length - sortedForSum.length;
                 const localFilterActive = panel.filterText.trim().length > 0;
                 const filterActive = globalActive || localFilterActive;
@@ -1753,13 +2535,13 @@ const Support: React.FC = () => {
                                 : ''}
                           </span>
                         </span>
-                        {!expanded && amountGbpHeader && yearTotal !== null ? (
+                        {!expanded && (amountColumnHeader || amountGbpHeader) && yearTotal !== null ? (
                           <div className="shrink-0 ml-auto pl-2 self-center text-right min-w-0 sm:max-w-[min(100%,28rem)]">
                             <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-1">
-                              Σ AMOUNT GBP
+                              {`Σ ${getDisplayCurrencyCode(displayCurrency)}`}
                             </span>
                             <span className="block text-2xl sm:text-3xl font-bold text-slate-900 tabular-nums leading-tight">
-                              {formatGbp(String(yearTotal))}
+                              {formatDisplayAmount(yearTotal, displayCurrency)}
                             </span>
                           </div>
                         ) : null}
@@ -1800,7 +2582,7 @@ const Support: React.FC = () => {
                           <option value="__all__">Toutes</option>
                           {yearDisplayHeaders.map((h) => (
                             <option key={h} value={h}>
-                              {h}
+                              {displaySupportHeaderLabel(h, displayCurrency)}
                             </option>
                           ))}
                         </select>
@@ -1847,7 +2629,7 @@ const Support: React.FC = () => {
                                 className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-gray-200 transition-colors"
                               >
                                 <span className="inline-flex items-center gap-1">
-                                  {h}
+                                  {displaySupportHeaderLabel(h, displayCurrency)}
                                   {panel.sortColumn === h && (
                                     <span
                                       className="text-blue-600"
@@ -1901,7 +2683,15 @@ const Support: React.FC = () => {
                                           <ProjetDisplayCell rawId={row[header] ?? ''} projects={projects} />
                                         )
                                       ) : (
-                                        soutienCellDisplay(header, row[header] ?? '')
+                                        soutienCellDisplay(
+                                          header,
+                                          row[header] ?? '',
+                                          row,
+                                          displayCurrency,
+                                          amountColumnHeader,
+                                          currencyColumnHeader,
+                                          amountGbpHeader
+                                        )
                                       )}
                                     </td>
                                   ))}
@@ -1975,19 +2765,19 @@ const Support: React.FC = () => {
                             )
                           </span>
                         </p>
-                        {amountGbpHeader && yearTotal !== null && (
+                        {(amountColumnHeader || amountGbpHeader) && yearTotal !== null && (
                           <div className="text-right min-w-0 sm:max-w-[min(100%,28rem)]">
                             <span className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-1">
-                              Σ AMOUNT GBP
+                              {`Σ ${getDisplayCurrencyCode(displayCurrency)}`}
                             </span>
                             <span className="block text-2xl sm:text-3xl font-bold text-slate-900 tabular-nums leading-tight">
-                              {formatGbp(String(yearTotal))}
+                              {formatDisplayAmount(yearTotal, displayCurrency)}
                             </span>
                           </div>
                         )}
-                        {!amountGbpHeader && (
+                        {!amountColumnHeader && !amountGbpHeader && (
                           <p className="text-sm text-gray-500 text-left sm:text-right sm:ml-auto">
-                            Colonne AMOUNT GBP absente — total non calculé
+                            Colonnes AMOUNT et AMOUNT GBP absentes — total non calculé
                           </p>
                         )}
                       </div>

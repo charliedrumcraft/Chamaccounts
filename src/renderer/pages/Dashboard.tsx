@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import AccountBalanceLineChart, {
   linearRegression,
 } from '../components/Dashboard/AccountBalanceLineChart';
@@ -79,6 +80,24 @@ function tablesFilterSuggestPrefix(rawLine: string): string {
 /** Remplace la ligne par la valeur suggérée (titres / types / comptes). */
 function applyTablesFilterSuggestionToLine(_line: string, suggestionValue: string): string {
   return suggestionValue.trim();
+}
+
+function getMovementsColumnsFromHeaders(headers: string[] | null | undefined) {
+  if (!headers?.length) return null;
+  const dateCol =
+    headers.find((h) => /^date$/i.test((h ?? '').trim())) ??
+    headers.find((h) => /^date\b/i.test((h ?? '').trim())) ??
+    headers.find((h) => /date/i.test(h)) ??
+    null;
+  const amountCol = headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
+  const typeCol =
+    headers.find((h) => /type|catégorie|category|cat$/i.test(h)) ??
+    headers.find((h) => !/date|amount|currency|account/i.test(h)) ??
+    null;
+  const accountCol =
+    headers.find((h) => /^account$/i.test(h) || /compte/i.test(h)) ?? null;
+  const titleCol = headers.find((h) => /^title$/i.test(h)) ?? null;
+  return { dateCol, amountCol, typeCol, accountCol, titleCol };
 }
 
 /** Charge une liste de filtres texte (JSON ou ancienne chaîne seule). */
@@ -213,6 +232,62 @@ function saveDashboardPref(key: string, value: string): void {
 }
 
 /** Parse une cellule date (ISO ou JJ/MM/AAAA, JJ.MM.AAAA) en Date ou null. */
+/** Timestamps (1er du mois) présents dans les transactions. */
+function collectTransactionMonthTimestamps(sourceData: SourceDataResult | null): number[] {
+  if (!sourceData?.rows?.length || !sourceData.headers?.length) return [];
+  const headers = sourceData.headers;
+  const dateCol =
+    headers.find((h) => /^date$/i.test((h ?? '').trim())) ??
+    headers.find((h) => /^date\b/i.test((h ?? '').trim())) ??
+    headers.find((h) => /date/i.test(h)) ??
+    null;
+  if (!dateCol) return [];
+  const out = new Set<number>();
+  for (const row of sourceData.rows) {
+    const d = parseDateFromCell(row[dateCol] ?? '');
+    if (d) out.add(startOfMonth(d).getTime());
+  }
+  return Array.from(out);
+}
+
+/** Union des mois couverts par les soldes et par les transactions (pour les sliders). */
+function buildDashboardMonthDates(balanceDates: Date[], sourceData: SourceDataResult | null): Date[] {
+  const tsSet = new Set<number>();
+  for (const d of balanceDates) {
+    tsSet.add(startOfMonth(d).getTime());
+  }
+  for (const ts of collectTransactionMonthTimestamps(sourceData)) {
+    tsSet.add(ts);
+  }
+  return Array.from(tsSet)
+    .sort((a, b) => a - b)
+    .map((ts) => new Date(ts));
+}
+
+function clampDashboardRange(range: [number, number], length: number): [number, number] {
+  if (length <= 0) return [0, 0];
+  const maxIdx = length - 1;
+  const start = Math.max(0, Math.min(range[0], maxIdx));
+  const end = Math.max(0, Math.min(range[1], maxIdx));
+  return [Math.min(start, end), Math.max(start, end)];
+}
+
+function loadSavedDashboardRange(key: string, length: number): [number, number] | null {
+  const saved = loadDashboardPref(
+    key,
+    (s) => {
+      try {
+        const [a, b] = JSON.parse(s);
+        if (typeof a === 'number' && typeof b === 'number') return [a, b] as [number, number];
+      } catch {}
+      return null;
+    },
+    null
+  );
+  if (!saved) return null;
+  return clampDashboardRange(saved, length);
+}
+
 function parseDateFromCell(raw: string): Date | null {
   const s = (raw ?? '').trim();
   if (!s) return null;
@@ -345,6 +420,7 @@ function buildTablesDashboardAggregatesFromRows(
 }
 
 const Dashboard: React.FC = () => {
+  const location = useLocation();
   const [accountBalanceChartData, setAccountBalanceChartData] = useState<{
     periods: string[];
     dates: Date[];
@@ -691,10 +767,11 @@ const Dashboard: React.FC = () => {
     )
   );
 
-  useEffect(() => {
+  const loadChartData = useCallback(() => {
     let cancelled = false;
     setChartLoading(true);
     setChartError(null);
+    AccountBalanceCSVService.invalidateCache();
     AccountBalanceCSVService.getMonthlyBalancesForChart()
       .then((data) => {
         if (!cancelled) {
@@ -716,19 +793,24 @@ const Dashboard: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    return loadChartData();
+  }, [loadChartData, location.pathname]);
+
   const [sourceData, setSourceData] = useState<SourceDataResult | null>(null);
   const [movementsDataLoading, setMovementsDataLoading] = useState(true);
   const [movementsDataError, setMovementsDataError] = useState<string | null>(null);
-  useEffect(() => {
+
+  const loadSourceData = useCallback(() => {
     let cancelled = false;
     setMovementsDataLoading(true);
     setMovementsDataError(null);
-    SourceDataCSVService.loadMergedWithSupport()
+    SourceDataCSVService.load()
       .then((result) => {
         if (!cancelled) {
           setSourceData(result ?? null);
           if (!result) {
-            setMovementsDataError('Aucune donnée transaction (src + support).');
+            setMovementsDataError('Aucune donnée dans src_transaction_data.csv.');
           }
         }
       })
@@ -746,125 +828,77 @@ const Dashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!accountBalanceChartData?.periods?.length) return;
-    const n = accountBalanceChartData.periods.length;
+    return loadSourceData();
+  }, [loadSourceData, location.pathname]);
+
+  const dashboardDates = useMemo(
+    () => buildDashboardMonthDates(accountBalanceChartData?.dates ?? [], sourceData),
+    [accountBalanceChartData?.dates, sourceData]
+  );
+
+  useEffect(() => {
+    const n = dashboardDates.length;
+    if (n === 0) return;
     setChartRange((prev) => {
-      if (prev[1] !== 0) return prev;
-      const saved = loadDashboardPref(
-        DASHBOARD_STORAGE_KEYS.chartRange,
-        (s) => {
-          try {
-            const [a, b] = JSON.parse(s);
-            if (typeof a === 'number' && typeof b === 'number') return [a, b] as [number, number];
-          } catch {}
-          return null;
-        },
-        null
-      );
-      if (saved) {
-        const start = Math.max(0, Math.min(saved[0], n - 1));
-        const end = Math.max(0, Math.min(saved[1], n - 1));
-        const startIdx = Math.min(start, end);
-        const endIdx = Math.max(start, end);
-        return [startIdx, endIdx];
+      if (prev[1] === 0 && prev[0] === 0) {
+        return loadSavedDashboardRange(DASHBOARD_STORAGE_KEYS.chartRange, n) ?? [0, n - 1];
       }
-      return [0, n - 1];
+      return clampDashboardRange(prev, n);
     });
-  }, [accountBalanceChartData?.periods?.length]);
+  }, [dashboardDates.length]);
 
   useEffect(() => {
-    if (!accountBalanceChartData?.periods?.length) return;
-    const n = accountBalanceChartData.periods.length;
+    const n = dashboardDates.length;
+    if (n === 0) return;
     setMovementsRange((prev) => {
-      if (prev[1] !== 0) return prev;
-      const saved = loadDashboardPref(
-        DASHBOARD_STORAGE_KEYS.movementsRange,
-        (s) => {
-          try {
-            const [a, b] = JSON.parse(s);
-            if (typeof a === 'number' && typeof b === 'number') return [a, b] as [number, number];
-          } catch {}
-          return null;
-        },
-        null
-      );
-      if (saved) {
-        const start = Math.max(0, Math.min(saved[0], n - 1));
-        const end = Math.max(0, Math.min(saved[1], n - 1));
-        const startIdx = Math.min(start, end);
-        const endIdx = Math.max(start, end);
-        return [startIdx, endIdx];
+      if (prev[1] === 0 && prev[0] === 0) {
+        return loadSavedDashboardRange(DASHBOARD_STORAGE_KEYS.movementsRange, n) ?? [0, n - 1];
       }
-      return [0, n - 1];
+      return clampDashboardRange(prev, n);
     });
-  }, [accountBalanceChartData?.periods?.length]);
+  }, [dashboardDates.length]);
 
   useEffect(() => {
-    if (!accountBalanceChartData?.periods?.length) return;
-    const n = accountBalanceChartData.periods.length;
-    const loadRange = (key: string): [number, number] => {
-      const saved = loadDashboardPref(
-        key,
-        (s) => {
-          try {
-            const [a, b] = JSON.parse(s);
-            if (typeof a === 'number' && typeof b === 'number') return [a, b] as [number, number];
-          } catch {}
-          return null;
-        },
-        null
-      );
-      if (saved) {
-        const start = Math.max(0, Math.min(saved[0], n - 1));
-        const end = Math.max(0, Math.min(saved[1], n - 1));
-        return [Math.min(start, end), Math.max(start, end)];
+    const n = dashboardDates.length;
+    if (n === 0) return;
+    setMovementsCompareRangeA((prev) => {
+      if (prev[1] === 0 && prev[0] === 0) {
+        return loadSavedDashboardRange(DASHBOARD_STORAGE_KEYS.movementsCompareRangeA, n) ?? [0, n - 1];
       }
-      return [0, n - 1];
-    };
-    setMovementsCompareRangeA((prev) => (prev[1] !== 0 ? prev : loadRange(DASHBOARD_STORAGE_KEYS.movementsCompareRangeA)));
-    setMovementsCompareRangeB((prev) => (prev[1] !== 0 ? prev : loadRange(DASHBOARD_STORAGE_KEYS.movementsCompareRangeB)));
-  }, [accountBalanceChartData?.periods?.length]);
+      return clampDashboardRange(prev, n);
+    });
+    setMovementsCompareRangeB((prev) => {
+      if (prev[1] === 0 && prev[0] === 0) {
+        return loadSavedDashboardRange(DASHBOARD_STORAGE_KEYS.movementsCompareRangeB, n) ?? [0, n - 1];
+      }
+      return clampDashboardRange(prev, n);
+    });
+  }, [dashboardDates.length]);
 
   useEffect(() => {
-    if (!accountBalanceChartData?.periods?.length) return;
-    const n = accountBalanceChartData.periods.length;
+    const n = dashboardDates.length;
+    if (n === 0) return;
     setTablesRange((prev) => {
-      if (prev[1] !== 0) return prev;
-      const saved = loadDashboardPref(
-        DASHBOARD_STORAGE_KEYS.tablesRange,
-        (s) => {
-          try {
-            const [a, b] = JSON.parse(s);
-            if (typeof a === 'number' && typeof b === 'number') return [a, b] as [number, number];
-          } catch {}
-          return null;
-        },
-        null
-      );
-      if (saved) {
-        const start = Math.max(0, Math.min(saved[0], n - 1));
-        const end = Math.max(0, Math.min(saved[1], n - 1));
-        const startIdx = Math.min(start, end);
-        const endIdx = Math.max(start, end);
-        return [startIdx, endIdx];
+      if (prev[1] === 0 && prev[0] === 0) {
+        return loadSavedDashboardRange(DASHBOARD_STORAGE_KEYS.tablesRange, n) ?? [0, n - 1];
       }
-      return [0, n - 1];
+      return clampDashboardRange(prev, n);
     });
-  }, [accountBalanceChartData?.periods?.length]);
+  }, [dashboardDates.length]);
 
   useEffect(() => {
     if (!tablesSyncsWithChart) return;
-    if (!accountBalanceChartData?.periods?.length) return;
+    if (dashboardDates.length === 0) return;
     setTablesRange(chartRange);
     saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(chartRange));
-  }, [chartRange, tablesSyncsWithChart, accountBalanceChartData?.periods?.length]);
+  }, [chartRange, tablesSyncsWithChart, dashboardDates.length]);
 
   useEffect(() => {
     if (!tablesSyncsWithMovements) return;
-    if (!accountBalanceChartData?.periods?.length) return;
+    if (dashboardDates.length === 0) return;
     setTablesRange(movementsRange);
     saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(movementsRange));
-  }, [movementsRange, tablesSyncsWithMovements, accountBalanceChartData?.periods?.length]);
+  }, [movementsRange, tablesSyncsWithMovements, dashboardDates.length]);
 
   useEffect(() => {
     saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesSyncsWithChart, String(tablesSyncsWithChart));
@@ -935,14 +969,25 @@ const Dashboard: React.FC = () => {
   );
 
   const filteredChartData = useMemo(() => {
-    if (!accountBalanceChartData || !hasChartData) return null;
-    const { periods, accounts, accountCodes, balanceData, accountColors, granularity } =
+    if (!accountBalanceChartData || !hasChartData || dashboardDates.length === 0) return null;
+    const { periods, dates: balanceDates, accounts, accountCodes, balanceData, accountColors, granularity } =
       accountBalanceChartData;
 
-    const [startIdx, endIdx] = chartRange;
-    const periodIndices = periods
+    const rangeStart = dashboardDates[Math.min(chartRange[0], dashboardDates.length - 1)] ?? balanceDates[0];
+    const rangeEnd = dashboardDates[Math.min(chartRange[1], dashboardDates.length - 1)] ?? balanceDates[balanceDates.length - 1];
+    const rangeStartTs = dateRangeSliderFullYears
+      ? startOfYear(rangeStart).getTime()
+      : startOfMonth(rangeStart).getTime();
+    const rangeEndTs = dateRangeSliderFullYears
+      ? endOfYear(rangeEnd).getTime()
+      : endOfMonth(rangeEnd).getTime();
+
+    const periodIndices = balanceDates
       .map((_, i) => i)
-      .filter((i) => i >= startIdx && i <= endIdx);
+      .filter((i) => {
+        const t = balanceDates[i]!.getTime();
+        return t >= rangeStartTs && t <= rangeEndTs;
+      });
 
     const codeToIndex = new Map(accountCodes.map((c, i) => [c, i]));
     const targetCurrency = chartYAxisCurrency as CurrencySymbol;
@@ -970,7 +1015,14 @@ const Dashboard: React.FC = () => {
       accountColors: filteredAccountColors,
       granularity,
     };
-  }, [accountBalanceChartData, hasChartData, chartRange, chartYAxisCurrency]);
+  }, [
+    accountBalanceChartData,
+    hasChartData,
+    chartRange,
+    chartYAxisCurrency,
+    dashboardDates,
+    dateRangeSliderFullYears,
+  ]);
 
   /** Données pour le graphique boursier (un seul compte, plage = chartRange). */
   const stockChartData = useMemo(() => {
@@ -1056,7 +1108,7 @@ const Dashboard: React.FC = () => {
     return byCode;
   }, [filteredChartData]);
 
-  const dates = accountBalanceChartData?.dates ?? [];
+  const dates = dashboardDates;
   const minDate = dates[0] ?? new Date();
   const maxDate = dates[dates.length - 1] ?? new Date();
   const sliderStartDate = dates[chartRange[0]] ?? minDate;
@@ -1091,24 +1143,10 @@ const Dashboard: React.FC = () => {
   const tablesSliderEndDate = tablesEndDate;
 
   /** Colonnes source_data utilisées pour le tableau mouvements (AMOUNT GBP : négatif = dépense, positif = revenu) */
-  const movementsColumns = useMemo(() => {
-    if (!sourceData?.headers?.length) return null;
-    const headers = sourceData.headers;
-    const dateCol =
-      headers.find((h) => /^date$/i.test((h ?? '').trim())) ??
-      headers.find((h) => /^date\b/i.test((h ?? '').trim())) ??
-      headers.find((h) => /date/i.test(h)) ??
-      null;
-    const amountCol = headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
-    const typeCol =
-      headers.find((h) => /type|catégorie|category|cat$/i.test(h)) ??
-      headers.find((h) => !/date|amount|currency|account/i.test(h)) ??
-      null;
-    const accountCol =
-      headers.find((h) => /^account$/i.test(h) || /compte/i.test(h)) ?? null;
-    const titleCol = headers.find((h) => /^title$/i.test(h)) ?? null;
-    return { dateCol, amountCol, typeCol, accountCol, titleCol };
-  }, [sourceData?.headers]);
+  const movementsColumns = useMemo(
+    () => getMovementsColumnsFromHeaders(sourceData?.headers),
+    [sourceData?.headers]
+  );
 
   const tablesFilterSuggestionRows = useMemo(
     () => (sourceData?.rows as Record<string, string>[]) ?? [],
@@ -1939,8 +1977,8 @@ const Dashboard: React.FC = () => {
 
   const handleDateRangeChange = useCallback(
     (startDate: Date, endDate: Date) => {
-      if (!accountBalanceChartData?.dates?.length) return;
-      const ds = accountBalanceChartData.dates;
+      if (!dashboardDates.length) return;
+      const ds = dashboardDates;
       const startTs = startDate.getTime();
       const endTs = endDate.getTime();
       let startIdx = ds.findIndex((d) => d.getTime() >= startTs);
@@ -1962,13 +2000,13 @@ const Dashboard: React.FC = () => {
         saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(range));
       }
     },
-    [accountBalanceChartData?.dates, movementsSyncsWithChart, chartSyncsWithMovements, tablesSyncsWithChart]
+    [dashboardDates, movementsSyncsWithChart, chartSyncsWithMovements, tablesSyncsWithChart]
   );
 
   const handleMovementsDateRangeChange = useCallback(
     (startDate: Date, endDate: Date) => {
-      if (!accountBalanceChartData?.dates?.length) return;
-      const ds = accountBalanceChartData.dates;
+      if (!dashboardDates.length) return;
+      const ds = dashboardDates;
       const startTs = startDate.getTime();
       const endTs = endDate.getTime();
       let startIdx = ds.findIndex((d) => d.getTime() >= startTs);
@@ -1990,13 +2028,13 @@ const Dashboard: React.FC = () => {
         saveDashboardPref(DASHBOARD_STORAGE_KEYS.tablesRange, JSON.stringify(range));
       }
     },
-    [accountBalanceChartData?.dates, chartSyncsWithMovements, movementsSyncsWithChart, tablesSyncsWithMovements]
+    [dashboardDates, chartSyncsWithMovements, movementsSyncsWithChart, tablesSyncsWithMovements]
   );
 
   const handleTablesDateRangeChange = useCallback(
     (startDate: Date, endDate: Date) => {
-      if (!accountBalanceChartData?.dates?.length) return;
-      const ds = accountBalanceChartData.dates;
+      if (!dashboardDates.length) return;
+      const ds = dashboardDates;
       const startTs = startDate.getTime();
       const endTs = endDate.getTime();
       let startIdx = ds.findIndex((d) => d.getTime() >= startTs);
@@ -2027,7 +2065,7 @@ const Dashboard: React.FC = () => {
       }
     },
     [
-      accountBalanceChartData?.dates,
+      dashboardDates,
       tablesSyncsWithChart,
       tablesSyncsWithMovements,
       movementsSyncsWithChart,
@@ -2055,8 +2093,8 @@ const Dashboard: React.FC = () => {
 
   const handleMovementsCompareDateRangeChangeA = useCallback(
     (startDate: Date, endDate: Date) => {
-      if (!accountBalanceChartData?.dates?.length) return;
-      const ds = accountBalanceChartData.dates;
+      if (!dashboardDates.length) return;
+      const ds = dashboardDates;
       const startTs = startDate.getTime();
       const endTs = endDate.getTime();
       let startIdx = ds.findIndex((d) => d.getTime() >= startTs);
@@ -2070,13 +2108,13 @@ const Dashboard: React.FC = () => {
       setMovementsCompareRangeA(range);
       saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareRangeA, JSON.stringify(range));
     },
-    [accountBalanceChartData?.dates]
+    [dashboardDates]
   );
 
   const handleMovementsCompareDateRangeChangeB = useCallback(
     (startDate: Date, endDate: Date) => {
-      if (!accountBalanceChartData?.dates?.length) return;
-      const ds = accountBalanceChartData.dates;
+      if (!dashboardDates.length) return;
+      const ds = dashboardDates;
       const startTs = startDate.getTime();
       const endTs = endDate.getTime();
       let startIdx = ds.findIndex((d) => d.getTime() >= startTs);
@@ -2090,7 +2128,7 @@ const Dashboard: React.FC = () => {
       setMovementsCompareRangeB(range);
       saveDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareRangeB, JSON.stringify(range));
     },
-    [accountBalanceChartData?.dates]
+    [dashboardDates]
   );
 
   const handleChartSyncChange = useCallback(
@@ -2121,8 +2159,8 @@ const Dashboard: React.FC = () => {
     (enabled: boolean) => {
       setDateRangeSliderFullYears(enabled);
       saveDashboardPref(DASHBOARD_STORAGE_KEYS.dateRangeSliderFullYears, String(enabled));
-      if (!enabled || !accountBalanceChartData?.dates?.length) return;
-      const ds = accountBalanceChartData.dates;
+      if (!enabled || !dashboardDates.length) return;
+      const ds = dashboardDates;
       const apply = (prev: [number, number]) => snapRangeIndicesToFullYears(ds, prev);
       setChartRange((prev) => {
         const n = apply(prev);
@@ -2150,7 +2188,7 @@ const Dashboard: React.FC = () => {
         return n;
       });
     },
-    [accountBalanceChartData?.dates]
+    [dashboardDates]
   );
 
   return (
@@ -2866,7 +2904,7 @@ const Dashboard: React.FC = () => {
             </div>
           )}
           <div className="flex-1 min-w-0 flex flex-col">
-        {hasChartData && dates.length > 0 && (
+        {dates.length > 0 && (
           <div className="w-full mb-4">
             <DateRangeSlider
               minDate={minDate}
@@ -3141,7 +3179,7 @@ const Dashboard: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Colonne gauche — plage A */}
             <div className="flex flex-col min-w-0 border border-gray-200 rounded-lg p-4 bg-gray-50/50">
-              {hasChartData && dates.length > 0 && (
+              {dates.length > 0 && (
                 <div className="w-full mb-3">
                   <DateRangeSlider
                     minDate={minDate}
@@ -3348,7 +3386,7 @@ const Dashboard: React.FC = () => {
 
             {/* Colonne droite — plage B */}
             <div className="flex flex-col min-w-0 border border-gray-200 rounded-lg p-4 bg-gray-50/50">
-              {hasChartData && dates.length > 0 && (
+              {dates.length > 0 && (
                 <div className="w-full mb-3">
                   <DateRangeSlider
                     minDate={minDate}
@@ -3944,7 +3982,7 @@ const Dashboard: React.FC = () => {
                 </div>
               )}
               <div className="flex-1 min-w-0 flex flex-col">
-                {hasChartData && dates.length > 0 && (
+                {dates.length > 0 && (
                   <div className="w-full mb-4">
                     <DateRangeSlider
                       minDate={minDate}

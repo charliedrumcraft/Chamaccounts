@@ -104,6 +104,7 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
   const sliderRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const tickTimestampsRef = useRef<number[]>([]);
   const [slider, setSlider] = useState<API | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [cursorLabel, setCursorLabel] = useState<{ which: 'start' | 'end'; text: string } | null>(null);
@@ -115,15 +116,17 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
 
   const monthlyTimestamps = useMemo(
     () => getMonthlyTimestamps(minDate, maxDate),
-    [minDate, maxDate]
+    [minDate.getTime(), maxDate.getTime()]
   );
 
   const yearlyTimestamps = useMemo(
     () => getYearlyTimestamps(minDate, maxDate),
-    [minDate, maxDate]
+    [minDate.getTime(), maxDate.getTime()]
   );
 
   const tickTimestamps = fullYearsMode ? yearlyTimestamps : monthlyTimestamps;
+  const tickTimestampsKey = tickTimestamps.join(',');
+  tickTimestampsRef.current = tickTimestamps;
 
   const dateToTickIndex = (date: Date): number =>
     fullYearsMode ? dateToYearIndex(date, yearlyTimestamps) : dateToMonthIndex(date, monthlyTimestamps);
@@ -225,16 +228,24 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
   useEffect(() => {
     const el = sliderRef.current;
     if (!el || tickTimestamps.length === 0) return;
-    const existing = (el as unknown as { noUiSlider?: API }).noUiSlider;
-    if (existing) {
-      try {
-        existing.destroy();
-      } catch {
-        // déjà détruit
-      }
-    }
 
     const maxIdx = tickTimestamps.length - 1;
+    const existing = (el as unknown as { noUiSlider?: API }).noUiSlider;
+
+    if (existing) {
+      existing.updateOptions({ range: { min: 0, max: maxIdx } }, false);
+      const raw = existing.get() as (number | string)[];
+      const cur0 = Number(raw[0]);
+      const cur1 = Number(raw[1]);
+      const safeStart = Math.min(Math.max(0, cur0), maxIdx);
+      const safeEnd = Math.min(Math.max(safeStart, cur1), maxIdx);
+      if (cur0 !== safeStart || cur1 !== safeEnd) {
+        existing.set([safeStart, safeEnd], false);
+      }
+      setSlider(existing);
+      return;
+    }
+
     const startIdx = Math.min(dateToTickIndex(controlledStartDate ?? minDate), maxIdx);
     const endIdx = Math.min(Math.max(startIdx, dateToTickIndex(controlledEndDate ?? maxDate)), maxIdx);
 
@@ -249,9 +260,10 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
     });
 
     sliderInstance.on('start', (_values: (number | string)[], handleNumber: number) => {
+      const ticks = tickTimestampsRef.current;
       const values = sliderInstance.get() as (number | string)[];
       const idx = Number(values[handleNumber]);
-      const ts = tickTimestamps[idx] ?? tickTimestamps[0];
+      const ts = ticks[idx] ?? ticks[0];
       const which = handleNumber === 0 ? ('start' as const) : ('end' as const);
       const dateForLabel =
         handleNumber === 0
@@ -264,9 +276,10 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
     });
 
     sliderInstance.on('update', (_values: (number | string)[], handleNumber: number) => {
+      const ticks = tickTimestampsRef.current;
       const values = sliderInstance.get() as (number | string)[];
       const idx = Number(values[handleNumber]);
-      const ts = tickTimestamps[idx] ?? tickTimestamps[0];
+      const ts = ticks[idx] ?? ticks[0];
       const which = handleNumber === 0 ? ('start' as const) : ('end' as const);
       const dateForLabel =
         handleNumber === 0
@@ -287,10 +300,12 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
     });
 
     sliderInstance.on('change', (values) => {
+      const ticks = tickTimestampsRef.current;
+      const maxIdx = ticks.length - 1;
       const i0 = Number(values[0]);
       const i1 = Number(values[1]);
-      const t0 = tickTimestamps[i0] ?? tickTimestamps[0];
-      const t1 = tickTimestamps[i1] ?? tickTimestamps[maxIdx];
+      const t0 = ticks[i0] ?? ticks[0];
+      const t1 = ticks[i1] ?? ticks[maxIdx];
       const start = new Date(t0);
       const end = fullYearsMode ? endOfYear(new Date(t1)) : endOfMonth(new Date(t1));
       onChangeRef.current(start, end);
@@ -307,7 +322,7 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
       }
       setSlider(null);
     };
-  }, [tickTimestamps, fullYearsMode]);
+  }, [tickTimestampsKey, fullYearsMode]);
 
   useEffect(() => {
     if (
@@ -329,7 +344,7 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
     if (cur0 !== safeStart || cur1 !== safeEnd) {
       slider.set([safeStart, safeEnd], false);
     }
-  }, [slider, tickTimestamps, fullYearsMode, controlledStartTs, controlledEndTs]);
+  }, [slider, tickTimestampsKey, fullYearsMode, controlledStartTs, controlledEndTs]);
 
   return (
     <div className="p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-md w-full overflow-hidden">

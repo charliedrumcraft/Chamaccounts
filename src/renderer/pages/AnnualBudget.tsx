@@ -9,19 +9,37 @@ import {
   type BalanceRow,
 } from '../services/AccountBalanceCSVService';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
-import { convertToAxisCurrency, type CurrencySymbol } from '../services/EffectiveExchangeRates';
+import { convertToAxisCurrency, convertMovementsToDisplayCurrency, type CurrencySymbol } from '../services/EffectiveExchangeRates';
 import { formatCurrency } from '../utils/format';
 import { getDefaultLineAssignedTypes } from '../constants/annualBudgetTypeMapping';
 import {
+  type BilanStructureSnapshot,
   type BudgetCategory,
   type BudgetLine,
-  loadBilanStructureSnapshot,
-  saveBilanStructureSnapshot,
+  cloneBilanStructure,
+  getYearBilanStructure,
   getYearSnapshot,
+  listBudgetYears,
+  saveYearBilanStructure,
   saveYearSnapshot,
 } from '../services/annualBudgetStorage';
 
 const YEAR_STORAGE_KEY = 'annual-budget-selected-year';
+const DISPLAY_CURRENCY_STORAGE_KEY = 'annual-budget-display-currency';
+
+const DISPLAY_CURRENCIES: { value: CurrencySymbol; label: string }[] = [
+  { value: '£', label: 'GBP' },
+  { value: '€', label: 'EUR' },
+  { value: 'CHF', label: 'CHF' },
+];
+
+function readStoredDisplayCurrency(): CurrencySymbol {
+  try {
+    const saved = localStorage.getItem(DISPLAY_CURRENCY_STORAGE_KEY);
+    if (saved === '£' || saved === '€' || saved === 'CHF') return saved;
+  } catch {}
+  return '£';
+}
 
 /** Police du tableau « Mouvements par type et par mois » (rem de base, défaut ~ text-sm). */
 const TYPES_MONTH_TABLE_FONT_STORAGE_KEY = 'annual-budget-types-month-table-font-rem';
@@ -425,13 +443,35 @@ function getLabelsFromStructure(
   return { categoryLabels, lineLabels };
 }
 
-function readInitialBilanState(): {
+function deepCloneCategories(cats: BudgetCategory[]): BudgetCategory[] {
+  return cats.map((cat) => ({
+    id: cat.id,
+    label: cat.label,
+    lines: cat.lines.map((l) => ({ id: l.id, label: l.label })),
+  }));
+}
+
+function buildDefaultBilanStructure(): BilanStructureSnapshot {
+  const assets = deepCloneCategories(BUDGETED_ASSETS);
+  const liabilities = deepCloneCategories(BUDGETED_LIABILITIES);
+  const derived = getLabelsFromStructure(assets, liabilities);
+  return {
+    version: 1,
+    assets,
+    liabilities,
+    categoryLabels: derived.categoryLabels,
+    lineLabels: derived.lineLabels,
+  };
+}
+
+function bilanStateFromLoaded(
+  loaded: BilanStructureSnapshot | null
+): {
   assets: BudgetCategory[];
   liabilities: BudgetCategory[];
   categoryLabels: Record<string, string>;
   lineLabels: Record<string, string>;
 } {
-  const loaded = loadBilanStructureSnapshot();
   const assets = loaded?.assets?.length
     ? deepCloneCategories(loaded.assets)
     : deepCloneCategories(BUDGETED_ASSETS);
@@ -447,12 +487,28 @@ function readInitialBilanState(): {
   };
 }
 
-function deepCloneCategories(cats: BudgetCategory[]): BudgetCategory[] {
-  return cats.map((cat) => ({
-    id: cat.id,
-    label: cat.label,
-    lines: cat.lines.map((l) => ({ id: l.id, label: l.label })),
-  }));
+function readBilanStateForYear(year: number): {
+  assets: BudgetCategory[];
+  liabilities: BudgetCategory[];
+  categoryLabels: Record<string, string>;
+  lineLabels: Record<string, string>;
+} {
+  return bilanStateFromLoaded(getYearBilanStructure(year));
+}
+
+function structureFromBilanState(
+  assets: BudgetCategory[],
+  liabilities: BudgetCategory[],
+  categoryLabels: Record<string, string>,
+  lineLabels: Record<string, string>
+): BilanStructureSnapshot {
+  return {
+    version: 1,
+    assets: deepCloneCategories(assets),
+    liabilities: deepCloneCategories(liabilities),
+    categoryLabels: { ...categoryLabels },
+    lineLabels: { ...lineLabels },
+  };
 }
 
 function collectLiabilityLineIds(liabilities: BudgetCategory[]): Set<string> {
@@ -500,9 +556,23 @@ const AnnualBudget: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedYear, setSelectedYear] = useState<number>(() => readStoredYear());
+  const [displayCurrency, setDisplayCurrency] = useState<CurrencySymbol>(() => readStoredDisplayCurrency());
 
-  /** Structure éditable du bilan : chargée depuis le stockage si présent (export AppState / ZIP). */
-  const initialBilan = useMemo(() => readInitialBilanState(), []);
+  const fmtMoney = useCallback(
+    (gbpAmount: number) =>
+      formatCurrency(convertMovementsToDisplayCurrency(gbpAmount, displayCurrency), displayCurrency),
+    [displayCurrency]
+  );
+
+  const setDisplayCurrencyPersist = useCallback((c: CurrencySymbol) => {
+    setDisplayCurrency(c);
+    try {
+      localStorage.setItem(DISPLAY_CURRENCY_STORAGE_KEY, c);
+    } catch {}
+  }, []);
+
+  /** Structure éditable du bilan : propre à l’année sélectionnée. */
+  const initialBilan = useMemo(() => readBilanStateForYear(readStoredYear()), []);
   const [budgetedAssets, setBudgetedAssets] = useState<BudgetCategory[]>(() =>
     deepCloneCategories(initialBilan.assets)
   );
@@ -550,6 +620,15 @@ const AnnualBudget: React.FC = () => {
   const [typesByMonthBlockExpanded, setTypesByMonthBlockExpanded] = useState(true);
   const [typesMonthTableFontRem, setTypesMonthTableFontRem] = useState(loadTypesMonthTableFontRem);
 
+  const [budgetYearsVersion, setBudgetYearsVersion] = useState(0);
+  const [addYearModalOpen, setAddYearModalOpen] = useState(false);
+  const [newYearInput, setNewYearInput] = useState(() => String(new Date().getFullYear() + 1));
+  const [newYearMode, setNewYearMode] = useState<'empty' | 'copy'>('empty');
+  const [copySourceYear, setCopySourceYear] = useState<number | null>(null);
+  const [addYearError, setAddYearError] = useState<string | null>(null);
+
+  const storedBudgetYears = useMemo(() => listBudgetYears(), [budgetYearsVersion]);
+
   useEffect(() => {
     try {
       if (typeof localStorage !== 'undefined') {
@@ -564,18 +643,19 @@ const AnnualBudget: React.FC = () => {
       yearChangeSkipRef.current = false;
       return;
     }
+    const bilan = readBilanStateForYear(selectedYear);
+    setBudgetedAssets(bilan.assets);
+    setBudgetedLiabilities(bilan.liabilities);
+    setBilanCategoryLabels(bilan.categoryLabels);
+    setBilanLineLabels(bilan.lineLabels);
+
     const initial: Record<string, number> = {};
-    getLineIdsFromStructure(
-      Array.isArray(budgetedAssets) ? budgetedAssets : [],
-      Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []
-    ).forEach((id) => {
+    getLineIdsFromStructure(bilan.assets, bilan.liabilities).forEach((id) => {
       initial[id] = 0;
     });
     const snap = getYearSnapshot(selectedYear);
     const baseTypes = getDefaultLineAssignedTypes();
-    const liabIds = collectLiabilityLineIds(
-      Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []
-    );
+    const liabIds = collectLiabilityLineIds(bilan.liabilities);
     if (snap) {
       const merged = { ...initial, ...snap.budgetValues };
       setBudgetValues(normalizeBudgetValuesLiabilitiesForecast(merged, liabIds));
@@ -588,25 +668,28 @@ const AnnualBudget: React.FC = () => {
 
   const selectedYearRef = useRef(selectedYear);
   selectedYearRef.current = selectedYear;
+
   useEffect(() => {
     const t = setTimeout(() => {
       saveYearSnapshot(selectedYearRef.current, { budgetValues, lineAssignedTypes });
     }, 400);
     return () => clearTimeout(t);
-  }, [budgetValues, lineAssignedTypes]);
+  }, [budgetValues, lineAssignedTypes, selectedYear]);
 
   useEffect(() => {
     const t = setTimeout(() => {
-      saveBilanStructureSnapshot({
-        version: 1,
-        assets: budgetedAssets,
-        liabilities: budgetedLiabilities,
-        categoryLabels: bilanCategoryLabels,
-        lineLabels: bilanLineLabels,
-      });
+      saveYearBilanStructure(
+        selectedYearRef.current,
+        structureFromBilanState(
+          budgetedAssets,
+          budgetedLiabilities,
+          bilanCategoryLabels,
+          bilanLineLabels
+        )
+      );
     }, 400);
     return () => clearTimeout(t);
-  }, [budgetedAssets, budgetedLiabilities, bilanCategoryLabels, bilanLineLabels]);
+  }, [budgetedAssets, budgetedLiabilities, bilanCategoryLabels, bilanLineLabels, selectedYear]);
 
   const liabilityLineIds = useMemo(
     () => collectLiabilityLineIds(Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []),
@@ -622,6 +705,10 @@ const AnnualBudget: React.FC = () => {
   /** Brouillon des champs Forecast en mode édition (permet `=100*12` avant validation). */
   const [bilanForecastDrafts, setBilanForecastDrafts] = useState<Record<string, string>>({});
 
+  useEffect(() => {
+    setBilanForecastDrafts({});
+  }, [displayCurrency]);
+
   const commitBilanForecast = useCallback(
     (lineId: string, raw: string) => {
       const trimmed = raw.trim().replace(/,/g, '.');
@@ -633,9 +720,37 @@ const AnnualBudget: React.FC = () => {
       } else {
         n = parseFloat(trimmed);
       }
-      setBudgetAmount(lineId, Number.isNaN(n) ? 0 : n);
+      const inDisplay = Number.isNaN(n) ? 0 : n;
+      const gbp = convertToAxisCurrency(inDisplay, displayCurrency, '£');
+      setBudgetAmount(lineId, gbp);
     },
-    [setBudgetAmount]
+    [setBudgetAmount, displayCurrency]
+  );
+
+  /** Valeur forecast affichée / éditée dans la devise courante (stockage interne toujours en GBP). */
+  const forecastInputDisplayString = useCallback(
+    (lineId: string): string => {
+      if (bilanForecastDrafts[lineId] !== undefined) return bilanForecastDrafts[lineId];
+      const v = budgetValues[lineId];
+      if (v === 0 || v == null) return '';
+      const displayed = convertMovementsToDisplayCurrency(v, displayCurrency);
+      return String(Number(displayed.toFixed(2)));
+    },
+    [bilanForecastDrafts, budgetValues, displayCurrency]
+  );
+
+  const startForecastDraft = useCallback(
+    (lineId: string) => {
+      const v = budgetValues[lineId];
+      setBilanForecastDrafts((prev) => ({
+        ...prev,
+        [lineId]:
+          v === 0 || v == null
+            ? ''
+            : String(Number(convertMovementsToDisplayCurrency(v, displayCurrency).toFixed(2))),
+      }));
+    },
+    [budgetValues, displayCurrency]
   );
 
   useEffect(() => {
@@ -983,12 +1098,139 @@ const AnnualBudget: React.FC = () => {
 
   const handleYearChange = (y: number) => {
     if (y !== selectedYear) {
-      saveYearSnapshot(selectedYear, { budgetValues, lineAssignedTypes });
+      saveYearSnapshot(selectedYear, {
+        budgetValues,
+        lineAssignedTypes,
+        bilanStructure: structureFromBilanState(
+          budgetedAssets,
+          budgetedLiabilities,
+          bilanCategoryLabels,
+          bilanLineLabels
+        ),
+      });
     }
     setSelectedYear(y);
     try {
       localStorage.setItem(YEAR_STORAGE_KEY, String(y));
     } catch {}
+  };
+
+  const yearSelectOptions = useMemo(() => {
+    const set = new Set<number>();
+    for (const y of aggregation.yearsAvailable) set.add(y);
+    for (const y of storedBudgetYears) set.add(y);
+    set.add(selectedYear);
+    if (set.size === 0) {
+      return [selectedYear - 2, selectedYear - 1, selectedYear, selectedYear + 1];
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [aggregation.yearsAvailable, storedBudgetYears, selectedYear]);
+
+  const openAddYearModal = () => {
+    setNewYearInput(String(selectedYear + 1));
+    setNewYearMode('empty');
+    setCopySourceYear(
+      storedBudgetYears.includes(selectedYear)
+        ? selectedYear
+        : storedBudgetYears[storedBudgetYears.length - 1] ?? null
+    );
+    setAddYearError(null);
+    setAddYearModalOpen(true);
+  };
+
+  const closeAddYearModal = () => {
+    setAddYearModalOpen(false);
+    setAddYearError(null);
+  };
+
+  const handleCreateYear = () => {
+    const y = parseInt(newYearInput.trim(), 10);
+    if (Number.isNaN(y) || y < 2000 || y > 2100) {
+      setAddYearError('Saisissez une année entre 2000 et 2100.');
+      return;
+    }
+    if (y === selectedYear) {
+      setAddYearError('Cette année est déjà ouverte.');
+      return;
+    }
+    if (storedBudgetYears.includes(y) || getYearSnapshot(y) !== null) {
+      setAddYearError(`Une feuille existe déjà pour ${y}.`);
+      return;
+    }
+    if (newYearMode === 'copy') {
+      if (copySourceYear === null) {
+        setAddYearError('Choisissez une année source à copier.');
+        return;
+      }
+      const sourceExists =
+        copySourceYear === selectedYear || getYearSnapshot(copySourceYear) !== null;
+      if (!sourceExists) {
+        setAddYearError('Choisissez une année source à copier.');
+        return;
+      }
+    }
+
+    saveYearSnapshot(selectedYear, {
+      budgetValues,
+      lineAssignedTypes,
+      bilanStructure: structureFromBilanState(
+        budgetedAssets,
+        budgetedLiabilities,
+        bilanCategoryLabels,
+        bilanLineLabels
+      ),
+    });
+
+    if (newYearMode === 'copy' && copySourceYear !== null) {
+      let copiedValues: Record<string, number>;
+      let copiedTypes: Record<string, string[]>;
+      let copiedStructure: BilanStructureSnapshot;
+
+      if (copySourceYear === selectedYear) {
+        copiedValues = { ...budgetValues };
+        copiedTypes = Object.fromEntries(
+          Object.entries(lineAssignedTypes).map(([k, v]) => [k, [...v]])
+        );
+        copiedStructure = structureFromBilanState(
+          budgetedAssets,
+          budgetedLiabilities,
+          bilanCategoryLabels,
+          bilanLineLabels
+        );
+      } else {
+        const sourceSnap = getYearSnapshot(copySourceYear);
+        if (!sourceSnap) {
+          setAddYearError('Impossible de lire la feuille source.');
+          return;
+        }
+        copiedValues = { ...sourceSnap.budgetValues };
+        copiedTypes = Object.fromEntries(
+          Object.entries(sourceSnap.lineAssignedTypes).map(([k, v]) => [k, [...v]])
+        );
+        copiedStructure = cloneBilanStructure(
+          getYearBilanStructure(copySourceYear) ?? buildDefaultBilanStructure()
+        );
+      }
+
+      saveYearSnapshot(y, {
+        budgetValues: copiedValues,
+        lineAssignedTypes: copiedTypes,
+        bilanStructure: cloneBilanStructure(copiedStructure),
+      });
+    } else {
+      saveYearSnapshot(y, {
+        budgetValues: {},
+        lineAssignedTypes: {},
+        bilanStructure: buildDefaultBilanStructure(),
+      });
+    }
+
+    setBudgetYearsVersion((v) => v + 1);
+    setSelectedYear(y);
+    try {
+      localStorage.setItem(YEAR_STORAGE_KEY, String(y));
+    } catch {}
+    closeAddYearModal();
   };
 
   if (loading) {
@@ -1000,9 +1242,33 @@ const AnnualBudget: React.FC = () => {
   }
 
   return (
+    <>
     <main className="flex-1 overflow-auto p-6">
         <div className="max-w-8xl mx-auto">
-          <h1 className="text-2xl font-bold text-gray-800 mb-6">Budget annuel</h1>
+          <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+            <h1 className="text-2xl font-bold text-gray-800">Budget annuel</h1>
+            <div
+              className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5 shadow-sm"
+              role="group"
+              aria-label="Devise d'affichage"
+            >
+              {DISPLAY_CURRENCIES.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setDisplayCurrencyPersist(value)}
+                  aria-pressed={displayCurrency === value}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    displayCurrency === value
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {error && (
             <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
@@ -1021,15 +1287,19 @@ const AnnualBudget: React.FC = () => {
               onChange={(e) => handleYearChange(parseInt(e.target.value, 10))}
               className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:ring-2 focus:ring-gray-500 focus:border-gray-500"
             >
-              {(aggregation.yearsAvailable.length
-                ? aggregation.yearsAvailable
-                : [selectedYear - 2, selectedYear - 1, selectedYear, selectedYear + 1]
-              ).map((y) => (
+              {yearSelectOptions.map((y) => (
                 <option key={y} value={y}>
                   {y}
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              onClick={openAddYearModal}
+              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50 focus:ring-2 focus:ring-gray-500 focus:border-gray-500"
+            >
+              Ajouter une année
+            </button>
           </div>
 
           {/* Résumé annuel */}
@@ -1037,19 +1307,19 @@ const AnnualBudget: React.FC = () => {
             <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
               <p className="text-sm font-medium text-gray-500">Revenus</p>
               <p className="text-xl font-semibold text-green-700">
-                {formatCurrency(aggregation.totalIncome, '£')}
+                {fmtMoney(aggregation.totalIncome)}
               </p>
             </div>
             <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
               <p className="text-sm font-medium text-gray-500">Dépenses</p>
               <p className="text-xl font-semibold text-red-700">
-                {formatCurrency(aggregation.totalExpenses, '£')}
+                {fmtMoney(aggregation.totalExpenses)}
               </p>
             </div>
             <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
               <p className="text-sm font-medium text-gray-500">Solde annuel</p>
               <p className={`text-xl font-semibold ${aggregation.total >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                {formatCurrency(aggregation.total, '£')}
+                {fmtMoney(aggregation.total)}
               </p>
             </div>
           </div>
@@ -1185,10 +1455,10 @@ const AnnualBudget: React.FC = () => {
                           {catLines.length > 0 && (
                             <>
                               <span className="tabular-nums w-28 text-right text-gray-600">
-                                {formatCurrency(catForecast, '£')}
+                                {fmtMoney(catForecast)}
                               </span>
                               <span className="tabular-nums w-28 text-right text-gray-600">
-                                {formatCurrency(catActual, '£')}
+                                {fmtMoney(catActual)}
                               </span>
                             </>
                           )}
@@ -1258,20 +1528,8 @@ const AnnualBudget: React.FC = () => {
                                   className="w-28 text-right text-sm border border-gray-300 rounded px-2 py-1 tabular-nums focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
                                   placeholder="—"
                                   title="Saisie directe ou formule : =100*12 puis Entrée"
-                                  value={
-                                    bilanForecastDrafts[line.id] !== undefined
-                                      ? bilanForecastDrafts[line.id]
-                                      : budgetValues[line.id] === 0 || budgetValues[line.id] == null
-                                        ? ''
-                                        : String(budgetValues[line.id])
-                                  }
-                                  onFocus={() => {
-                                    const v = budgetValues[line.id];
-                                    setBilanForecastDrafts((prev) => ({
-                                      ...prev,
-                                      [line.id]: v === 0 || v == null ? '' : String(v),
-                                    }));
-                                  }}
+                                  value={forecastInputDisplayString(line.id)}
+                                  onFocus={() => startForecastDraft(line.id)}
                                   onChange={(e) => {
                                     setBilanForecastDrafts((prev) => ({ ...prev, [line.id]: e.target.value }));
                                   }}
@@ -1295,11 +1553,11 @@ const AnnualBudget: React.FC = () => {
                                 <span className="w-28 text-right text-sm tabular-nums text-gray-700">
                                   {budgetValues[line.id] === 0 || budgetValues[line.id] == null
                                     ? '—'
-                                    : formatCurrency(budgetValues[line.id] ?? 0, '£')}
+                                    : fmtMoney(budgetValues[line.id] ?? 0)}
                                 </span>
                               )}
                               <span className="w-28 text-right text-sm tabular-nums text-gray-700">
-                                {formatCurrency(getActualValue(line.id) ?? 0, '£')}
+                                {fmtMoney(getActualValue(line.id) ?? 0)}
                               </span>
                               {bilanEditMode && (
                                 <div
@@ -1333,7 +1591,7 @@ const AnnualBudget: React.FC = () => {
                                               </span>
                                               <span className="min-w-0 truncate">{typeName}</span>
                                               <span className="ml-auto tabular-nums text-gray-500">
-                                                {formatCurrency(aggregation.byType[typeName] ?? 0, '£')}
+                                                {fmtMoney(aggregation.byType[typeName] ?? 0)}
                                               </span>
                                             </button>
                                           );
@@ -1434,10 +1692,10 @@ const AnnualBudget: React.FC = () => {
                           {catLinesLiab.length > 0 && (
                             <>
                               <span className="tabular-nums w-28 text-right text-gray-600">
-                                {formatCurrency(catForecast, '£')}
+                                {fmtMoney(catForecast)}
                               </span>
                               <span className="tabular-nums w-28 text-right text-gray-600">
-                                {formatCurrency(catActual, '£')}
+                                {fmtMoney(catActual)}
                               </span>
                             </>
                           )}
@@ -1507,20 +1765,8 @@ const AnnualBudget: React.FC = () => {
                                   className="w-28 text-right text-sm border border-gray-300 rounded px-2 py-1 tabular-nums focus:ring-2 focus:ring-red-500 focus:border-red-500"
                                   placeholder="—"
                                   title="Saisie directe ou formule : =100*12 puis Entrée"
-                                  value={
-                                    bilanForecastDrafts[line.id] !== undefined
-                                      ? bilanForecastDrafts[line.id]
-                                      : budgetValues[line.id] === 0 || budgetValues[line.id] == null
-                                        ? ''
-                                        : String(budgetValues[line.id])
-                                  }
-                                  onFocus={() => {
-                                    const v = budgetValues[line.id];
-                                    setBilanForecastDrafts((prev) => ({
-                                      ...prev,
-                                      [line.id]: v === 0 || v == null ? '' : String(v),
-                                    }));
-                                  }}
+                                  value={forecastInputDisplayString(line.id)}
+                                  onFocus={() => startForecastDraft(line.id)}
                                   onChange={(e) => {
                                     setBilanForecastDrafts((prev) => ({ ...prev, [line.id]: e.target.value }));
                                   }}
@@ -1544,11 +1790,11 @@ const AnnualBudget: React.FC = () => {
                                 <span className="w-28 text-right text-sm tabular-nums text-gray-700">
                                   {budgetValues[line.id] === 0 || budgetValues[line.id] == null
                                     ? '—'
-                                    : formatCurrency(budgetValues[line.id] ?? 0, '£')}
+                                    : fmtMoney(budgetValues[line.id] ?? 0)}
                                 </span>
                               )}
                               <span className="w-28 text-right text-sm tabular-nums text-gray-700">
-                                {formatCurrency(getActualValue(line.id), '£')}
+                                {fmtMoney(getActualValue(line.id))}
                               </span>
                               {bilanEditMode && (
                                 <div
@@ -1582,7 +1828,7 @@ const AnnualBudget: React.FC = () => {
                                               </span>
                                               <span className="min-w-0 truncate">{typeName}</span>
                                               <span className="ml-auto tabular-nums text-gray-500">
-                                                {formatCurrency(aggregation.byType[typeName] ?? 0, '£')}
+                                                {fmtMoney(aggregation.byType[typeName] ?? 0)}
                                               </span>
                                             </button>
                                           );
@@ -1636,11 +1882,11 @@ const AnnualBudget: React.FC = () => {
                       <span className="min-w-0 flex-1 text-sm font-bold text-emerald-900 sm:text-base">TOTAL ASSETS</span>
                       <div className="flex flex-wrap items-end justify-end gap-6 tabular-nums">
                         <div className="text-right">
-                          <div className="text-base font-bold text-emerald-950">{formatCurrency(totalAssets, '£')}</div>
+                          <div className="text-base font-bold text-emerald-950">{fmtMoney(totalAssets)}</div>
                           <div className="text-xs font-medium text-emerald-700">Forecast</div>
                         </div>
                         <div className="text-right">
-                          <div className="text-base font-bold text-emerald-950">{formatCurrency(totalAssetsActual, '£')}</div>
+                          <div className="text-base font-bold text-emerald-950">{fmtMoney(totalAssetsActual)}</div>
                           <div className="text-xs font-medium text-emerald-700">Réel</div>
                         </div>
                       </div>
@@ -1653,11 +1899,11 @@ const AnnualBudget: React.FC = () => {
                       <span className="min-w-0 flex-1 text-sm font-bold text-red-900 sm:text-base">TOTAL LIABILITIES</span>
                       <div className="flex flex-wrap items-end justify-end gap-6 tabular-nums">
                         <div className="text-right">
-                          <div className="text-base font-bold text-red-950">{formatCurrency(totalLiabilities, '£')}</div>
+                          <div className="text-base font-bold text-red-950">{fmtMoney(totalLiabilities)}</div>
                           <div className="text-xs font-medium text-red-700">Forecast</div>
                         </div>
                         <div className="text-right">
-                          <div className="text-base font-bold text-red-950">{formatCurrency(totalLiabilitiesActual, '£')}</div>
+                          <div className="text-base font-bold text-red-950">{fmtMoney(totalLiabilitiesActual)}</div>
                           <div className="text-xs font-medium text-red-700">Réel</div>
                         </div>
                       </div>
@@ -1680,11 +1926,11 @@ const AnnualBudget: React.FC = () => {
                                   Assets B/F
                                 </span>
                                 <span className="text-[11px] font-medium leading-none text-gray-600">
-                                  {formatCurrency(assetsBfForecast, '£')}
+                                  {fmtMoney(assetsBfForecast)}
                                 </span>
                               </div>
                               <span className="tabular-nums text-xl font-bold leading-none text-gray-900">
-                                {formatCurrency(totalFundCF, '£')}
+                                {fmtMoney(totalFundCF)}
                               </span>
                             </div>
                             <span
@@ -1700,12 +1946,12 @@ const AnnualBudget: React.FC = () => {
                               {fundCfDeltaVsAssetsBfForecast > 0.005 ? (
                                 <>
                                   <span aria-hidden>↑</span>
-                                  {formatCurrency(fundCfDeltaVsAssetsBfForecast, '£')}
+                                  {fmtMoney(fundCfDeltaVsAssetsBfForecast)}
                                 </>
                               ) : fundCfDeltaVsAssetsBfForecast < -0.005 ? (
                                 <>
                                   <span aria-hidden>↓</span>
-                                  {formatCurrency(Math.abs(fundCfDeltaVsAssetsBfForecast), '£')}
+                                  {fmtMoney(Math.abs(fundCfDeltaVsAssetsBfForecast))}
                                 </>
                               ) : (
                                 <span className="font-normal">—</span>
@@ -1724,11 +1970,11 @@ const AnnualBudget: React.FC = () => {
                                   Assets B/F
                                 </span>
                                 <span className="text-[11px] font-medium leading-none text-gray-600">
-                                  {formatCurrency(assetsBfActual, '£')}
+                                  {fmtMoney(assetsBfActual)}
                                 </span>
                               </div>
                               <span className="tabular-nums text-xl font-bold leading-none text-gray-900">
-                                {formatCurrency(totalFundCFActual, '£')}
+                                {fmtMoney(totalFundCFActual)}
                               </span>
                             </div>
                             <span
@@ -1744,12 +1990,12 @@ const AnnualBudget: React.FC = () => {
                               {fundCfDeltaVsAssetsBfActual > 0.005 ? (
                                 <>
                                   <span aria-hidden>↑</span>
-                                  {formatCurrency(fundCfDeltaVsAssetsBfActual, '£')}
+                                  {fmtMoney(fundCfDeltaVsAssetsBfActual)}
                                 </>
                               ) : fundCfDeltaVsAssetsBfActual < -0.005 ? (
                                 <>
                                   <span aria-hidden>↓</span>
-                                  {formatCurrency(Math.abs(fundCfDeltaVsAssetsBfActual), '£')}
+                                  {fmtMoney(Math.abs(fundCfDeltaVsAssetsBfActual))}
                                 </>
                               ) : (
                                 <span className="font-normal">—</span>
@@ -1890,19 +2136,19 @@ const AnnualBudget: React.FC = () => {
                                 key={m}
                                 className={`text-right py-2 px-2 tabular-nums ${val >= 0 ? 'text-green-700' : 'text-red-700'}`}
                               >
-                                {val === 0 ? '—' : formatCurrency(val, '£')}
+                                {val === 0 ? '—' : fmtMoney(val)}
                               </td>
                             );
                           })}
                           <td
                             className={`text-right py-2 px-3 font-medium tabular-nums ${rowMonthlyAvg === null ? 'text-gray-400' : rowMonthlyAvg >= 0 ? 'text-green-700' : 'text-red-700'}`}
                           >
-                            {rowMonthlyAvg === null ? '—' : formatCurrency(rowMonthlyAvg, '£')}
+                            {rowMonthlyAvg === null ? '—' : fmtMoney(rowMonthlyAvg)}
                           </td>
                           <td
                             className={`border-l border-slate-200/90 bg-slate-100/80 text-right py-2 px-4 font-medium tabular-nums group-hover:bg-slate-100 ${rowTotal >= 0 ? 'text-green-700' : 'text-red-700'}`}
                           >
-                            {formatCurrency(rowTotal, '£')}
+                            {fmtMoney(rowTotal)}
                           </td>
                         </tr>
                         {type === 'Transport' && (
@@ -1912,17 +2158,17 @@ const AnnualBudget: React.FC = () => {
                               const val = totalSortiesByMonth[m] ?? 0;
                               return (
                                 <td key={m} className="text-right py-2 px-2 tabular-nums text-red-700">
-                                  {val === 0 ? '—' : formatCurrency(val, '£')}
+                                  {val === 0 ? '—' : fmtMoney(val)}
                                 </td>
                               );
                             })}
                             <td className="text-right py-2 px-3 tabular-nums text-red-700">
                               {typesByMonthTableAvg.sortiesAvg === null
                                 ? '—'
-                                : formatCurrency(typesByMonthTableAvg.sortiesAvg, '£')}
+                                : fmtMoney(typesByMonthTableAvg.sortiesAvg)}
                             </td>
                             <td className="border-l border-red-200/80 bg-slate-200/50 text-right py-2 px-4 tabular-nums text-red-800">
-                              {formatCurrency(aggregation.totalExpenses, '£')}
+                              {fmtMoney(aggregation.totalExpenses)}
                             </td>
                           </tr>
                         )}
@@ -1933,17 +2179,17 @@ const AnnualBudget: React.FC = () => {
                               const val = totalEntreesByMonth[m] ?? 0;
                               return (
                                 <td key={m} className="text-right py-2 px-2 tabular-nums text-green-700">
-                                  {val === 0 ? '—' : formatCurrency(val, '£')}
+                                  {val === 0 ? '—' : fmtMoney(val)}
                                 </td>
                               );
                             })}
                             <td className="text-right py-2 px-3 tabular-nums text-green-700">
                               {typesByMonthTableAvg.entreesAvg === null
                                 ? '—'
-                                : formatCurrency(typesByMonthTableAvg.entreesAvg, '£')}
+                                : fmtMoney(typesByMonthTableAvg.entreesAvg)}
                             </td>
                             <td className="border-l border-emerald-200/80 bg-slate-200/50 text-right py-2 px-4 tabular-nums text-green-800">
-                              {formatCurrency(aggregation.totalIncome, '£')}
+                              {fmtMoney(aggregation.totalIncome)}
                             </td>
                           </tr>
                         )}
@@ -1959,7 +2205,7 @@ const AnnualBudget: React.FC = () => {
                           key={m}
                           className={`text-right py-3 px-2 tabular-nums ${val >= 0 ? 'text-green-700' : 'text-red-700'}`}
                         >
-                          {val === 0 ? '—' : formatCurrency(val, '£')}
+                          {val === 0 ? '—' : fmtMoney(val)}
                         </td>
                       );
                     })}
@@ -1974,12 +2220,12 @@ const AnnualBudget: React.FC = () => {
                     >
                       {typesByMonthTableAvg.balanceAvg === null
                         ? '—'
-                        : formatCurrency(typesByMonthTableAvg.balanceAvg, '£')}
+                        : fmtMoney(typesByMonthTableAvg.balanceAvg)}
                     </td>
                     <td
                       className={`border-l border-slate-300 bg-slate-200/70 text-right py-3 px-4 tabular-nums ${aggregation.total >= 0 ? 'text-green-800' : 'text-red-800'}`}
                     >
-                      {formatCurrency(aggregation.total, '£')}
+                      {fmtMoney(aggregation.total)}
                     </td>
                   </tr>
                 </tbody>
@@ -1991,6 +2237,129 @@ const AnnualBudget: React.FC = () => {
           </section>
         </div>
     </main>
+      {addYearModalOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="annual-budget-add-year-title"
+          onClick={closeAddYearModal}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="annual-budget-add-year-title" className="text-lg font-semibold text-gray-900">
+              Nouvelle feuille de budget
+            </h2>
+            <div className="space-y-1">
+              <label htmlFor="annual-budget-new-year" className="block text-sm font-medium text-gray-700">
+                Année
+              </label>
+              <input
+                id="annual-budget-new-year"
+                type="number"
+                min={2000}
+                max={2100}
+                value={newYearInput}
+                onChange={(e) => {
+                  setNewYearInput(e.target.value);
+                  setAddYearError(null);
+                }}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:ring-2 focus:ring-gray-500 focus:border-gray-500"
+              />
+            </div>
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium text-gray-700">Contenu de la feuille</legend>
+              <label className="flex items-center gap-2 text-sm text-gray-800">
+                <input
+                  type="radio"
+                  name="annual-budget-new-year-mode"
+                  checked={newYearMode === 'empty'}
+                  onChange={() => {
+                    setNewYearMode('empty');
+                    setAddYearError(null);
+                  }}
+                />
+                Feuille vide
+              </label>
+              <label
+                className={`flex items-center gap-2 text-sm ${
+                  storedBudgetYears.length === 0 ? 'text-gray-400' : 'text-gray-800'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="annual-budget-new-year-mode"
+                  checked={newYearMode === 'copy'}
+                  disabled={storedBudgetYears.length === 0}
+                  onChange={() => {
+                    setNewYearMode('copy');
+                    setAddYearError(null);
+                    if (copySourceYear === null && storedBudgetYears.length > 0) {
+                      setCopySourceYear(
+                        storedBudgetYears.includes(selectedYear)
+                          ? selectedYear
+                          : storedBudgetYears[storedBudgetYears.length - 1]
+                      );
+                    }
+                  }}
+                />
+                Copier une année existante
+              </label>
+              {storedBudgetYears.length === 0 && (
+                <p className="text-xs text-gray-500 pl-6">
+                  Aucune année budgétisée à copier pour le moment.
+                </p>
+              )}
+              {newYearMode === 'copy' && storedBudgetYears.length > 0 && (
+                <div className="pl-6 space-y-1">
+                  <label htmlFor="annual-budget-copy-source" className="block text-sm text-gray-600">
+                    Année source
+                  </label>
+                  <select
+                    id="annual-budget-copy-source"
+                    value={copySourceYear ?? ''}
+                    onChange={(e) => {
+                      setCopySourceYear(parseInt(e.target.value, 10));
+                      setAddYearError(null);
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:ring-2 focus:ring-gray-500 focus:border-gray-500"
+                  >
+                    {storedBudgetYears.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </fieldset>
+            {addYearError && (
+              <p className="text-sm text-red-600" role="alert">
+                {addYearError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={closeAddYearModal}
+                className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateYear}
+                className="rounded border border-gray-800 bg-gray-800 px-4 py-2 text-sm font-medium text-white hover:bg-gray-900"
+              >
+                Créer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

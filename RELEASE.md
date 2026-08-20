@@ -1,3 +1,26 @@
+# Chamaccounts v1.0.7
+
+Assistant d’import pour le soutien, affichage multi-devises, sous-totaux par projet, et budget annuel avec structure de bilan par année.
+
+### Changements par rapport à v1.0.6
+- **Soutien — import** : assistant de préparation (collage CSV, mapping des colonnes, prévisualisation, exclusions)
+- **Soutien — affichage** : devise d’affichage GBP / EUR / CHF, sous-totaux par projet, suggestions à la saisie
+- **Budget annuel** : structure du bilan (actif / passif) propre à chaque année, avec migration depuis l’ancienne clé globale
+- **Tableau de bord** : plage de dates alignée sur soldes et transactions ; slider de période plus stable lors des mises à jour
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.7-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.7-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.7-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.7-linux-x64.AppImage` |
+
+[Télécharger v1.0.7](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.7)
+
+---
+
 # Chamaccounts v1.0.6
 
 Visite guidée intégrée, profil de démonstration **Data Template** et informations utiles dans le menu latéral.
