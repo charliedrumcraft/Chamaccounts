@@ -62,7 +62,10 @@ mac:
   # Notarisation auto si APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID (CI ou local)
 
 dmg:
-  title: ${productName} ${version}
+  # Titre sans espace : évite les collisions /Volumes sur les runners arm64 (APFS).
+  title: ${productName}-${version}
+  # null : saute Alias.for_file(background.tiff), cassé sur macos-latest / APFS.
+  background: null
   icon: build/icon.icns
   iconSize: 80
   window:

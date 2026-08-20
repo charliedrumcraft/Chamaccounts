@@ -44,7 +44,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          # macos-14 : plus stable que macos-latest pour electron-builder DMG (APFS / dmgbuild).
+          - os: macos-14
             platform: mac
             prepare_signing: true
           - os: windows-latest
