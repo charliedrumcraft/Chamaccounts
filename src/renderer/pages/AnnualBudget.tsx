@@ -20,9 +20,9 @@ import {
   getYearBilanStructure,
   getYearSnapshot,
   listBudgetYears,
-  saveYearBilanStructure,
   saveYearSnapshot,
 } from '../services/annualBudgetStorage';
+import { PERSIST_PENDING_APP_STATE_EVENT } from '../services/profileAppStateSync';
 
 const YEAR_STORAGE_KEY = 'annual-budget-selected-year';
 const DISPLAY_CURRENCY_STORAGE_KEY = 'annual-budget-display-currency';
@@ -669,27 +669,60 @@ const AnnualBudget: React.FC = () => {
   const selectedYearRef = useRef(selectedYear);
   selectedYearRef.current = selectedYear;
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      saveYearSnapshot(selectedYearRef.current, { budgetValues, lineAssignedTypes });
-    }, 400);
-    return () => clearTimeout(t);
-  }, [budgetValues, lineAssignedTypes, selectedYear]);
+  const bilanPersistRef = useRef({
+    budgetValues,
+    lineAssignedTypes,
+    budgetedAssets,
+    budgetedLiabilities,
+    bilanCategoryLabels,
+    bilanLineLabels,
+  });
+  bilanPersistRef.current = {
+    budgetValues,
+    lineAssignedTypes,
+    budgetedAssets,
+    budgetedLiabilities,
+    bilanCategoryLabels,
+    bilanLineLabels,
+  };
+
+  const persistBilanToStorage = useCallback((year: number) => {
+    const s = bilanPersistRef.current;
+    saveYearSnapshot(year, {
+      budgetValues: s.budgetValues,
+      lineAssignedTypes: s.lineAssignedTypes,
+      bilanStructure: structureFromBilanState(
+        s.budgetedAssets,
+        s.budgetedLiabilities,
+        s.bilanCategoryLabels,
+        s.bilanLineLabels
+      ),
+    });
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => {
-      saveYearBilanStructure(
-        selectedYearRef.current,
-        structureFromBilanState(
-          budgetedAssets,
-          budgetedLiabilities,
-          bilanCategoryLabels,
-          bilanLineLabels
-        )
-      );
+      persistBilanToStorage(selectedYearRef.current);
     }, 400);
     return () => clearTimeout(t);
-  }, [budgetedAssets, budgetedLiabilities, bilanCategoryLabels, bilanLineLabels, selectedYear]);
+  }, [
+    budgetValues,
+    lineAssignedTypes,
+    budgetedAssets,
+    budgetedLiabilities,
+    bilanCategoryLabels,
+    bilanLineLabels,
+    persistBilanToStorage,
+  ]);
+
+  useEffect(() => {
+    const persistPending = () => persistBilanToStorage(selectedYearRef.current);
+    window.addEventListener(PERSIST_PENDING_APP_STATE_EVENT, persistPending);
+    return () => {
+      window.removeEventListener(PERSIST_PENDING_APP_STATE_EVENT, persistPending);
+      persistPending();
+    };
+  }, [persistBilanToStorage]);
 
   const liabilityLineIds = useMemo(
     () => collectLiabilityLineIds(Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []),

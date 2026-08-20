@@ -36,6 +36,7 @@ import {
   exportLocalStorageSnapshotToDataFile,
   importLocalStorageSnapshotFromDataFile,
 } from '../services/localStorageSnapshotService';
+import { PERSIST_PENDING_APP_STATE_EVENT } from '../services/profileAppStateSync';
 import { describeProjectCsvDataForExport } from '../services/projectDataExportService';
 import { LOCAL_STORAGE_SNAPSHOT_CSV_PATH } from '@/shared/dataPaths';
 import AppUpdatesSection from '../components/Settings/AppUpdatesSection';
@@ -649,22 +650,60 @@ const Settings: React.FC = () => {
     }
   };
 
+  const persistRecognisedLists = useCallback(
+    (accounts: RecognisedAccountEntry[], entryTypes: string[], outputTypes: string[]) => {
+      const acc = migrateRecognisedAccountEntriesIfNeeded(
+        accounts
+          .filter((e) => e.name.trim())
+          .map((e) => ({
+            name: e.name.trim(),
+            currency: e.currency,
+            aliases: e.aliases,
+          }))
+      );
+      const entry = Array.from(new Set(entryTypes.map((s) => s.trim()).filter(Boolean)));
+      const output = Array.from(new Set(outputTypes.map((s) => s.trim()).filter(Boolean)));
+      saveRecognisedAccountsToStorage(acc);
+      saveStringArray(STORAGE_KEYS.recognisedEntryTypes, entry);
+      saveStringArray(STORAGE_KEYS.recognisedOutputTypes, output);
+      return { acc, entry, output };
+    },
+    []
+  );
+
+  const recognisedFlushRef = useRef({
+    editMode: false,
+    draftAccounts,
+    draftEntryTypes,
+    draftOutputTypes,
+  });
+  recognisedFlushRef.current = {
+    editMode: recognisedDataEditMode,
+    draftAccounts,
+    draftEntryTypes,
+    draftOutputTypes,
+  };
+
+  useEffect(() => {
+    const persistPending = () => {
+      const s = recognisedFlushRef.current;
+      if (!s.editMode) return;
+      persistRecognisedLists(s.draftAccounts, s.draftEntryTypes, s.draftOutputTypes);
+    };
+    window.addEventListener(PERSIST_PENDING_APP_STATE_EVENT, persistPending);
+    return () => {
+      window.removeEventListener(PERSIST_PENDING_APP_STATE_EVENT, persistPending);
+      persistPending();
+    };
+  }, [persistRecognisedLists]);
+
   const handleSaveRecognisedData = async () => {
     setRecognisedExitConfirmOpen(false);
-    const acc = migrateRecognisedAccountEntriesIfNeeded(
-      draftAccounts
-        .filter((e) => e.name.trim())
-        .map((e) => ({
-          name: e.name.trim(),
-          currency: e.currency,
-          aliases: e.aliases,
-        }))
+    const { acc, entry, output } = persistRecognisedLists(
+      draftAccounts,
+      draftEntryTypes,
+      draftOutputTypes
     );
-    const entry = Array.from(new Set(draftEntryTypes.map((s) => s.trim()).filter(Boolean)));
-    const output = Array.from(new Set(draftOutputTypes.map((s) => s.trim()).filter(Boolean)));
-    saveRecognisedAccountsToStorage(acc);
-    saveStringArray(STORAGE_KEYS.recognisedEntryTypes, entry);
-    saveStringArray(STORAGE_KEYS.recognisedOutputTypes, output);
     setRecognisedDataSaveLoading(true);
     setRecognisedDataSaveMessage(null);
     let csvResult: { success: boolean; error?: string } = { success: false };

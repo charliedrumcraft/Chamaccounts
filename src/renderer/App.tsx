@@ -32,7 +32,7 @@ const App: React.FC = () => {
   }, [checkSetup]);
 
   const profileReady = setupChecked && !needsSetup;
-  useProfileAppStateLifecycle(profileReady);
+  const appStateReady = useProfileAppStateLifecycle(profileReady);
 
   const handleSetupComplete = useCallback(async () => {
     await checkSetup();
@@ -42,7 +42,7 @@ const App: React.FC = () => {
     }
   }, [checkSetup]);
 
-  if (!setupChecked) {
+  if (!setupChecked || (profileReady && !appStateReady)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-600">
         Chargement…

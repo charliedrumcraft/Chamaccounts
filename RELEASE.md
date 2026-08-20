@@ -1,3 +1,25 @@
+# Chamaccounts v1.0.9
+
+Conservation des données reconnues et des feuilles de bilan à la fermeture de la fenêtre.
+
+### Changements par rapport à v1.0.8
+- **Persistance** : fermer la fenêtre enregistre les réglages (données reconnues, feuilles de bilan) avant de quitter
+- **Réouverture** : le localStorage déjà présent n’est plus écrasé par un ancien snapshot CSV
+- **Budget annuel** : la structure du bilan est bien écrite sur disque en quittant la page, sans attendre le délai de 400 ms
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.9-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.9-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.9-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.9-linux-x64.AppImage` |
+
+[Télécharger v1.0.9](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.9)
+
+---
+
 # Chamaccounts v1.0.7
 
 Assistant d’import pour le soutien, affichage multi-devises, sous-totaux par projet, et budget annuel avec structure de bilan par année.

@@ -47,6 +47,8 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 let quitAfterAppStateFlush = false;
+let allowWindowCloseAfterFlush = false;
+let pendingAppStateFlushAction: 'quit' | 'close' | null = null;
 let appStateFlushQuitTimer: ReturnType<typeof setTimeout> | null = null;
 
 function getActiveProfilePartition(): string | undefined {
@@ -120,6 +122,15 @@ const createWindow = (savedBounds?: Electron.Rectangle) => {
     }
   }
 
+  mainWindow.on('close', (event) => {
+    if (allowWindowCloseAfterFlush || quitAfterAppStateFlush) {
+      allowWindowCloseAfterFlush = false;
+      return;
+    }
+    event.preventDefault();
+    requestAppStateFlush('close');
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
     setAppUpdaterMainWindow(null);
@@ -128,6 +139,49 @@ const createWindow = (savedBounds?: Electron.Rectangle) => {
   setAppUpdaterMainWindow(mainWindow);
   scheduleStartupUpdateCheck();
 };
+
+function finishPendingAppStateFlush(): void {
+  if (appStateFlushQuitTimer) {
+    clearTimeout(appStateFlushQuitTimer);
+    appStateFlushQuitTimer = null;
+  }
+  const action = pendingAppStateFlushAction;
+  if (action === null) return;
+  pendingAppStateFlushAction = null;
+  if (action === 'close') {
+    allowWindowCloseAfterFlush = true;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.close();
+    }
+    return;
+  }
+  quitAfterAppStateFlush = true;
+  app.quit();
+}
+
+function requestAppStateFlush(action: 'quit' | 'close'): void {
+  if (pendingAppStateFlushAction) {
+    if (action === 'quit') pendingAppStateFlushAction = 'quit';
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    if (action === 'quit') {
+      quitAfterAppStateFlush = true;
+      app.quit();
+    }
+    return;
+  }
+  pendingAppStateFlushAction = action;
+  if (mainWindow.webContents.isLoadingMainFrame() || !getActiveDataRoot()) {
+    finishPendingAppStateFlush();
+    return;
+  }
+  mainWindow.webContents.send('flush-app-state-before-quit');
+  if (appStateFlushQuitTimer) clearTimeout(appStateFlushQuitTimer);
+  appStateFlushQuitTimer = setTimeout(() => {
+    finishPendingAppStateFlush();
+  }, 8000);
+}
 
 function reloadWindowForActiveProfile(): void {
   const bounds = mainWindow?.getBounds();
@@ -288,12 +342,7 @@ ipcMain.handle('reload-window-for-active-profile', async () => {
 });
 
 ipcMain.handle('app-state-flush-complete', () => {
-  if (appStateFlushQuitTimer) {
-    clearTimeout(appStateFlushQuitTimer);
-    appStateFlushQuitTimer = null;
-  }
-  quitAfterAppStateFlush = true;
-  app.quit();
+  finishPendingAppStateFlush();
   return { success: true };
 });
 
@@ -798,14 +847,9 @@ if (process.versions.electron) {
   });
 
   app.on('before-quit', (event) => {
-    if (quitAfterAppStateFlush || !mainWindow || mainWindow.isDestroyed()) return;
+    if (quitAfterAppStateFlush) return;
     event.preventDefault();
-    mainWindow.webContents.send('flush-app-state-before-quit');
-    if (appStateFlushQuitTimer) clearTimeout(appStateFlushQuitTimer);
-    appStateFlushQuitTimer = setTimeout(() => {
-      quitAfterAppStateFlush = true;
-      app.quit();
-    }, 8000);
+    requestAppStateFlush('quit');
   });
 
   app.on('window-all-closed', () => {
