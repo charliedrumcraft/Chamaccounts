@@ -5,7 +5,10 @@
 
 import { FileService } from './FileService';
 import { SUPPORT_DATA_CSV_PATH } from '@/shared/dataPaths';
-import { parseSourceTransactionCsvContent } from './SourceDataCSVService';
+import {
+  parseSourceTransactionCsvContent,
+  stripAccountColumnFromSupportData,
+} from './SourceDataCSVService';
 import type { SourceDataResult } from './SourceDataCSVService';
 
 export { SUPPORT_DATA_CSV_PATH };
@@ -15,7 +18,8 @@ export class SupportDataCSVService {
     try {
       const content = await FileService.readFile(SUPPORT_DATA_CSV_PATH);
       if (!content?.trim()) return null;
-      return parseSourceTransactionCsvContent(content);
+      const parsed = parseSourceTransactionCsvContent(content);
+      return parsed ? stripAccountColumnFromSupportData(parsed) : null;
     } catch {
       return null;
     }

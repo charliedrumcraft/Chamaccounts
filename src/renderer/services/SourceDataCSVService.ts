@@ -140,16 +140,28 @@ export function parseSourceTransactionCsvContent(content: string): SourceDataRes
   };
 }
 
-/** Retire la colonne Source (src_transaction_data.csv n’en contient plus ; le soutien reste dans Support_data.csv). */
-export function stripSourceColumnFromSourceData(result: SourceDataResult): SourceDataResult {
-  const sourceKey = result.headers.find((h) => /^source$/i.test(h));
-  if (!sourceKey) return result;
-  const headers = result.headers.filter((h) => h !== sourceKey);
+function stripColumnFromSourceData(
+  result: SourceDataResult,
+  isTarget: (header: string) => boolean
+): SourceDataResult {
+  const key = result.headers.find(isTarget);
+  if (!key) return result;
+  const headers = result.headers.filter((h) => h !== key);
   const rows = result.rows.map((row) => {
-    const { [sourceKey]: _removed, ...rest } = row;
+    const { [key]: _removed, ...rest } = row;
     return rest;
   });
   return { ...result, headers, rows };
+}
+
+/** Retire la colonne Source (src_transaction_data.csv n’en contient plus ; le soutien reste dans Support_data.csv). */
+export function stripSourceColumnFromSourceData(result: SourceDataResult): SourceDataResult {
+  return stripColumnFromSourceData(result, (h) => /^source$/i.test(h));
+}
+
+/** Retire la colonne Account (utile uniquement aux transactions, pas à Support_data.csv). */
+export function stripAccountColumnFromSupportData(result: SourceDataResult): SourceDataResult {
+  return stripColumnFromSourceData(result, (h) => /^account$/i.test(h));
 }
 
 /** Fusionne deux jeux de lignes (ex. src + support) avec union des en-têtes (ex. Source uniquement côté support). */
@@ -205,7 +217,8 @@ export class SourceDataCSVService {
       supportContent = null;
     }
     const supportParsed = supportContent?.trim() ? parseSourceTransactionCsvContent(supportContent) : null;
-    return mergeSourceDataResults(main, supportParsed);
+    const support = supportParsed ? stripAccountColumnFromSupportData(supportParsed) : null;
+    return mergeSourceDataResults(main, support);
   }
 }
 

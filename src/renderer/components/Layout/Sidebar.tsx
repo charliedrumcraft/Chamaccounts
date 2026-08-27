@@ -113,12 +113,14 @@ function SidebarFooter({
   activeProfileName,
   onStartTour,
   tourActive,
+  onExpand,
 }: {
   collapsed: boolean;
   appVersion: string | null;
   activeProfileName: string | null;
   onStartTour: () => void;
   tourActive: boolean;
+  onExpand: () => void;
 }) {
   const versionLabel = appVersion ? `v${appVersion}` : null;
   const profileLabel = activeProfileName ?? 'Profil non configuré';
@@ -137,10 +139,12 @@ function SidebarFooter({
         >
           <TourIcon className="w-4 h-4" />
         </button>
-        <span
-          className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400"
-          title={tooltip || undefined}
-          aria-label={tooltip || 'Informations application'}
+        <button
+          type="button"
+          onClick={onExpand}
+          className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+          title={tooltip ? `${tooltip} — Ouvrir le menu` : 'Ouvrir le menu'}
+          aria-label="Ouvrir le menu"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path
@@ -149,7 +153,7 @@ function SidebarFooter({
               d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
             />
           </svg>
-        </span>
+        </button>
       </div>
     );
   }
@@ -243,6 +247,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
         activeProfileName={activeProfileName}
         onStartTour={startTour}
         tourActive={tourActive}
+        onExpand={onCollapsedPreferenceToggle}
       />
     </aside>
   );

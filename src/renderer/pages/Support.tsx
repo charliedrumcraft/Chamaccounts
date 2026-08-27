@@ -6,6 +6,7 @@ import {
   SOURCE_DATA_PATH,
   normalizeOrderAndIndex,
   stripSourceColumnFromSourceData,
+  stripAccountColumnFromSupportData,
 } from '../services/SourceDataCSVService';
 import { SupportDataCSVService, SUPPORT_DATA_CSV_PATH } from '../services/SupportDataCSVService';
 import { EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
@@ -1127,7 +1128,6 @@ const Support: React.FC = () => {
       const titleH = base.headers.find((h) => /^title$/i.test(h));
       const amountH = base.headers.find((h) => /^amount$/i.test(h));
       const currencyH = base.headers.find((h) => /^currency$/i.test(h));
-      const accountH = base.headers.find((h) => /^account$/i.test(h));
       const amountGbpH = base.headers.find((h) => /^amount\s*gbp$/i.test(h));
       if (!dateH || !titleH || !amountH || !currencyH) {
         return { row: {}, error: 'Colonnes DATE, TITLE, AMOUNT ou CURRENCY manquantes dans le fichier.' };
@@ -1158,7 +1158,6 @@ const Support: React.FC = () => {
       row[titleH] = titleTrim;
       row[amountH] = amountStr;
       row[currencyH] = cur;
-      if (accountH) row[accountH] = '';
       if (amountGbpH) row[amountGbpH] = amountGbpStr;
       row[typeH] = 'Support';
       row[sourceH] = TRANSACTION_SOURCE_VALUE_MANUAL;
@@ -1187,7 +1186,8 @@ const Support: React.FC = () => {
       const withIndexHeader = headers.some((h) => /^index$/i.test(h)) ? headers : ['Index', ...headers];
       const normSrcRaw = normalizeOrderAndIndex({ headers: withIndexHeader, rows: srcRows });
       const normSrc = stripSourceColumnFromSourceData(normSrcRaw);
-      const normSupport = normalizeOrderAndIndex({ headers: withIndexHeader, rows: supportRows });
+      const normSupportRaw = normalizeOrderAndIndex({ headers: withIndexHeader, rows: supportRows });
+      const normSupport = stripAccountColumnFromSupportData(normSupportRaw);
       const csvSrc = Papa.unparse(normSrc.rows, { columns: normSrc.headers, delimiter: ';' });
       const csvSupport = Papa.unparse(normSupport.rows, { columns: normSupport.headers, delimiter: ';' });
       const r1 = await api.writeFile(SOURCE_DATA_PATH, csvSrc);
@@ -1266,12 +1266,6 @@ const Support: React.FC = () => {
           );
           if (built.error || !built.row) {
             return { success: false, error: built.error ?? 'Erreur sur une ligne du lot.' };
-          }
-          if (d.account.trim()) {
-            const accountH =
-              ensureHeadersForWrite(data.headers).find((h) => /^account$/i.test(h)) ??
-              data.headers.find((h) => /^account$/i.test(h));
-            if (accountH) built.row[accountH] = d.account.trim();
           }
           newRows.push(built.row);
         }

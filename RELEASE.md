@@ -1,3 +1,25 @@
+# Chamaccounts v1.0.10
+
+Colonne Account retirée de `Support_data.csv` ; menu latéral replié réouvrable d’un clic.
+
+### Changements par rapport à v1.0.9
+- **Soutien** : la colonne Account n’est plus dans `Support_data.csv` (elle reste uniquement sur les transactions)
+- **Import soutien** : plus de mapping Account ; l’écriture CSV ne réintroduit pas la colonne
+- **Menu latéral** : en mode replié, l’icône d’info rouvre le menu
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.10-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.10-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.10-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.10-linux-x64.AppImage` |
+
+[Télécharger v1.0.10](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.10)
+
+---
+
 # Chamaccounts v1.0.9
 
 Conservation des données reconnues et des feuilles de bilan à la fermeture de la fenêtre.

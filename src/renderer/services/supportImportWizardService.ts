@@ -32,7 +32,7 @@ export type {
 };
 
 /** Colonnes éditables / mappables vers Support_data (TYPE et Source sont forcés à l’écriture). */
-export const SUPPORT_IMPORT_OUTPUT_FIELDS = ['DATE', 'TITLE', 'AMOUNT', 'CURRENCY', 'ACCOUNT'] as const;
+export const SUPPORT_IMPORT_OUTPUT_FIELDS = ['DATE', 'TITLE', 'AMOUNT', 'CURRENCY'] as const;
 export type SupportImportOutputField = (typeof SUPPORT_IMPORT_OUTPUT_FIELDS)[number];
 
 export type SupportImportDraft = {
@@ -40,7 +40,6 @@ export type SupportImportDraft = {
   title: string;
   amount: string;
   currency: string;
-  account: string;
 };
 
 /** Premières valeurs non vides d’une colonne (aperçu à côté du menu de mapping). */
@@ -182,13 +181,11 @@ export function displayToSupportImportDraft(display: Record<string, string>): Su
   if (Number.isNaN(amountNum) || amountNum === 0) return null;
 
   const currency = normalizeSupportImportCurrency(display.CURRENCY ?? '') ?? 'EUR';
-  const account = (display.ACCOUNT ?? '').trim();
 
   return {
     date: dateNorm || dateRaw,
     title,
     amount: String(amountNum).replace('.', ','),
     currency,
-    account,
   };
 }

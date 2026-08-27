@@ -13,7 +13,7 @@ export type SupportImportPrepWizardProps = ReturnType<typeof useSupportImportPre
 export type SupportImportPrepSectionProps = SupportImportPrepWizardProps;
 
 const MAPPING_SELECT_KEYS = WIZARD_STANDARD_KEYS.filter(
-  (k) => k === '' || k === 'DATE' || k === 'TITLE' || k === 'AMOUNT' || k === 'CURRENCY' || k === 'ACCOUNT'
+  (k) => k === '' || k === 'DATE' || k === 'TITLE' || k === 'AMOUNT' || k === 'CURRENCY'
 );
 
 const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props) => {
