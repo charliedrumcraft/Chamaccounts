@@ -1,3 +1,24 @@
+# Chamaccounts v1.0.11
+
+Contrôle d’affectation des types sur le budget annuel, et totaux du tableau mensuel alignés sur les types réellement présents.
+
+### Changements par rapport à v1.0.10
+- **Budget annuel** : bloc « Affectation des types » entre la feuille de bilan et les mouvements par mois — visualisation type → ligne, alerte si un type avec un montant n’est rattaché à aucune ligne du bilan
+- **Mouvements par type** : les lignes TOTAL SORTIES / TOTAL ENTRÉES s’affichent après le dernier type de sortie ou d’entrée, plus seulement après Transport / LGV
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.11-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.11-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.11-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.11-linux-x64.AppImage` |
+
+[Télécharger v1.0.11](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.11)
+
+---
+
 # Chamaccounts v1.0.10
 
 Colonne Account retirée de `Support_data.csv` ; menu latéral replié réouvrable d’un clic.

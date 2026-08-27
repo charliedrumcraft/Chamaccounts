@@ -23,6 +23,7 @@ import {
   saveYearSnapshot,
 } from '../services/annualBudgetStorage';
 import { PERSIST_PENDING_APP_STATE_EVENT } from '../services/profileAppStateSync';
+import AnnualBudgetTypeCoverageSection from '../components/AnnualBudgetTypeCoverageSection';
 
 const YEAR_STORAGE_KEY = 'annual-budget-selected-year';
 const DISPLAY_CURRENCY_STORAGE_KEY = 'annual-budget-display-currency';
@@ -617,6 +618,7 @@ const AnnualBudget: React.FC = () => {
   const [affecterOpenLineId, setAffecterOpenLineId] = useState<string | null>(null);
 
   const [bilanBlockExpanded, setBilanBlockExpanded] = useState(true);
+  const [typeCoverageBlockExpanded, setTypeCoverageBlockExpanded] = useState(true);
   const [typesByMonthBlockExpanded, setTypesByMonthBlockExpanded] = useState(true);
   const [typesMonthTableFontRem, setTypesMonthTableFontRem] = useState(loadTypesMonthTableFontRem);
 
@@ -926,6 +928,26 @@ const AnnualBudget: React.FC = () => {
     if (aggregation.byType['Sans type']) types.push('Sans type');
     return types;
   }, [aggregation.byType]);
+
+  /** Dernier type de sortie (montant < 0) dans l’ordre d’affichage — hors « Sans type », toujours en bas. */
+  const lastExpenseType = useMemo(() => {
+    let last: string | null = null;
+    for (const type of typesOrder) {
+      if (type === 'Sans type') continue;
+      if ((aggregation.byType[type] ?? 0) < 0) last = type;
+    }
+    return last;
+  }, [typesOrder, aggregation.byType]);
+
+  /** Dernier type d’entrée (montant > 0) dans l’ordre d’affichage — hors « Sans type ». */
+  const lastIncomeType = useMemo(() => {
+    let last: string | null = null;
+    for (const type of typesOrder) {
+      if (type === 'Sans type') continue;
+      if ((aggregation.byType[type] ?? 0) > 0) last = type;
+    }
+    return last;
+  }, [typesOrder, aggregation.byType]);
 
   /** Types entrées pour le menu Affecter (ASSETS) : types reconnus dans Réglages + types présents dans l'année (montant >= 0). */
   const incomeTypes = useMemo(() => {
@@ -2045,6 +2067,19 @@ const AnnualBudget: React.FC = () => {
             ) : null}
           </section>
 
+          <AnnualBudgetTypeCoverageSection
+            selectedYear={selectedYear}
+            byType={aggregation.byType}
+            lineAssignedTypes={lineAssignedTypes}
+            budgetedAssets={budgetedAssets}
+            budgetedLiabilities={budgetedLiabilities}
+            categoryLabels={bilanCategoryLabels}
+            lineLabels={bilanLineLabels}
+            fmtMoney={fmtMoney}
+            expanded={typeCoverageBlockExpanded}
+            onToggleExpanded={() => setTypeCoverageBlockExpanded((e) => !e)}
+          />
+
           <section
             className="mb-8 flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden"
             aria-labelledby="annual-budget-bloc-types-title"
@@ -2184,7 +2219,7 @@ const AnnualBudget: React.FC = () => {
                             {fmtMoney(rowTotal)}
                           </td>
                         </tr>
-                        {type === 'Transport' && (
+                        {type === lastExpenseType && (
                           <tr key="total-sorties" className="border-b border-gray-200 bg-red-50 font-semibold">
                             <td className="py-2 px-4 text-gray-800">TOTAL SORTIES</td>
                             {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => {
@@ -2205,7 +2240,7 @@ const AnnualBudget: React.FC = () => {
                             </td>
                           </tr>
                         )}
-                        {type === 'LGV' && (
+                        {type === lastIncomeType && (
                           <tr key="total-entrees" className="border-b border-gray-200 bg-green-50 font-semibold">
                             <td className="py-2 px-4 text-gray-800">TOTAL ENTRÉES</td>
                             {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => {
