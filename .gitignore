@@ -1,4 +1,5 @@
 node_modules/
+tsconfig.node.tsbuildinfo
 release/
 build/release-notes.md
 dist/

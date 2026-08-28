@@ -144,7 +144,7 @@ export const GUIDED_TOUR_STEPS: GuidedTourStep[] = [
           headers={['DATE', 'TITLE', 'AMOUNT', 'CURRENCY', 'ACCOUNT', 'AMOUNT GBP', 'TYPE', 'PROJET']}
           rows={[
             ['15.03.26', 'Courses marché', '-42,50', 'EUR', 'Revolut Perso', '-36,55', 'Food', 'maison-01'],
-            ['28.02.26', 'Salaire ACME Ltd', '3 200,00', 'GBP', 'HSBC Joint', '3 200,00', 'Lampton', ''],
+            ['28.02.26', 'Salaire ACME Ltd', '3 200,00', 'GBP', 'HSBC Joint', '3 200,00', 'Firm', ''],
             ['03.02.26', 'Loyer février', '-850,00', 'GBP', 'HSBC Joint', '-850,00', 'Rent', 'maison-01'],
           ]}
         />

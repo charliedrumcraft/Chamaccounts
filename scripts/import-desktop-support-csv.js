@@ -42,7 +42,7 @@ function parseSupportLines(content) {
     const date = parts[0];
     const title = parts[1];
     const amountRaw = parts[5] ?? '';
-    const source = (parts[6] ?? '').trim() || 'Perspectives';
+    const source = (parts[6] ?? '').trim() || 'Support';
     if (!title || !amountRaw) continue;
     const amountEur = parseEuroAmount(amountRaw);
     if (Number.isNaN(amountEur) || amountEur === 0) continue;

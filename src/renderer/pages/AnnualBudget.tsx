@@ -13,13 +13,16 @@ import { convertToAxisCurrency, convertMovementsToDisplayCurrency, type Currency
 import { formatCurrency } from '../utils/format';
 import { getDefaultLineAssignedTypes } from '../constants/annualBudgetTypeMapping';
 import {
+  type BilanSpecialRowOptions,
   type BilanStructureSnapshot,
   type BudgetCategory,
   type BudgetLine,
+  DEFAULT_BILAN_SPECIAL_ROW_OPTIONS,
   cloneBilanStructure,
   getYearBilanStructure,
   getYearSnapshot,
   listBudgetYears,
+  normalizeBilanSpecialRowOptions,
   saveYearSnapshot,
 } from '../services/annualBudgetStorage';
 import { PERSIST_PENDING_APP_STATE_EVENT } from '../services/profileAppStateSync';
@@ -68,14 +71,9 @@ function loadTypesMonthTableFontRem(): number {
 const RECOGNISED_ENTRY_TYPES_KEY = 'settings-recognised-entry-types';
 const RECOGNISED_OUTPUT_TYPES_KEY = 'settings-recognised-output-types';
 
-/** Valeurs par défaut lorsque le localStorage n'a pas encore été rempli par la page Réglages. Alignées avec Settings.tsx (KNOWN_ENTRY_TYPES / KNOWN_OUTPUT_TYPES). */
-const DEFAULT_RECOGNISED_ENTRY_TYPES: string[] = [
-  'Lampton', 'LMB', 'LTL', 'MPC', 'LGV', 'Other Inc', 'Support', 'Refund', 'Benefit', 'SLCcredit',
-];
-const DEFAULT_RECOGNISED_OUTPUT_TYPES: string[] = [
-  'Rent', 'Council', 'Comm', 'Electricity', 'Water', 'Service', 'SLCdebit', 'Transport', 'Fuel', 'Car',
-  'Food', 'Restaurant', 'Shopping', 'Leisure', 'Holiday', 'LST', 'School', 'Misc', 'Health', 'Donation',
-];
+/** Fallback si Réglages n’a pas encore de listes : vides (les types viennent du profil / des données). */
+const DEFAULT_RECOGNISED_ENTRY_TYPES: string[] = [];
+const DEFAULT_RECOGNISED_OUTPUT_TYPES: string[] = [];
 
 function loadRecognisedTypesFromSettings(): { entryTypes: string[]; outputTypes: string[] } {
   try {
@@ -102,131 +100,23 @@ function loadRecognisedTypesFromSettings(): { entryTypes: string[]; outputTypes:
   }
 }
 
-/** Structure de la feuille de bilan budgétisé (Budgeted Balance Sheet) */
+/** Ligne spéciale : le Réel est le total des comptes au 1er janvier de l’année (soldes). */
+const ASSETS_BF_CATEGORY_ID = 'assets-bf';
+const ASSETS_BANK_LINE_ID = 'assets-bank';
+
+/**
+ * Structure par défaut d’une feuille neuve : uniquement Assets brought forward.
+ * Le reste se construit dans le profil (mode édition). Aucune ligne métier préremplie.
+ */
 const BUDGETED_ASSETS: BudgetCategory[] = [
   {
-    id: 'assets-bf',
+    id: ASSETS_BF_CATEGORY_ID,
     label: 'Assets B/F',
-    lines: [{ id: 'assets-bank', label: 'Bank' }],
-  },
-  {
-    id: 'net-income',
-    label: 'Net income',
-    lines: [
-      { id: 'ni-lampton', label: 'Lampton School' },
-      { id: 'ni-lmb', label: 'LMB' },
-      { id: 'ni-ltl', label: 'LTL (Linear Tools LTD)' },
-      { id: 'ni-mpc', label: 'MPC' },
-      { id: 'ni-lgv', label: 'LGV' },
-    ],
-  },
-  {
-    id: 'financial-support-personal',
-    label: 'Financial support (Personnal)',
-    lines: [
-      { id: 'fsp-papa-maman', label: 'Papa/Maman' },
-      { id: 'fsp-theo-vogt', label: 'Theo Vogt' },
-      { id: 'fsp-candlefish', label: 'Candlefish' },
-      { id: 'fsp-andre', label: 'André' },
-      { id: 'fsp-elsa-vogt', label: 'Elsa Vogt' },
-      { id: 'fsp-other', label: 'Other' },
-    ],
-  },
-  {
-    id: 'financial-support-perspectives',
-    label: 'Financial support (Perspectives)',
-    lines: [
-      { id: 'fspers-perspectives', label: 'Perspectives' },
-      { id: 'fspers-freddy-riess', label: 'Freddy Riess' },
-      { id: 'fspers-leopaul-vogt', label: 'Leopaul Vogt' },
-      { id: 'fspers-andre-vogt', label: 'Andre Vogt' },
-      { id: 'fspers-elsa-vogt', label: 'Elsa Vogt' },
-    ],
-  },
-  {
-    id: 'other-inc',
-    label: 'Other Inc',
-    lines: [
-      { id: 'oi-refund', label: 'Refund' },
-      { id: 'oi-other', label: 'Other Inc' },
-      { id: 'oi-benefit', label: 'Benefit' },
-    ],
-  },
-  {
-    id: 'student-loan',
-    label: 'Student Loan (SLC)',
-    lines: [{ id: 'slc-credit', label: 'SLC credit' }],
+    lines: [{ id: ASSETS_BANK_LINE_ID, label: 'Bank' }],
   },
 ];
 
-const BUDGETED_LIABILITIES: BudgetCategory[] = [
-  {
-    id: 'housing-costs',
-    label: 'Housing costs',
-    lines: [
-      { id: 'hc-rent', label: 'Rent' },
-      { id: 'hc-comm', label: 'Comm' },
-      { id: 'hc-electricity', label: 'Electricity' },
-      { id: 'hc-water', label: 'Water' },
-      { id: 'hc-service-charge', label: 'Service Charge' },
-    ],
-  },
-  {
-    id: 'mobility',
-    label: 'Mobility',
-    lines: [
-      { id: 'mob-transport', label: 'Transport' },
-      { id: 'mob-fuel', label: 'Fuel' },
-      { id: 'mob-car', label: 'Car' },
-    ],
-  },
-  {
-    id: 'living-costs',
-    label: 'Living costs',
-    lines: [
-      { id: 'lc-food', label: 'Food' },
-      { id: 'lc-restaurant', label: 'Restaurant' },
-      { id: 'lc-shopping', label: 'Shopping' },
-      { id: 'lc-leisure', label: 'Leisure' },
-      { id: 'lc-holiday', label: 'Holiday' },
-      { id: 'lc-health', label: 'Health' },
-    ],
-  },
-  {
-    id: 'misc',
-    label: 'Misc',
-    lines: [{ id: 'misc-total', label: 'Misc' }],
-  },
-  {
-    id: 'donation',
-    label: 'Donation',
-    lines: [{ id: 'donation-total', label: 'Donation' }],
-  },
-  {
-    id: 'training',
-    label: 'Training',
-    lines: [
-      { id: 'tr-lst-fees', label: 'LST Fees' },
-      { id: 'tr-school', label: 'School' },
-    ],
-  },
-  {
-    id: 'slc-debit',
-    label: 'SLC debit',
-    lines: [
-      { id: 'slc-maria', label: 'SLC Maria' },
-      { id: 'slc-charlie', label: 'SLC Charlie' },
-    ],
-  },
-  {
-    id: 'state-liab',
-    label: 'State Liab.',
-    lines: [
-      { id: 'slc-other-taxes', label: 'Other taxes' },
-      { id: 'slc-council-tax', label: 'Council tax' },
-    ],
-  },
-];
+const BUDGETED_LIABILITIES: BudgetCategory[] = [];
 
 const MONTH_NAMES = [
   'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin',
@@ -329,6 +219,91 @@ function evaluateBilanFormulaExpression(expr: string): number {
   const result = parseExpr();
   if (i !== s.length) return NaN;
   return Number.isFinite(result) ? result : NaN;
+}
+
+function parseBilanAmountInputToGbp(raw: string, displayCurrency: CurrencySymbol): number {
+  const trimmed = raw.trim().replace(/,/g, '.');
+  let n: number;
+  if (trimmed === '') {
+    n = 0;
+  } else if (trimmed.startsWith('=')) {
+    n = evaluateBilanFormulaExpression(trimmed.slice(1).trim());
+  } else {
+    n = parseFloat(trimmed);
+  }
+  const inDisplay = Number.isNaN(n) ? 0 : n;
+  return convertToAxisCurrency(inDisplay, displayCurrency, '£');
+}
+
+function gbpToDraftDisplayString(gbp: number | undefined, displayCurrency: CurrencySymbol): string {
+  if (gbp == null || gbp === 0) return '';
+  return String(Number(convertMovementsToDisplayCurrency(gbp, displayCurrency).toFixed(2)));
+}
+
+function BilanSpecialRowControls({
+  options,
+  onChange,
+  autoHint,
+  seedManualGbp,
+}: {
+  options: BilanSpecialRowOptions;
+  onChange: (next: BilanSpecialRowOptions) => void;
+  autoHint: string;
+  seedManualGbp: number;
+}) {
+  const apply = (patch: Partial<BilanSpecialRowOptions>) => {
+    const next: BilanSpecialRowOptions = { ...options, ...patch };
+    if (patch.actualMode === 'manual' && next.manualActualGbp == null) {
+      next.manualActualGbp = seedManualGbp;
+    }
+    onChange(next);
+  };
+  const autoActive = options.actualMode === 'auto';
+  const manualActive = options.actualMode === 'manual';
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <label className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-700">
+        <input
+          type="checkbox"
+          checked={options.enabled}
+          onChange={(e) => apply({ enabled: e.target.checked })}
+          className="h-3.5 w-3.5 rounded border-gray-400 text-emerald-600 focus:ring-emerald-500"
+        />
+        Actif
+      </label>
+      <div
+        className="inline-flex rounded-md border border-gray-300 bg-white p-0.5"
+        role="group"
+        aria-label="Mode de saisie du réel"
+      >
+        <button
+          type="button"
+          disabled={!options.enabled}
+          onClick={() => apply({ actualMode: 'auto' })}
+          className={`rounded px-2 py-0.5 text-xs font-medium disabled:opacity-40 ${
+            autoActive ? 'bg-emerald-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          title={autoHint}
+        >
+          Automatique
+        </button>
+        <button
+          type="button"
+          disabled={!options.enabled}
+          onClick={() => apply({ actualMode: 'manual' })}
+          className={`rounded px-2 py-0.5 text-xs font-medium disabled:opacity-40 ${
+            manualActive ? 'bg-emerald-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          Manuel
+        </button>
+      </div>
+      <span className="text-[11px] text-gray-500">
+        {options.actualMode === 'auto' ? autoHint : 'Réel saisi manuellement'}
+      </span>
+    </div>
+  );
 }
 
 interface Aggregation {
@@ -462,6 +437,7 @@ function buildDefaultBilanStructure(): BilanStructureSnapshot {
     liabilities,
     categoryLabels: derived.categoryLabels,
     lineLabels: derived.lineLabels,
+    bankLineOptions: { ...DEFAULT_BILAN_SPECIAL_ROW_OPTIONS },
   };
 }
 
@@ -472,6 +448,7 @@ function bilanStateFromLoaded(
   liabilities: BudgetCategory[];
   categoryLabels: Record<string, string>;
   lineLabels: Record<string, string>;
+  bankLineOptions: BilanSpecialRowOptions;
 } {
   const assets = loaded?.assets?.length
     ? deepCloneCategories(loaded.assets)
@@ -485,6 +462,7 @@ function bilanStateFromLoaded(
     liabilities,
     categoryLabels: loaded ? { ...derived.categoryLabels, ...loaded.categoryLabels } : derived.categoryLabels,
     lineLabels: loaded ? { ...derived.lineLabels, ...loaded.lineLabels } : derived.lineLabels,
+    bankLineOptions: normalizeBilanSpecialRowOptions(loaded?.bankLineOptions),
   };
 }
 
@@ -493,6 +471,7 @@ function readBilanStateForYear(year: number): {
   liabilities: BudgetCategory[];
   categoryLabels: Record<string, string>;
   lineLabels: Record<string, string>;
+  bankLineOptions: BilanSpecialRowOptions;
 } {
   return bilanStateFromLoaded(getYearBilanStructure(year));
 }
@@ -501,7 +480,8 @@ function structureFromBilanState(
   assets: BudgetCategory[],
   liabilities: BudgetCategory[],
   categoryLabels: Record<string, string>,
-  lineLabels: Record<string, string>
+  lineLabels: Record<string, string>,
+  bankLineOptions: BilanSpecialRowOptions
 ): BilanStructureSnapshot {
   return {
     version: 1,
@@ -509,6 +489,7 @@ function structureFromBilanState(
     liabilities: deepCloneCategories(liabilities),
     categoryLabels: { ...categoryLabels },
     lineLabels: { ...lineLabels },
+    bankLineOptions: normalizeBilanSpecialRowOptions(bankLineOptions),
   };
 }
 
@@ -607,12 +588,13 @@ const AnnualBudget: React.FC = () => {
   const [bilanLineLabels, setBilanLineLabels] = useState<Record<string, string>>(
     () => initialBilan.lineLabels
   );
+  const [bankLineOptions, setBankLineOptions] = useState<BilanSpecialRowOptions>(
+    () => initialBilan.bankLineOptions
+  );
   /** Pour chaque ligne, types de transactions affectés (pour la colonne Réel). */
   const [lineAssignedTypes, setLineAssignedTypes] = useState<Record<string, string[]>>(() => {
-    const base = getDefaultLineAssignedTypes();
     const snap = getYearSnapshot(readStoredYear());
-    if (!snap) return base;
-    return { ...base, ...snap.lineAssignedTypes };
+    return snap?.lineAssignedTypes ? { ...snap.lineAssignedTypes } : {};
   });
   /** Id de la ligne dont le menu "Affecter" est ouvert, ou null. */
   const [affecterOpenLineId, setAffecterOpenLineId] = useState<string | null>(null);
@@ -650,21 +632,21 @@ const AnnualBudget: React.FC = () => {
     setBudgetedLiabilities(bilan.liabilities);
     setBilanCategoryLabels(bilan.categoryLabels);
     setBilanLineLabels(bilan.lineLabels);
+    setBankLineOptions(bilan.bankLineOptions);
 
     const initial: Record<string, number> = {};
     getLineIdsFromStructure(bilan.assets, bilan.liabilities).forEach((id) => {
       initial[id] = 0;
     });
     const snap = getYearSnapshot(selectedYear);
-    const baseTypes = getDefaultLineAssignedTypes();
     const liabIds = collectLiabilityLineIds(bilan.liabilities);
     if (snap) {
       const merged = { ...initial, ...snap.budgetValues };
       setBudgetValues(normalizeBudgetValuesLiabilitiesForecast(merged, liabIds));
-      setLineAssignedTypes({ ...baseTypes, ...snap.lineAssignedTypes });
+      setLineAssignedTypes({ ...snap.lineAssignedTypes });
     } else {
       setBudgetValues(initial);
-      setLineAssignedTypes(baseTypes);
+      setLineAssignedTypes({});
     }
   }, [selectedYear]);
 
@@ -678,6 +660,7 @@ const AnnualBudget: React.FC = () => {
     budgetedLiabilities,
     bilanCategoryLabels,
     bilanLineLabels,
+    bankLineOptions,
   });
   bilanPersistRef.current = {
     budgetValues,
@@ -686,6 +669,7 @@ const AnnualBudget: React.FC = () => {
     budgetedLiabilities,
     bilanCategoryLabels,
     bilanLineLabels,
+    bankLineOptions,
   };
 
   const persistBilanToStorage = useCallback((year: number) => {
@@ -697,7 +681,8 @@ const AnnualBudget: React.FC = () => {
         s.budgetedAssets,
         s.budgetedLiabilities,
         s.bilanCategoryLabels,
-        s.bilanLineLabels
+        s.bilanLineLabels,
+        s.bankLineOptions
       ),
     });
   }, []);
@@ -714,6 +699,7 @@ const AnnualBudget: React.FC = () => {
     budgetedLiabilities,
     bilanCategoryLabels,
     bilanLineLabels,
+    bankLineOptions,
     persistBilanToStorage,
   ]);
 
@@ -739,27 +725,47 @@ const AnnualBudget: React.FC = () => {
 
   /** Brouillon des champs Forecast en mode édition (permet `=100*12` avant validation). */
   const [bilanForecastDrafts, setBilanForecastDrafts] = useState<Record<string, string>>({});
+  /** Brouillon des champs Réel en saisie manuelle (Bank / Assets B/F). */
+  const [bilanActualDrafts, setBilanActualDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setBilanForecastDrafts({});
+    setBilanActualDrafts({});
   }, [displayCurrency]);
 
   const commitBilanForecast = useCallback(
     (lineId: string, raw: string) => {
-      const trimmed = raw.trim().replace(/,/g, '.');
-      let n: number;
-      if (trimmed === '') {
-        n = 0;
-      } else if (trimmed.startsWith('=')) {
-        n = evaluateBilanFormulaExpression(trimmed.slice(1).trim());
-      } else {
-        n = parseFloat(trimmed);
-      }
-      const inDisplay = Number.isNaN(n) ? 0 : n;
-      const gbp = convertToAxisCurrency(inDisplay, displayCurrency, '£');
-      setBudgetAmount(lineId, gbp);
+      setBudgetAmount(lineId, parseBilanAmountInputToGbp(raw, displayCurrency));
     },
     [setBudgetAmount, displayCurrency]
+  );
+
+  const commitBilanManualActual = useCallback(
+    (targetId: string, raw: string) => {
+      const gbp = parseBilanAmountInputToGbp(raw, displayCurrency);
+      if (targetId === ASSETS_BANK_LINE_ID) {
+        setBankLineOptions((prev) => ({ ...prev, manualActualGbp: gbp }));
+      }
+    },
+    [displayCurrency]
+  );
+
+  const actualInputDisplayString = useCallback(
+    (targetId: string, storedGbp: number | undefined): string => {
+      if (bilanActualDrafts[targetId] !== undefined) return bilanActualDrafts[targetId];
+      return gbpToDraftDisplayString(storedGbp, displayCurrency);
+    },
+    [bilanActualDrafts, displayCurrency]
+  );
+
+  const startActualDraft = useCallback(
+    (targetId: string, storedGbp: number | undefined) => {
+      setBilanActualDrafts((prev) => ({
+        ...prev,
+        [targetId]: gbpToDraftDisplayString(storedGbp, displayCurrency),
+      }));
+    },
+    [displayCurrency]
   );
 
   /** Valeur forecast affichée / éditée dans la devise courante (stockage interne toujours en GBP). */
@@ -855,13 +861,36 @@ const AnnualBudget: React.FC = () => {
     }
   }, [accountBalanceRows, selectedYear, location.pathname]);
 
-  const totalAssets = (Array.isArray(budgetedAssets) ? budgetedAssets : []).reduce((sum, cat) => {
+  const getActualValue = (lineId: string): number => {
+    if (lineId === ASSETS_BANK_LINE_ID) {
+      if (bankLineOptions.actualMode === 'manual') return bankLineOptions.manualActualGbp ?? 0;
+      return bankBalanceJan1Gbp ?? 0;
+    }
+    return actualValues[lineId] ?? 0;
+  };
+
+  const sumCategoryLineForecast = (cat: BudgetCategory): number => {
     const lines = Array.isArray(cat?.lines) ? cat.lines : [];
-    return sum + lines.reduce((s, line) => {
+    return lines.reduce((s, line) => {
       const id = line?.id ?? '';
+      if (id === ASSETS_BANK_LINE_ID && !bankLineOptions.enabled) return s;
       return s + (budgetValues[id] ?? 0);
     }, 0);
-  }, 0);
+  };
+
+  const sumCategoryLineActual = (cat: BudgetCategory): number => {
+    const lines = Array.isArray(cat?.lines) ? cat.lines : [];
+    return lines.reduce((s, line) => {
+      const id = line?.id ?? '';
+      if (id === ASSETS_BANK_LINE_ID && !bankLineOptions.enabled) return s;
+      return s + getActualValue(id);
+    }, 0);
+  };
+
+  const totalAssets = (Array.isArray(budgetedAssets) ? budgetedAssets : []).reduce(
+    (sum, cat) => sum + sumCategoryLineForecast(cat),
+    0
+  );
   const totalLiabilities = (Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []).reduce((sum, cat) => {
     const lines = Array.isArray(cat?.lines) ? cat.lines : [];
     return sum + lines.reduce((s, line) => s + (budgetValues[line?.id ?? ''] ?? 0), 0);
@@ -892,15 +921,10 @@ const AnnualBudget: React.FC = () => {
     return out;
   }, [aggregation.byType, lineAssignedTypes, allBudgetLineIds]);
 
-  const getActualValue = (lineId: string): number =>
-    lineId === 'assets-bank'
-      ? (bankBalanceJan1Gbp ?? 0)
-      : (actualValues[lineId] ?? 0);
-
-  const totalAssetsActual = (Array.isArray(budgetedAssets) ? budgetedAssets : []).reduce((sum, cat) => {
-    const lines = Array.isArray(cat?.lines) ? cat.lines : [];
-    return sum + lines.reduce((s, line) => s + getActualValue(line?.id ?? ''), 0);
-  }, 0);
+  const totalAssetsActual = (Array.isArray(budgetedAssets) ? budgetedAssets : []).reduce(
+    (sum, cat) => sum + sumCategoryLineActual(cat),
+    0
+  );
   const totalLiabilitiesActual = (Array.isArray(budgetedLiabilities) ? budgetedLiabilities : []).reduce((sum, cat) => {
     const lines = Array.isArray(cat?.lines) ? cat.lines : [];
     return sum + lines.reduce((s, line) => s + getActualValue(line?.id ?? ''), 0);
@@ -909,11 +933,10 @@ const AnnualBudget: React.FC = () => {
   const totalFundCFActual = totalAssetsActual + totalLiabilitiesActual;
 
   const assetsBfCategory =
-    (Array.isArray(budgetedAssets) ? budgetedAssets : []).find((c) => c.id === 'assets-bf') ??
+    (Array.isArray(budgetedAssets) ? budgetedAssets : []).find((c) => c.id === ASSETS_BF_CATEGORY_ID) ??
     (Array.isArray(budgetedAssets) ? budgetedAssets[0] : undefined);
-  const assetsBfLines = assetsBfCategory && Array.isArray(assetsBfCategory.lines) ? assetsBfCategory.lines : [];
-  const assetsBfForecast = assetsBfLines.reduce((s, line) => s + (budgetValues[line?.id ?? ''] ?? 0), 0);
-  const assetsBfActual = assetsBfLines.reduce((s, line) => s + getActualValue(line?.id ?? ''), 0);
+  const assetsBfForecast = assetsBfCategory ? sumCategoryLineForecast(assetsBfCategory) : 0;
+  const assetsBfActual = assetsBfCategory ? sumCategoryLineActual(assetsBfCategory) : 0;
   /** Écart Total Fund C/F vs totaux de la catégorie Assets B/F (même colonne). */
   const fundCfDeltaVsAssetsBfForecast = totalFundCF - assetsBfForecast;
   const fundCfDeltaVsAssetsBfActual = totalFundCFActual - assetsBfActual;
@@ -1090,6 +1113,8 @@ const AnnualBudget: React.FC = () => {
     const cats = getCats();
     const cat = cats.find((c) => c.id === catId);
     if (!cat || lineIndex < 0 || lineIndex >= cat.lines.length) return;
+    const lineId = cat.lines[lineIndex]?.id;
+    if (lineId === ASSETS_BANK_LINE_ID) return;
     const newLines = cat.lines.filter((_, i) => i !== lineIndex);
     setCats(
       cats.map((c) => (c.id === catId ? { ...c, lines: newLines } : c))
@@ -1160,7 +1185,8 @@ const AnnualBudget: React.FC = () => {
           budgetedAssets,
           budgetedLiabilities,
           bilanCategoryLabels,
-          bilanLineLabels
+          bilanLineLabels,
+          bankLineOptions
         ),
       });
     }
@@ -1232,7 +1258,8 @@ const AnnualBudget: React.FC = () => {
         budgetedAssets,
         budgetedLiabilities,
         bilanCategoryLabels,
-        bilanLineLabels
+        bilanLineLabels,
+        bankLineOptions
       ),
     });
 
@@ -1250,7 +1277,8 @@ const AnnualBudget: React.FC = () => {
           budgetedAssets,
           budgetedLiabilities,
           bilanCategoryLabels,
-          bilanLineLabels
+          bilanLineLabels,
+          bankLineOptions
         );
       } else {
         const sourceSnap = getYearSnapshot(copySourceYear);
@@ -1287,6 +1315,40 @@ const AnnualBudget: React.FC = () => {
     } catch {}
     closeAddYearModal();
   };
+
+  const renderManualActualInput = (
+    targetId: string,
+    storedGbp: number | undefined,
+    focusClass: string
+  ) => (
+    <input
+      type="text"
+      inputMode="decimal"
+      className={`w-28 text-right text-sm border border-gray-300 rounded px-2 py-1 tabular-nums ${focusClass}`}
+      placeholder="—"
+      title="Saisie directe ou formule : =100*12 puis Entrée"
+      value={actualInputDisplayString(targetId, storedGbp)}
+      onFocus={() => startActualDraft(targetId, storedGbp)}
+      onChange={(e) => {
+        setBilanActualDrafts((prev) => ({ ...prev, [targetId]: e.target.value }));
+      }}
+      onBlur={(e) => {
+        commitBilanManualActual(targetId, e.currentTarget.value);
+        setBilanActualDrafts((prev) => {
+          const next = { ...prev };
+          delete next[targetId];
+          return next;
+        });
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
 
   if (loading) {
     return (
@@ -1461,8 +1523,8 @@ const AnnualBudget: React.FC = () => {
                 <div className="divide-y divide-emerald-100">
                   {budgetedAssets.map((cat, catIndex) => {
                     const catLines = Array.isArray(cat.lines) ? cat.lines : [];
-                    const catForecast = catLines.reduce((s, l) => s + (budgetValues[l?.id ?? ''] ?? 0), 0);
-                    const catActual = catLines.reduce((s, l) => s + getActualValue(l?.id ?? ''), 0);
+                    const catForecast = sumCategoryLineForecast(cat);
+                    const catActual = sumCategoryLineActual(cat);
                     return (
                       <div key={cat.id}>
                         <div className="bg-emerald-100 font-semibold text-gray-800 py-1.5 px-4 text-sm flex items-center gap-4">
@@ -1521,10 +1583,14 @@ const AnnualBudget: React.FC = () => {
                         {catLines.map((line, lineIndex) => {
                           const assigned = lineAssignedTypes[line?.id ?? ''] ?? getDefaultLineAssignedTypes()[line?.id ?? ''] ?? [];
                           const isOpen = affecterOpenLineId === line?.id;
+                          const isBankLine = line?.id === ASSETS_BANK_LINE_ID;
+                          const bankInactive = isBankLine && !bankLineOptions.enabled;
+                          if (bankInactive && !bilanEditMode) return null;
+                          const bankManualActual = isBankLine && bankLineOptions.actualMode === 'manual';
                           return (
+                            <React.Fragment key={line?.id ?? lineIndex}>
                             <div
-                              key={line?.id ?? lineIndex}
-                              className="flex items-center gap-4 py-1 px-4 pl-8 bg-white border-l-2 border-emerald-100"
+                              className={`flex items-center gap-4 py-1 px-4 pl-8 bg-white border-l-2 border-emerald-100 ${bankInactive ? 'opacity-60' : ''}`}
                             >
                               {bilanEditMode && (
                                 <div className="flex shrink-0 items-center gap-0.5">
@@ -1549,16 +1615,18 @@ const AnnualBudget: React.FC = () => {
                                   <button
                                     type="button"
                                     onClick={() => promoteLineToCategory(catIndex, lineIndex, 'assets', bilanLineLabels[line?.id ?? ''] ?? line?.label ?? '')}
-                                    className="rounded border border-gray-500 bg-white px-1.5 py-1 text-xs hover:bg-gray-100"
-                                    title="Augmenter le niveau (devenir une catégorie)"
+                                    disabled={isBankLine}
+                                    className="rounded border border-gray-500 bg-white px-1.5 py-1 text-xs hover:bg-gray-100 disabled:opacity-40"
+                                    title={isBankLine ? 'Ligne Bank spéciale (soldes au 1er janvier)' : 'Augmenter le niveau (devenir une catégorie)'}
                                   >
                                     Niveau +
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => deleteLine(cat.id, lineIndex, 'assets')}
-                                    className="rounded border border-red-300 bg-white p-1 text-red-600 hover:bg-red-50"
-                                    title="Supprimer la ligne"
+                                    disabled={isBankLine}
+                                    className="rounded border border-red-300 bg-white p-1 text-red-600 hover:bg-red-50 disabled:opacity-40"
+                                    title={isBankLine ? 'Ligne Bank conservée — désactivez-la dans les options ci-dessous' : 'Supprimer la ligne'}
                                   >
                                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                       <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -1574,8 +1642,20 @@ const AnnualBudget: React.FC = () => {
                                   className="flex-1 min-w-0 rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
                                 />
                               ) : (
-                                <span className="flex-1 text-sm text-gray-700">{bilanLineLabels[line.id] ?? line.label}</span>
+                                <span className="flex-1 text-sm text-gray-700">
+                                  {bilanLineLabels[line.id] ?? line.label}
+                                  {bankInactive ? (
+                                    <span className="ml-2 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-600">
+                                      Inactif
+                                    </span>
+                                  ) : null}
+                                </span>
                               )}
+                              {bilanEditMode && bankInactive ? (
+                                <span className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-600">
+                                  Inactif
+                                </span>
+                              ) : null}
                               {bilanEditMode ? (
                                 <input
                                   type="text"
@@ -1611,10 +1691,27 @@ const AnnualBudget: React.FC = () => {
                                     : fmtMoney(budgetValues[line.id] ?? 0)}
                                 </span>
                               )}
-                              <span className="w-28 text-right text-sm tabular-nums text-gray-700">
-                                {fmtMoney(getActualValue(line.id) ?? 0)}
-                              </span>
-                              {bilanEditMode && (
+                              {bilanEditMode && bankManualActual ? (
+                                renderManualActualInput(
+                                  ASSETS_BANK_LINE_ID,
+                                  bankLineOptions.manualActualGbp,
+                                  'focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500'
+                                )
+                              ) : (
+                                <span
+                                  className="w-28 text-right text-sm tabular-nums text-gray-700"
+                                  title={
+                                    isBankLine
+                                      ? bankManualActual
+                                        ? 'Réel saisi manuellement'
+                                        : 'Total des comptes au 1er janvier de l’année (soldes)'
+                                      : undefined
+                                  }
+                                >
+                                  {fmtMoney(getActualValue(line.id) ?? 0)}
+                                </span>
+                              )}
+                              {bilanEditMode && !isBankLine && (
                                 <div
                                   className="relative shrink-0"
                                   ref={isOpen ? affecterDropdownRef : undefined}
@@ -1657,6 +1754,17 @@ const AnnualBudget: React.FC = () => {
                                 </div>
                               )}
                             </div>
+                            {bilanEditMode && isBankLine ? (
+                              <div className="flex items-center py-1.5 px-4 pl-8 bg-emerald-50/90 border-l-2 border-emerald-100">
+                                <BilanSpecialRowControls
+                                  options={bankLineOptions}
+                                  onChange={setBankLineOptions}
+                                  autoHint="Réel = total des comptes au 1er janvier"
+                                  seedManualGbp={bankBalanceJan1Gbp ?? 0}
+                                />
+                              </div>
+                            ) : null}
+                            </React.Fragment>
                           );
                         })}
                         {catLines.length === 0 && (
@@ -1696,6 +1804,11 @@ const AnnualBudget: React.FC = () => {
 
               <div className="flex-1 min-w-0 border-t md:border-t-0 md:border-l border-gray-200">
                 <div className="divide-y divide-red-100">
+                  {budgetedLiabilities.length === 0 && !bilanEditMode ? (
+                    <div className="px-4 py-6 text-sm text-gray-500">
+                      Aucun passif pour cette année. Passez en mode édition pour ajouter des catégories.
+                    </div>
+                  ) : null}
                   {budgetedLiabilities.map((cat, catIndex) => {
                     const catLinesLiab = Array.isArray(cat.lines) ? cat.lines : [];
                     const catForecast = catLinesLiab.reduce((s, l) => s + (budgetValues[l?.id ?? ''] ?? 0), 0);

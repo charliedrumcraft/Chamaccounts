@@ -54,42 +54,6 @@ const STORAGE_KEYS = {
   recognisedOutputTypes: 'settings-recognised-output-types',
 } as const;
 
-const KNOWN_ENTRY_TYPES: string[] = [
-  'Lampton',
-  'LMB',
-  'LTL',
-  'MPC',
-  'LGV',
-  'Other Inc',
-  'Support',
-  'Refund',
-  'Benefit',
-  'SLCcredit',
-];
-
-const KNOWN_OUTPUT_TYPES: string[] = [
-  'Rent',
-  'Council',
-  'Comm',
-  'Electricity',
-  'Water',
-  'Service',
-  'SLCdebit',
-  'Transport',
-  'Fuel',
-  'Car',
-  'Food',
-  'Restaurant',
-  'Shopping',
-  'Leisure',
-  'Holiday',
-  'LST',
-  'School',
-  'Misc',
-  'Health',
-  'Donation',
-];
-
 function loadString(key: string, fallback: string): string {
   try {
     const v = localStorage.getItem(key);

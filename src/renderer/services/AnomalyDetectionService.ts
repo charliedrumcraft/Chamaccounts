@@ -56,7 +56,7 @@ const KNOWN_EXPENSE_TYPES = new Set([
 
 /** Types reconnus comme revenus : ne sont jamais considérés comme "Type inconnu". */
 const KNOWN_INCOME_TYPES = new Set([
-  'Lampton', 'LMB', 'LTL', 'Other Inc', 'Support', 'Refund', 'Benefit', 'SLCcredit',
+  'Other Inc', 'Support', 'Refund', 'Benefit', 'SLCcredit',
 ]);
 
 /** Retourne true si la valeur de cellule (montant) est non nulle (non vide et différent de 0). */

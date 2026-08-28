@@ -1,3 +1,26 @@
+# Chamaccounts v1.0.12
+
+Feuilles de bilan sans données personnelles dans le code ni les modèles ; ligne Assets B/F (Bank) réglable.
+
+### Changements par rapport à v1.0.11
+- **Budget annuel** : une feuille neuve ne contient que Assets B/F → Bank (total des comptes au 1er janvier). Plus aucune ligne métier préremplie dans le code
+- **Bank** : la ligne peut être masquée, et le réel passé en saisie manuelle
+- **Data Template** : type d’entrée `Firm` à la place de l’ancien libellé ; mapping type → ligne vide par défaut (les affectations vivent dans le profil)
+- **Soldes** : alias de colonnes nominatifs retirés (N26FR / N26DE uniquement)
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.0.12-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.0.12-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.0.12-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.0.12-linux-x64.AppImage` |
+
+[Télécharger v1.0.12](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.0.12)
+
+---
+
 # Chamaccounts v1.0.11
 
 Contrôle d’affectation des types sur le budget annuel, et totaux du tableau mensuel alignés sur les types réellement présents.

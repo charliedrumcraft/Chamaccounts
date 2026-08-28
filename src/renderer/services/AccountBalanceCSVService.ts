@@ -47,8 +47,6 @@ export const COLUMN_TO_ACCOUNT_CODE: Record<string, string> = {
   /** Ancien libellé Paramètres / en-tête CSV (même code interne que CM). */
   LM: 'CM',
   'LB CM': 'CM',
-  'N26 Charlie': 'N26FR',
-  'N26 Maria': 'N26DE',
   'Revolut GBP': 'REV_GBP',
   'Revolut GBP Savings': 'REV_GBP',
   'Revolut EUR': 'REV_EUR',

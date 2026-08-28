@@ -22,6 +22,42 @@ export type AnnualBudgetSnapshotFile = {
 export type BudgetLine = { id: string; label: string };
 export type BudgetCategory = { id: string; label: string; lines: BudgetLine[] };
 
+/** Mode du réel pour une ligne/catégorie spéciale (Bank, Assets B/F). */
+export type BilanActualMode = 'auto' | 'manual';
+
+/** Options réglables d’une ligne/catégorie spéciale du bilan. */
+export type BilanSpecialRowOptions = {
+  /** Afficher la ligne/catégorie et l’inclure dans les totaux. */
+  enabled: boolean;
+  /** auto = calculé ; manual = saisie du réel. */
+  actualMode: BilanActualMode;
+  /** Réel saisi (GBP), utilisé si actualMode === 'manual'. */
+  manualActualGbp?: number;
+};
+
+export const DEFAULT_BILAN_SPECIAL_ROW_OPTIONS: BilanSpecialRowOptions = {
+  enabled: true,
+  actualMode: 'auto',
+};
+
+export function normalizeBilanSpecialRowOptions(raw: unknown): BilanSpecialRowOptions {
+  if (typeof raw !== 'object' || raw === null) {
+    return { ...DEFAULT_BILAN_SPECIAL_ROW_OPTIONS };
+  }
+  const o = raw as Record<string, unknown>;
+  const enabled = o.enabled !== false;
+  const actualMode: BilanActualMode = o.actualMode === 'manual' ? 'manual' : 'auto';
+  const manual =
+    typeof o.manualActualGbp === 'number' && Number.isFinite(o.manualActualGbp)
+      ? o.manualActualGbp
+      : undefined;
+  return {
+    enabled,
+    actualMode,
+    ...(manual !== undefined ? { manualActualGbp: manual } : {}),
+  };
+}
+
 /** Snapshot persistant de la structure éditable du bilan (actif / passif + libellés affichés). */
 export type BilanStructureSnapshot = {
   version: 1;
@@ -29,6 +65,8 @@ export type BilanStructureSnapshot = {
   liabilities: BudgetCategory[];
   categoryLabels: Record<string, string>;
   lineLabels: Record<string, string>;
+  /** Options de la ligne Bank. Absent = actif, réel automatique (soldes au 1er janvier). */
+  bankLineOptions?: BilanSpecialRowOptions;
 };
 
 function isBudgetLine(x: unknown): x is BudgetLine {
@@ -74,6 +112,9 @@ export function cloneBilanStructure(data: BilanStructureSnapshot): BilanStructur
     })),
     categoryLabels: { ...data.categoryLabels },
     lineLabels: { ...data.lineLabels },
+    bankLineOptions: data.bankLineOptions
+      ? normalizeBilanSpecialRowOptions(data.bankLineOptions)
+      : undefined,
   };
 }
 
