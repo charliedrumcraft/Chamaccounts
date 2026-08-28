@@ -1,3 +1,26 @@
+# Chamaccounts v1.1.0
+
+Budget annuel générique, sans données personnelles dans le code ni les modèles de la release. Les feuilles de bilan, comptes et types vivent dans le profil utilisateur.
+
+### Changements principaux
+- **Feuille de bilan** : une année neuve n’a plus de lignes métier préremplies — uniquement Assets B/F → Bank, dont le réel est le total des comptes au 1er janvier
+- **Bank** : la ligne peut être masquée, et le réel passé en saisie manuelle si besoin
+- **Profils** : structure du bilan et affectation des types d’entrées/sorties sont enregistrées dans le profil (AppState), plus dans le binaire
+- **Release publique** : modèles Data Template et défauts du code anonymisés (type `Firm`, plus de mapping nominatif)
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.1.0-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.1.0-mac-x64.dmg` |
+| macOS Apple Silicon | `Chamaccounts-1.1.0-mac-arm64.dmg` |
+| Linux (AppImage) | `Chamaccounts-1.1.0-linux-x64.AppImage` |
+
+[Télécharger v1.1.0](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.1.0)
+
+---
+
 # Chamaccounts v1.0.12
 
 Feuilles de bilan sans données personnelles dans le code ni les modèles ; ligne Assets B/F (Bank) réglable.
