@@ -103,3 +103,16 @@ jobs:
         run: |
           npm run electron:build
           npx electron-builder --${{ matrix.platform }} --publish always
+
+      - name: Helper quarantaine dans les zip Mac
+        if: matrix.platform == 'mac'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/add-mac-zip-unquarantine.cjs
+          TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          shopt -s nullglob
+          zips=(release/*-mac-*.zip)
+          if ((${#zips[@]})); then
+            gh release upload "$TAG" "${zips[@]}" --clobber
+          fi

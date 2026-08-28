@@ -6,6 +6,9 @@ copyright: Copyright © 2025
 releaseInfo:
   releaseNotesFile: build/release-notes.md
 
+afterPack: ./scripts/afterPack.cjs
+afterAllArtifactBuild: ./scripts/afterAllArtifactBuild.cjs
+
 directories:
   output: release
   buildResources: build

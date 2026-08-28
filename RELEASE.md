@@ -1,3 +1,24 @@
+# Chamaccounts v1.1.1
+
+Zip Mac : script pour retirer la quarantaine Gatekeeper, puis lancer l’app.
+
+### Changements par rapport à v1.1.0
+- **macOS (zip)** : fichier `Ouvrir Chamaccounts.command` à côté de l’app — retire `com.apple.quarantine` et ouvre Chamaccounts (pas de certificat Developer ID)
+- Signature ad-hoc du `.app` au build, pour éviter le dialogue « application endommagée » une fois la quarantaine enlevée
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.1.1-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.1.1-mac-x64.dmg` / `.zip` |
+| macOS Apple Silicon | `Chamaccounts-1.1.1-mac-arm64.dmg` / `.zip` |
+| Linux (AppImage) | `Chamaccounts-1.1.1-linux-x64.AppImage` |
+
+[Télécharger v1.1.1](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.1.1)
+
+---
+
 # Chamaccounts v1.1.0
 
 Budget annuel générique, sans données personnelles dans le code ni les modèles de la release. Les feuilles de bilan, comptes et types vivent dans le profil utilisateur.
