@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Chart as ChartJS, ChartOptions, Filler, registerables } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 import { formatCurrency } from '../../utils/format';
+import { calculateBalanceYAxisLimits } from './AccountBalanceLineChart';
 
 ChartJS.register(...registerables, Filler);
 
@@ -90,6 +91,11 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
     };
   }, [balanceData, isDarkMode]);
 
+  const yLimits = useMemo(
+    () => calculateBalanceYAxisLimits([{ data: balanceData }]),
+    [balanceData]
+  );
+
   const options: ChartOptions<'line'> = useMemo(
     () => ({
       responsive: true,
@@ -112,6 +118,9 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
           },
         },
         y: {
+          beginAtZero: false,
+          min: yLimits.min,
+          max: yLimits.max,
           title: {
             display: true,
             text: `Solde (${yAxisCurrency})`,
@@ -170,7 +179,7 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
         },
       },
     }),
-    [isDarkMode, yAxisCurrency]
+    [isDarkMode, yAxisCurrency, yLimits]
   );
 
   if (!periods.length || balanceData.every((v) => v == null || Number.isNaN(v))) {

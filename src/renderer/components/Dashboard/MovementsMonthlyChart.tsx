@@ -19,6 +19,8 @@ type MixedDataset = {
   pointBackgroundColor?: string | string[];
   pointBorderColor?: string | string[];
   hidden?: boolean;
+  /** Axe Y dédié pour que la ligne ne s'empile pas avec les barres */
+  yAxisID?: string;
   /** Totaux mensuels pour le tooltip Balance (custom) */
   sortiesByMonth?: number[];
   entréesByMonth?: number[];
@@ -194,6 +196,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
       label: 'Balance',
       data: visibleBalanceByMonth,
       type: 'line',
+      yAxisID: 'yLines',
       borderColor: isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.6)',
       borderWidth: 2,
       fill: false,
@@ -211,15 +214,13 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
       entréesByMonth: visibleEntréesByMonth,
     };
 
-    const allBarValues = [
-      ...visibleBalanceByMonth,
-      ...barDatasets.filter((d) => !d.hidden).flatMap((d) => d.data as number[]),
-    ];
-    const min = Math.min(...allBarValues);
-    const max = Math.max(...allBarValues);
-    const range = max - min || 1;
-    const margin = Math.max(range * 0.2, Math.max(Math.abs(min), Math.abs(max)) * 0.1, 50);
-    const initialLimits = { min: min - margin, max: max + margin };
+    // Échelle Y = totaux empilés visibles (pas les segments individuels), + petite marge.
+    const stackedMax = Math.max(0, ...visibleEntréesByMonth, ...visibleBalanceByMonth);
+    const stackedMin = Math.min(0, ...visibleSortiesByMonth.map((v) => -v), ...visibleBalanceByMonth);
+    const range = stackedMax - stackedMin || 1;
+    const marginHaut = Math.max(Math.abs(stackedMax) * 0.08, range * 0.04);
+    const marginBas = Math.max(Math.abs(stackedMin) * 0.08, range * 0.04);
+    const initialLimits = { min: stackedMin - marginBas, max: stackedMax + marginHaut };
 
     return {
       datasets: [...barDatasets, lineBalance],
@@ -356,6 +357,15 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
             color: isDarkMode ? '#cbd5e1' : '#1e293b',
             callback: (value) => formatCurrency(value as number, currency),
           },
+        },
+        yLines: {
+          display: false,
+          stacked: false,
+          min: initialLimits.min,
+          max: initialLimits.max,
+          position: 'left',
+          grid: { display: false },
+          ticks: { display: false },
         },
       },
     }),

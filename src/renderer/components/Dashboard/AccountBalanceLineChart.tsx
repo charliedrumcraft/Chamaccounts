@@ -1,9 +1,43 @@
-import React, { useRef, useMemo, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useMemo, useEffect, useState } from 'react';
 import { Chart as ChartJS, ChartOptions, registerables } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 import { formatCurrency } from '../../utils/format';
 
 ChartJS.register(...registerables);
+
+/**
+ * Limites de l'axe Y pour les soldes : les valeurs négatives sont incluses
+ * (un compte crédit / carte peut être < 0). Si le solde passe sous zéro, l'axe
+ * descend en dessous et conserve 0 comme référence visuelle.
+ */
+export function calculateBalanceYAxisLimits(
+  datasets: { data?: (number | null | undefined)[]; hidden?: boolean }[]
+): { min: number; max: number } {
+  let minValue = Infinity;
+  let maxValue = -Infinity;
+  for (const dataset of datasets) {
+    if (dataset?.hidden) continue;
+    const data = dataset?.data;
+    if (!data) continue;
+    for (const value of data) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+      if (value < minValue) minValue = value;
+      if (value > maxValue) maxValue = value;
+    }
+  }
+  if (minValue === Infinity || maxValue === -Infinity) {
+    return { min: 0, max: 1000 };
+  }
+  const range = maxValue - minValue;
+  const magnitude = Math.max(Math.abs(minValue), Math.abs(maxValue));
+  const margin = range * 0.1 || magnitude * 0.1 || 100;
+  let min = minValue - margin;
+  let max = maxValue + margin;
+  if (minValue < 0) {
+    max = Math.max(max, margin * 0.25);
+  }
+  return { min, max };
+}
 
 /** Calcule la régression linéaire y = ax + b pour les points (index, value); ignore les null/NaN. */
 export function linearRegression(values: (number | null)[]): { a: number; b: number } | null {
@@ -36,8 +70,6 @@ interface AccountBalanceLineChartProps {
   granularity: 'day' | 'week' | 'month';
   /** Symbole de la devise pour l'axe Y (défaut: GBP £) */
   yAxisCurrency?: string;
-  /** Type d'échelle de l'axe vertical (défaut: linéaire) */
-  yAxisScale?: 'linear' | 'logarithmic';
   /** Courbes de tendance par code compte (clé = accountCode). Clé spéciale 'TOTAL' pour la tendance du solde total. */
   trendLinesEnabled?: Record<string, boolean>;
   /** Séries cachées via la légende (clé = label affiché, ex. nom du compte ou "Solde total"). true = barrée / cachée. */
@@ -54,7 +86,6 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
   accountColors,
   granularity,
   yAxisCurrency = '£',
-  yAxisScale = 'linear',
   trendLinesEnabled = {},
   hiddenSeriesByLabel = {},
   onLegendVisibilityChange,
@@ -73,31 +104,6 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
       attributeFilter: ['class'],
     });
     return () => observer.disconnect();
-  }, []);
-
-  const calculateYAxisLimits = useCallback((datasets: any[]) => {
-    if (datasets.length === 0 || !datasets[0]?.data) {
-      return { min: 0, max: 1000 };
-    }
-    let minValue = Infinity;
-    let maxValue = -Infinity;
-    datasets.forEach(dataset => {
-      dataset.data.forEach((value: number) => {
-        if (value !== null && value !== undefined) {
-          if (value < minValue) minValue = value;
-          if (value > maxValue) maxValue = value;
-        }
-      });
-    });
-    if (minValue === Infinity || maxValue === -Infinity) {
-      return { min: 0, max: 1000 };
-    }
-    const range = maxValue - minValue;
-    const margin = range * 0.1 || Math.abs(maxValue) * 0.1 || 100;
-    return {
-      min: minValue - margin,
-      max: maxValue + margin,
-    };
   }, []);
 
   const datasets = useMemo(() =>
@@ -239,25 +245,9 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
     return withTotal;
   }, [datasets, trendDatasets, totalBalanceDataset, totalTrendDataset]);
 
-  /** Indices dans allDatasets des séries "solde" (pour recalcul des limites Y), y compris le solde total */
-  const mainDatasetIndices = useMemo(() => {
-    const indices: number[] = [];
-    let j = 0;
-    for (let i = 0; i < datasets.length; i++) {
-      indices.push(j);
-      j += trendDatasets[i] ? 2 : 1;
-    }
-    if (totalBalanceDataset) indices.push(j);
-    return indices;
-  }, [datasets.length, trendDatasets, totalBalanceDataset]);
-
-  const initialLimits = useMemo(() =>
-    calculateYAxisLimits(
-      totalBalanceDataset
-        ? [...datasets, totalBalanceDataset]
-        : datasets
-    ),
-    [datasets, totalBalanceDataset, calculateYAxisLimits]
+  const initialLimits = useMemo(
+    () => calculateBalanceYAxisLimits(allDatasets.filter((ds) => !ds.hidden)),
+    [allDatasets]
   );
 
   const options: ChartOptions<'line'> = useMemo(() => ({
@@ -281,16 +271,16 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
         },
       },
       y: {
-        type: yAxisScale === 'logarithmic' ? 'logarithmic' : 'linear',
+        type: 'linear',
+        beginAtZero: false,
+        min: initialLimits.min,
+        max: initialLimits.max,
         title: {
           display: true,
           text: `Solde (${yAxisCurrency})`,
           font: { size: 14, weight: 'bold' },
           color: isDarkMode ? '#cbd5e1' : '#1e293b',
         },
-        ...(yAxisScale === 'linear'
-          ? { min: initialLimits.min, max: initialLimits.max }
-          : { min: undefined, max: undefined }),
         grid: {
           color: isDarkMode
             ? (context: any) => (context.tick.value === 0 ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)')
@@ -314,15 +304,13 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
           ChartJS.defaults.plugins.legend.onClick.call(this, e, legendItem, legend);
           const chart = legend.chart;
           if (!chart) return;
-          if (yAxisScale === 'linear') {
-            const visibleDatasets = mainDatasetIndices
-              .filter((index) => !chart.getDatasetMeta(index).hidden)
-              .map((index) => chart.data.datasets[index]);
-            const newLimits = calculateYAxisLimits(visibleDatasets);
-            if (chart.options.scales && chart.options.scales.y) {
-              chart.options.scales.y.min = newLimits.min;
-              chart.options.scales.y.max = newLimits.max;
-            }
+          const visibleDatasets = chart.data.datasets.filter(
+            (_ds, index) => !chart.getDatasetMeta(index).hidden
+          );
+          const newLimits = calculateBalanceYAxisLimits(visibleDatasets);
+          if (chart.options.scales && chart.options.scales.y) {
+            chart.options.scales.y.min = newLimits.min;
+            chart.options.scales.y.max = newLimits.max;
           }
           chart.update();
           if (onLegendVisibilityChange && chart.data.datasets) {
@@ -370,7 +358,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
         },
       },
     },
-  }), [initialLimits, calculateYAxisLimits, isDarkMode, granularity, yAxisCurrency, yAxisScale, mainDatasetIndices, onLegendVisibilityChange]);
+  }), [initialLimits, isDarkMode, granularity, yAxisCurrency, onLegendVisibilityChange]);
 
   return (
     <div style={{ width: '100%', height: '100%' }}>

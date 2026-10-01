@@ -1,3 +1,25 @@
+# Chamaccounts v1.1.2
+
+Conservation de « Ignorer » sur la page Soutien à l’import, et correctifs d’affichage des graphiques du tableau de bord.
+
+### Changements par rapport à v1.1.1
+- **Soutien** : la colonne `Soutien_ignorer` est préservée lors d’un import vers `src_transaction_data.csv` (plus de réinitialisation des lignes ignorées)
+- **Dashboard — soldes** : échelle Y adaptée aux soldes négatifs ; suppression du bascule linéaire / logarithme
+- **Dashboard — mouvements** : la ligne « Balance » n’est plus empilée avec les barres ; marges d’axe basées sur les totaux empilés visibles
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.1.2-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.1.2-mac-x64.dmg` / `.zip` |
+| macOS Apple Silicon | `Chamaccounts-1.1.2-mac-arm64.dmg` / `.zip` |
+| Linux (AppImage) | `Chamaccounts-1.1.2-linux-x64.AppImage` |
+
+[Télécharger v1.1.2](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.1.2)
+
+---
+
 # Chamaccounts v1.1.1
 
 Zip Mac : script pour retirer la quarantaine Gatekeeper, puis lancer l’app.

@@ -9,6 +9,7 @@ import { FileService } from './FileService';
 import { formatDateDDMMYYYY } from '../utils/format';
 import { SOURCE_DATA_PATH, SUPPORT_DATA_CSV_PATH } from '@/shared/dataPaths';
 import { EXCLUDE_ANOMALY_COLUMN } from '@/shared/excludeAnomalyColumn';
+import { SOUTIEN_IGNORE_COLUMN } from '@/shared/soutienIgnoreColumn';
 import { TRANSACTION_SOURCE_COLUMN } from '@/shared/transactionRowSource';
 import { parseDateToTime } from '@/shared/transactionsImportCore';
 import Papa from 'papaparse';
@@ -97,6 +98,7 @@ export function parseSourceTransactionCsvContent(content: string): SourceDataRes
         !HIDDEN_COLUMNS.has(norm) &&
         !isIndexColumn(norm) &&
         (norm === EXCLUDE_ANOMALY_COLUMN ||
+          norm === SOUTIEN_IGNORE_COLUMN ||
           norm === TRANSACTION_SOURCE_COLUMN ||
           /^projet$/i.test(norm) ||
           data.some((row) => (row[orig] ?? '').toString().trim() !== ''))

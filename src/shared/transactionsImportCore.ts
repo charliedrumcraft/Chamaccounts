@@ -4,6 +4,7 @@
  */
 
 import { EXCLUDE_ANOMALY_COLUMN } from './excludeAnomalyColumn';
+import { SOUTIEN_IGNORE_COLUMN } from './soutienIgnoreColumn';
 import { TRANSACTION_SOURCE_COLUMN } from './transactionRowSource';
 import {
   resolveAccountForDuplicateSignature,
@@ -35,6 +36,7 @@ export const OUTPUT_HEADERS = [
   'TYPE',
   TRANSACTION_PROJET_COLUMN,
   EXCLUDE_ANOMALY_COLUMN,
+  SOUTIEN_IGNORE_COLUMN,
 ] as const;
 
 /** En-têtes reconnus à l'import (fichiers peuvent avoir EXPENSE et INCOME séparés). */
@@ -73,6 +75,8 @@ const HEADER_MAP: Record<string, string> = {
   amount: 'AMOUNT',
   fx: 'CURRENCY',
   currency: 'CURRENCY',
+  exclure_anomalie: EXCLUDE_ANOMALY_COLUMN,
+  soutien_ignorer: SOUTIEN_IGNORE_COLUMN,
 };
 
 export function normalizeHeader(h: string): string {
@@ -183,6 +187,7 @@ export interface ValidRow {
   TYPE: string;
   [TRANSACTION_PROJET_COLUMN]?: string;
   [EXCLUDE_ANOMALY_COLUMN]?: string;
+  [SOUTIEN_IGNORE_COLUMN]?: string;
 }
 
 export function emptyRow(): ValidRow {
@@ -196,6 +201,7 @@ export function emptyRow(): ValidRow {
     TYPE: '',
     [TRANSACTION_PROJET_COLUMN]: '',
     [EXCLUDE_ANOMALY_COLUMN]: '',
+    [SOUTIEN_IGNORE_COLUMN]: '',
   };
 }
 
@@ -648,6 +654,7 @@ export function rowToCsvLine(row: ValidRow, index: number): string {
     row.TYPE,
     row[TRANSACTION_PROJET_COLUMN] ?? '',
     row[EXCLUDE_ANOMALY_COLUMN] ?? '',
+    row[SOUTIEN_IGNORE_COLUMN] ?? '',
   ].join(';');
 }
 

@@ -136,7 +136,6 @@ const DASHBOARD_STORAGE_KEYS = {
   movementsYAxisCurrency: 'dashboard-movements-y-axis-currency',
   /** Devise du bloc Evolution comparée des mouvements */
   movementsCompareYAxisCurrency: 'dashboard-movements-compare-y-axis-currency',
-  yAxisScale: 'dashboard-y-axis-scale',
   trendLines: 'dashboard-trend-lines',
   expandedBoxes: 'dashboard-expanded-boxes',
   /** Séries cachées via la légende (clé = label de la série, true = cachée) */
@@ -692,13 +691,6 @@ const Dashboard: React.FC = () => {
       return next;
     });
   }, []);
-  const [yAxisScale, setYAxisScale] = useState<'linear' | 'logarithmic'>(() =>
-    loadDashboardPref(
-      DASHBOARD_STORAGE_KEYS.yAxisScale,
-      (s) => (s === 'linear' || s === 'logarithmic' ? s : null),
-      'linear'
-    )
-  );
   /** Courbes de tendance par code compte (défaut: toutes désactivées) */
   const [trendLinesByAccount, setTrendLinesByAccount] = useState<Record<string, boolean>>(() =>
     loadDashboardPref(DASHBOARD_STORAGE_KEYS.trendLines, (s) => {
@@ -2316,37 +2308,6 @@ const Dashboard: React.FC = () => {
                     <div className="border-t border-gray-200 my-0" aria-hidden />
                     <div className="flex-shrink-0">
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                        Axe vertical
-                      </label>
-                      <div className="space-y-1.5">
-                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={yAxisScale === 'linear'}
-                            onChange={() => {
-                              setYAxisScale('linear');
-                              saveDashboardPref(DASHBOARD_STORAGE_KEYS.yAxisScale, 'linear');
-                            }}
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span>Linéaire</span>
-                        </label>
-                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={yAxisScale === 'logarithmic'}
-                            onChange={() => {
-                              setYAxisScale('logarithmic');
-                              saveDashboardPref(DASHBOARD_STORAGE_KEYS.yAxisScale, 'logarithmic');
-                            }}
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span>Logarithme</span>
-                        </label>
-                      </div>
-                    </div>
-                    <div className="flex-shrink-0">
-                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
                         Hauteur du graphique
                       </label>
                       <div className="flex items-center gap-2">
@@ -2486,7 +2447,6 @@ const Dashboard: React.FC = () => {
                   accountColors={filteredChartData.accountColors}
                   granularity={filteredChartData.granularity}
                   yAxisCurrency={chartYAxisCurrency}
-                  yAxisScale={yAxisScale}
                   trendLinesEnabled={trendLinesByAccount}
                   hiddenSeriesByLabel={hiddenSeriesByLabel}
                   onLegendVisibilityChange={setHiddenSeriesByLabel}
