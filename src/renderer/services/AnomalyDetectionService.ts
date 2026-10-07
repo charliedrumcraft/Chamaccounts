@@ -18,6 +18,10 @@ import {
   collectRecognisedAccountLabelsSet,
   loadRecognisedAccountsFromStorage,
 } from '../constants/recognisedAccountsStorage';
+import {
+  loadRecognisedEntryTypesFromStorage,
+  loadRecognisedOutputTypesFromStorage,
+} from '../constants/recognisedTypesStorage';
 import i18n from '../i18n';
 import { formatAnomalyReason } from '../i18n/formatAnomalyReason';
 
@@ -30,28 +34,12 @@ export type {
   AccountBalanceAnomalyResult,
 } from '@/shared/anomalyDetectionCore';
 
-const STORAGE_KEYS = {
-  recognisedEntryTypes: 'settings-recognised-entry-types',
-  recognisedOutputTypes: 'settings-recognised-output-types',
-} as const;
-
-function loadRecognisedStringArray(key: string): string[] {
-  try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
 export function buildTransactionAnomalyContextFromStorage(): TransactionAnomalyContext {
   const labels = Array.from(collectRecognisedAccountLabelsSet(loadRecognisedAccountsFromStorage()));
   return {
     recognisedAccountLabels: labels,
-    recognisedEntryTypes: loadRecognisedStringArray(STORAGE_KEYS.recognisedEntryTypes),
-    recognisedOutputTypes: loadRecognisedStringArray(STORAGE_KEYS.recognisedOutputTypes),
+    recognisedEntryTypes: loadRecognisedEntryTypesFromStorage(),
+    recognisedOutputTypes: loadRecognisedOutputTypesFromStorage(),
   };
 }
 

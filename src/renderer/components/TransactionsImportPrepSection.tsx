@@ -13,9 +13,17 @@ import {
   type ImportWizardColumn,
   type ImportWizardModel,
 } from '../services/mappingWizardService';
-import { getAccountSuggestions, getSuggestions, type SuggestionItem } from '../services/SuggestInputService';
+import {
+  getAccountSuggestions,
+  getSuggestions,
+  getTypeSuggestions,
+  type SuggestionItem,
+} from '../services/SuggestInputService';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
+import { loadAllRecognisedTypesFromStorage } from '../constants/recognisedTypesStorage';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
+import AutoCategorisationReviewModal from './AutoCategorisationReviewModal';
+import { confidenceToPercent } from '@/shared/autoCategorisation';
 
 export type TransactionsImportPrepWizardProps = ReturnType<typeof useTransactionsImportPrepWizard>;
 
@@ -79,21 +87,31 @@ const PREP_WIZARD_SUGGESTION_HEADERS = [
   'INCOME',
 ] as const;
 
-/** Applique la 1re suggestion au TAB (datalist / fréquence / alias compte). */
+/**
+ * Applique la 1re suggestion (datalist / fréquence / alias compte).
+ * - Tab : valide + focus cellule suivante de la même ligne (consomme l’événement).
+ * - Entrée : valide seulement ; le focus ligne suivante reste géré par handleImportPrepEnterNav.
+ */
 function applyTabSuggestionFromSuggestions(
   e: React.KeyboardEvent<HTMLInputElement>,
   raw: string,
   suggestions: SuggestionItem[],
   apply: (v: string) => void
 ): boolean {
-  if (e.key !== 'Tab' || e.shiftKey) return false;
+  const isTab = e.key === 'Tab' && !e.shiftKey;
+  const isEnter = e.key === 'Enter' && !e.nativeEvent.isComposing;
+  if (!isTab && !isEnter) return false;
   if (suggestions.length === 0) return false;
   const first = suggestions[0].value;
   if (raw.trim() === first) return false;
-  e.preventDefault();
   apply(first);
-  focusNextPrepInputInRow(e.currentTarget);
-  return true;
+  if (isTab) {
+    e.preventDefault();
+    focusNextPrepInputInRow(e.currentTarget);
+    return true;
+  }
+  // Entrée : ne pas consommer — laisser handleImportPrepEnterNav aller à la ligne du dessous.
+  return false;
 }
 
 /** Premières valeurs non vides d’une colonne (aperçu à côté du menu de mapping). */
@@ -167,6 +185,12 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
     updateMappedOutputCell,
     updateImportPrepCell,
     importWizardManualCellValues,
+    autoCatReviewOpen,
+    setAutoCatReviewOpen,
+    autoCatReviewRows,
+    applyAutoCatReviewSelection,
+    setFixedAutoCatRules,
+    knownOutputTypes,
   } = props;
 
   const prepTableScrollRef = useRef<HTMLDivElement>(null);
@@ -175,6 +199,11 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
 
   const recognisedAccountsForSuggestions = useMemo(
     () => loadRecognisedAccountsFromStorage(),
+    []
+  );
+
+  const recognisedTypesForSuggestions = useMemo(
+    () => loadAllRecognisedTypesFromStorage(),
     []
   );
 
@@ -207,13 +236,20 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
             ? (PREP_WIZARD_SUGGESTION_HEADERS as readonly string[])
             : sourceHeadersForSuggestions;
       const hk = findHeaderKeyForSuggestions([...headers], canonicalField);
-      if (!hk || rows.length === 0) return [] as SuggestionItem[];
       if (canonicalField === 'ACCOUNT') {
+        if (!hk) return [] as SuggestionItem[];
         return getAccountSuggestions(rows, hk, raw, {
           limit: 10,
           recognisedEntries: recognisedAccountsForSuggestions,
         });
       }
+      if (canonicalField === 'TYPE') {
+        return getTypeSuggestions(rows, hk ?? 'TYPE', raw, {
+          limit: 10,
+          recognisedTypes: recognisedTypesForSuggestions,
+        });
+      }
+      if (!hk || rows.length === 0) return [] as SuggestionItem[];
       return getSuggestions(rows, hk, raw, 10);
     },
     [
@@ -222,6 +258,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
       sourceRowsForSuggestions,
       sourceHeadersForSuggestions,
       recognisedAccountsForSuggestions,
+      recognisedTypesForSuggestions,
     ]
   );
 
@@ -462,6 +499,18 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                       <span className="text-gray-500">({importPrepDuplicateSkipHeader.count})</span>
                     )}
                   </label>
+                )}
+                {mappingWizardActive && (
+                  <button
+                    type="button"
+                    onClick={() => setAutoCatReviewOpen(true)}
+                    className="rounded border border-indigo-300 bg-white px-2 py-0.5 text-[11px] font-medium text-indigo-800 hover:bg-indigo-50"
+                  >
+                    {t('transactions.importPrep.autoCatReviewBtn')}
+                    {autoCatReviewRows.length > 0 && (
+                      <span className="ml-1 text-indigo-500">({autoCatReviewRows.length})</span>
+                    )}
+                  </button>
                 )}
               </div>
             </div>
@@ -767,12 +816,31 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                           <option value="CHF">CHF</option>
                                         </select>
                                       ) : def.field === 'TYPE' ? (() => {
+                                        const manualType = importWizardManualCellValues[p.row.id]?.TYPE;
+                                        const pipelineType =
+                                          'valid' in p.processed
+                                            ? (p.processed.valid.TYPE ?? '').trim()
+                                            : (p.valueMap.TYPE ?? '').trim();
+                                        // Saisie manuelle prioritaire ; sinon TYPE auto (similarité / stats mots).
                                         const raw =
-                                          importWizardManualCellValues[p.row.id]?.[def.field] ?? '';
+                                          manualType !== undefined ? manualType : pipelineType;
                                         const typeSuggestions = prepSuggestions('TYPE', raw);
                                         const typeListId = `prep-wiz-type-${p.row.id}`;
+                                        const sug = p.typeSuggestion;
+                                        const confPct =
+                                          sug?.category && sug.category === raw
+                                            ? confidenceToPercent(sug.confidence)
+                                            : null;
+                                        const confTone =
+                                          confPct == null
+                                            ? ''
+                                            : confPct >= 70
+                                              ? 'bg-emerald-100 text-emerald-800'
+                                              : confPct >= 40
+                                                ? 'bg-amber-100 text-amber-900'
+                                                : 'bg-rose-100 text-rose-800';
                                         return (
-                                          <>
+                                          <div className="flex min-w-0 items-center gap-0.5">
                                             <input
                                               type="text"
                                               value={raw}
@@ -808,6 +876,22 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                               className="w-full min-w-0 max-w-full rounded border border-indigo-200/90 bg-indigo-50/90 px-0.5 py-0.5 text-[11px] text-indigo-950 shadow-none outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-400/45"
                                               aria-label={`${def.field} (Mapping wizard)`}
                                             />
+                                            {confPct != null && (
+                                              <span
+                                                className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold ${confTone}`}
+                                                title={t('transactions.importPrep.autoCatConfidenceTitle', {
+                                                  pct: confPct,
+                                                  source:
+                                                    sug?.source === 'rule'
+                                                      ? t('transactions.importPrep.autoCatSourceRule')
+                                                      : sug?.source === 'similarity'
+                                                        ? t('transactions.importPrep.autoCatSourceSimilarity')
+                                                        : t('transactions.importPrep.autoCatSourceWords'),
+                                                })}
+                                              >
+                                                {confPct}%
+                                              </span>
+                                            )}
                                             {typeSuggestions.length > 0 && (
                                               <datalist id={typeListId}>
                                                 {typeSuggestions.map((s) => (
@@ -815,7 +899,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                                 ))}
                                               </datalist>
                                             )}
-                                          </>
+                                          </div>
                                         );
                                       })() : ['DATE', 'TITLE', 'AMOUNT', 'ACCOUNT'].includes(def.field) ? (() => {
                                         const raw =
@@ -919,8 +1003,9 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                           ? sourceRowsForSuggestions
                                           : prepSugRows;
                                       const mappedSuggestions =
-                                        mappedHeaderKey && mappedSuggestionRows.length > 0
-                                          ? suggestCanonical === 'ACCOUNT'
+                                        !mappedHeaderKey
+                                          ? []
+                                          : suggestCanonical === 'ACCOUNT'
                                             ? getAccountSuggestions(
                                                 mappedSuggestionRows,
                                                 mappedHeaderKey,
@@ -930,13 +1015,24 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                                   recognisedEntries: recognisedAccountsForSuggestions,
                                                 }
                                               )
-                                            : getSuggestions(
-                                                mappedSuggestionRows,
-                                                mappedHeaderKey,
-                                                rawMapped,
-                                                10
-                                              )
-                                          : [];
+                                            : suggestCanonical === 'TYPE'
+                                              ? getTypeSuggestions(
+                                                  mappedSuggestionRows,
+                                                  mappedHeaderKey,
+                                                  rawMapped,
+                                                  {
+                                                    limit: 10,
+                                                    recognisedTypes: recognisedTypesForSuggestions,
+                                                  }
+                                                )
+                                              : mappedSuggestionRows.length > 0
+                                                ? getSuggestions(
+                                                    mappedSuggestionRows,
+                                                    mappedHeaderKey,
+                                                    rawMapped,
+                                                    10
+                                                  )
+                                                : [];
                                       const mappedListId = `prep-map-${outKey ?? 'x'}-${p.row.id}-${def.key}`;
                                       return (
                                         <div className="flex items-center gap-0.5 min-w-0 w-full">
@@ -1081,6 +1177,14 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
           </div>,
           document.body
         )}
+      <AutoCategorisationReviewModal
+        isOpen={autoCatReviewOpen}
+        onClose={() => setAutoCatReviewOpen(false)}
+        rows={autoCatReviewRows}
+        knownTypes={knownOutputTypes}
+        onApplySelected={applyAutoCatReviewSelection}
+        onRulesChanged={setFixedAutoCatRules}
+      />
     </>
   );
 };

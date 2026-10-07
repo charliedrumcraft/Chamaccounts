@@ -126,6 +126,7 @@ export const RECOGNISED_LIST_STORAGE_KEYS = [
   'settings-recognised-accounts',
   'settings-recognised-entry-types',
   'settings-recognised-output-types',
+  'settings-auto-categorisation-rules',
 ] as const;
 
 function isEmptyRecognisedStoredValue(raw: string | null): boolean {

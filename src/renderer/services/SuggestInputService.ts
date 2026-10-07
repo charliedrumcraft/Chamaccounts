@@ -72,6 +72,45 @@ export function getSuggestions(
 }
 
 /**
+ * Suggestions pour la colonne TYPE : fréquence dans les lignes + types
+ * d’entrées/sorties reconnus (Paramètres), même s’ils n’apparaissent pas encore
+ * dans le lot / l’historique chargé.
+ */
+export function getTypeSuggestions(
+  rows: Record<string, string>[],
+  header: string,
+  prefix: string,
+  options?: {
+    limit?: number;
+    recognisedTypes?: string[];
+  }
+): SuggestionItem[] {
+  const limit = options?.limit ?? 10;
+  const normalizedPrefix = prefix.trim().toLowerCase();
+  const byValue = new Map<string, SuggestionItem>();
+
+  if (rows.length > 0 && header) {
+    for (const item of getSuggestions(rows, header, prefix, Math.max(limit, 50))) {
+      byValue.set(item.value.toLowerCase(), item);
+    }
+  }
+
+  for (const type of options?.recognisedTypes ?? []) {
+    const name = type.trim();
+    if (!name) continue;
+    const lo = name.toLowerCase();
+    if (!lo.startsWith(normalizedPrefix)) continue;
+    if (!byValue.has(lo)) {
+      byValue.set(lo, { value: name, count: 0 });
+    }
+  }
+
+  const items = [...byValue.values()];
+  items.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, undefined, { sensitivity: 'base' }));
+  return items.slice(0, limit);
+}
+
+/**
  * Suggestions pour la colonne ACCOUNT : fréquence dans src_transaction_data.csv,
  * alias Paramètres, et alias d’import (ex. « HSBC » → « HSBC OBS »).
  */

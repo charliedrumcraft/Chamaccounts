@@ -15,9 +15,40 @@ import { formatDateDDMMYY } from '../../shared/transactionsImportCore';
 import { fillAmountCurrencyFromAmountGbpIfNeeded } from '../../shared/transactionsImportMappingPolicy';
 import { amountIndicatorHeader, isAmountIndicatorHeader } from '../../shared/workingCurrencies';
 import { writeSupportCsvMirror } from './supportCsvMirror';
+import {
+  csvMirrorNeedsResyncFromCsv,
+  rememberCsvMirrorHash,
+} from './csvMirrorSync';
 import { closeSupportDb, getOpenSupportDataRoot, openSupportDb, persistSupportDb } from './supportDb';
 import { queryAll, queryOne } from './sqlJsRuntime';
 import { getWorkingCurrenciesOrDefault } from './workingCurrenciesStore';
+
+function supportCsvPath(dataRoot: string): string {
+  return path.join(dataRoot, SUPPORT_DATA_CSV_PATH);
+}
+
+function writeSupportMirror(
+  dataRoot: string,
+  rows: Record<string, string>[],
+  database: Database
+): void {
+  writeSupportCsvMirror(dataRoot, rows);
+  rememberCsvMirrorHash(database, supportCsvPath(dataRoot), persistSupportDb);
+}
+
+function importSupportFromCsv(database: Database, dataRoot: string): void {
+  const fromCsv = readCsvAsSupportRows(dataRoot);
+  for (const row of fromCsv) {
+    fillAmountCurrencyFromAmountGbpIfNeeded(row);
+  }
+  insertSupportRows(database, fromCsv, true);
+  const primary = getWorkingCurrenciesOrDefault(dataRoot).primary || 'GBP';
+  writeSupportMirror(
+    dataRoot,
+    fromCsv.map((r, i) => toUiRow(r, i + 1, primary)),
+    database
+  );
+}
 
 const AMOUNT_CURRENCY_FROM_GBP_META = 'amount_currency_from_gbp_v1';
 
@@ -271,9 +302,10 @@ function backfillSupportAmountCurrencyFromGbpIfNeeded(database: Database, dataRo
     }
     persistSupportDb();
     const valid = selectAllSupportRows(database);
-    writeSupportCsvMirror(
+    writeSupportMirror(
       dataRoot,
-      valid.map((r, i) => toUiRow(r, i + 1, getWorkingCurrenciesOrDefault(dataRoot).primary))
+      valid.map((r, i) => toUiRow(r, i + 1, getWorkingCurrenciesOrDefault(dataRoot).primary)),
+      database
     );
   }
 
@@ -293,20 +325,10 @@ function backfillSupportAmountCurrencyFromGbpIfNeeded(database: Database, dataRo
 
 export async function ensureSupportStore(dataRoot: string): Promise<void> {
   const database = await openSupportDb(dataRoot);
+  const csvPath = supportCsvPath(dataRoot);
+
   if (countSupportRows(database) === 0) {
-    const fromCsv = readCsvAsSupportRows(dataRoot);
-    for (const row of fromCsv) {
-      fillAmountCurrencyFromAmountGbpIfNeeded(row);
-    }
-    if (fromCsv.length > 0) {
-      insertSupportRows(database, fromCsv, true);
-      writeSupportCsvMirror(
-        dataRoot,
-        fromCsv.map((r, i) => toUiRow(r, i + 1, getWorkingCurrenciesOrDefault(dataRoot).primary))
-      );
-    } else {
-      writeSupportCsvMirror(dataRoot, []);
-    }
+    importSupportFromCsv(database, dataRoot);
     const existing = queryOne(database, 'SELECT value FROM meta WHERE key = ?', [
       AMOUNT_CURRENCY_FROM_GBP_META,
     ]);
@@ -317,8 +339,22 @@ export async function ensureSupportStore(dataRoot: string): Promise<void> {
       ]);
       persistSupportDb();
     }
-  } else {
+  } else if (!fs.existsSync(csvPath)) {
+    const primary = getWorkingCurrenciesOrDefault(dataRoot).primary || 'GBP';
+    const valid = selectAllSupportRows(database);
+    writeSupportMirror(
+      dataRoot,
+      valid.map((r, i) => toUiRow(r, i + 1, primary)),
+      database
+    );
+  } else if (csvMirrorNeedsResyncFromCsv(database, csvPath)) {
+    console.info('[support] CSV miroir modifié hors SQLite — réimport depuis', csvPath);
+    importSupportFromCsv(database, dataRoot);
+  }
+
+  if (countSupportRows(database) > 0) {
     backfillSupportAmountCurrencyFromGbpIfNeeded(database, dataRoot);
+    rememberCsvMirrorHash(database, csvPath, persistSupportDb);
   }
 }
 
@@ -343,7 +379,7 @@ export async function replaceAllSupportRows(
     insertSupportRows(database, valid, true);
     const primary = getWorkingCurrenciesOrDefault(dataRoot).primary || 'GBP';
     const uiRows = valid.map((r, i) => toUiRow(r, i + 1, primary));
-    writeSupportCsvMirror(dataRoot, uiRows);
+    writeSupportMirror(dataRoot, uiRows, database);
     return { success: true, count: valid.length };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -353,8 +389,9 @@ export async function replaceAllSupportRows(
 
 export async function syncSupportCsvMirror(dataRoot: string): Promise<void> {
   await ensureSupportStore(dataRoot);
+  const database = await openSupportDb(dataRoot);
   const data = await getAllSupportAsSourceData(dataRoot);
-  writeSupportCsvMirror(dataRoot, data.rows);
+  writeSupportMirror(dataRoot, data.rows, database);
 }
 
 export function ensureActiveSupportStoreSyncCheck(dataRoot: string | null | undefined): boolean {

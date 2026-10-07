@@ -417,6 +417,12 @@ const MonthlyAccounting: React.FC = () => {
   const [anomalyFilterStickyIndices, setAnomalyFilterStickyIndices] = useState<Set<number>>(
     () => new Set()
   );
+  /** Valeurs figées pour le tri en mode édition (pas de re-classement à chaque frappe). */
+  const [editSortRowSnapshot, setEditSortRowSnapshot] = useState<Record<string, string>[] | null>(
+    null
+  );
+  const dataForSortSnapshotRef = useRef(data);
+  dataForSortSnapshotRef.current = data;
   const prevMonthlyAnomalyMapForFilterRef = useRef<Map<number, string>>(new Map());
   /** Panneau paramètres du graphique cumulé (ouvert/fermé). */
   const [cumulativeChartFiltersOpen, setCumulativeChartFiltersOpen] = useState(() => {
@@ -509,9 +515,14 @@ const MonthlyAccounting: React.FC = () => {
   const [availableMonthKeys, setAvailableMonthKeys] = useState<string[]>([]);
   const [monthlyTotalsRaw, setMonthlyTotalsRaw] = useState<MonthlyTotalDto[]>([]);
 
-  /** Lecture mensuelle (pas de full load). Édition charge le jeu complet à part. */
-  const loadViewData = useCallback(async (monthKey: string) => {
-    setLoading(true);
+  /**
+   * Lecture mensuelle (pas de full load).
+   * `silent` : ne pas basculer `loading` (évite de démonter la page et de remonter le scroll,
+   * p.ex. à la sortie du mode édition).
+   */
+  const loadViewData = useCallback(async (monthKey: string, options?: { silent?: boolean }) => {
+    const silent = Boolean(options?.silent);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const [keys, totals, monthData] = await Promise.all([
@@ -535,13 +546,17 @@ const MonthlyAccounting: React.FC = () => {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('transactions.loadFailed'));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [t]);
 
+  const prevEditModeRef = useRef(editMode);
   useEffect(() => {
+    const wasEditing = prevEditModeRef.current;
+    prevEditModeRef.current = editMode;
     if (editMode) return;
-    void loadViewData(selectedMonth);
+    // Sortie d'édition : rechargement silencieux pour ne pas remonter le scroll.
+    void loadViewData(selectedMonth, wasEditing ? { silent: true } : undefined);
   }, [selectedMonth, editMode, loadViewData]);
 
   /** Synchronise rowsExcludedFromAnomaly avec la colonne Exclure_anomalie au chargement. */
@@ -680,15 +695,28 @@ const MonthlyAccounting: React.FC = () => {
 
   const rowsForMonth = useMemo(() => {
     if (!data?.rows?.length || !selectedMonth) return [];
-    if (!editMode) return data.rows;
-    if (!dateColumn) return [];
-    const [y, m] = selectedMonth.split('-').map(Number);
-    return data.rows.filter((row) => {
-      const d = parseDateFromCell(row[dateColumn] ?? '');
-      if (!d) return false;
-      return d.getFullYear() === y && d.getMonth() + 1 === m;
-    });
-  }, [data?.rows, dateColumn, selectedMonth, editMode]);
+    // `data` est déjà le jeu du mois (loadByMonth). Ne pas refiltrer par la date
+    // courante de la cellule : en édition, un backspace rendrait la date
+    // temporairement invalide et ferait disparaître la ligne.
+    return data.rows;
+  }, [data?.rows, selectedMonth]);
+
+  const applyEditSortSnapshot = useCallback(() => {
+    const d = dataForSortSnapshotRef.current;
+    if (!d?.rows?.length) {
+      setEditSortRowSnapshot(null);
+      return;
+    }
+    setEditSortRowSnapshot(d.rows.map((row) => ({ ...row })));
+  }, []);
+
+  useEffect(() => {
+    if (!editMode) {
+      setEditSortRowSnapshot(null);
+      return;
+    }
+    applyEditSortSnapshot();
+  }, [editMode, sortColumn, sortDirection, applyEditSortSnapshot]);
 
   /** Indices 0-based dans le fichier source (Index DB), pour le rapport d'anomalies. */
   const rowsForMonthIndicesInSource = useMemo(() => {
@@ -700,9 +728,15 @@ const MonthlyAccounting: React.FC = () => {
 
   const sortedRows = useMemo(() => {
     if (!sortColumn || !displayHeaders.includes(sortColumn)) return rowsForMonth;
+    const stableSort = editMode && editSortRowSnapshot !== null;
+    const snapshotRow = (row: Record<string, string>): Record<string, string> => {
+      if (!stableSort || !data?.rows) return row;
+      const idx = data.rows.findIndex((r) => r === row);
+      return idx >= 0 ? (editSortRowSnapshot[idx] ?? row) : row;
+    };
     return [...rowsForMonth].sort((a, b) => {
-      const va = getCompareValue(sortColumn, a[sortColumn] ?? '');
-      const vb = getCompareValue(sortColumn, b[sortColumn] ?? '');
+      const va = getCompareValue(sortColumn, snapshotRow(a)[sortColumn] ?? '');
+      const vb = getCompareValue(sortColumn, snapshotRow(b)[sortColumn] ?? '');
       const na = typeof va === 'number';
       const nb = typeof vb === 'number';
       let cmp: number;
@@ -712,7 +746,15 @@ const MonthlyAccounting: React.FC = () => {
       else cmp = String(va).localeCompare(String(vb), undefined, { sensitivity: 'base' });
       return sortDirection === 'asc' ? cmp : -cmp;
     });
-  }, [rowsForMonth, sortColumn, sortDirection, displayHeaders]);
+  }, [
+    rowsForMonth,
+    sortColumn,
+    sortDirection,
+    displayHeaders,
+    editMode,
+    editSortRowSnapshot,
+    data?.rows,
+  ]);
 
   /** Anomalies pour le mois courant (clé = index dans data.rows, comme le rapport CSV). */
   const monthlyAnomalyByDataRowIndex = useMemo(() => {
@@ -1165,6 +1207,14 @@ const MonthlyAccounting: React.FC = () => {
   };
 
   const performExitEditMode = useCallback(() => {
+    const baseline = editSessionBaselineRef.current;
+    // Restaurer immédiatement le baseline pour éviter un flash des edits, puis
+    // recharger en silencieux via l'effet (editMode → false) sans remonter le scroll.
+    if (baseline?.data) {
+      const restored = cloneSourceDataResult(baseline.data);
+      setData(restored);
+      dataForSortSnapshotRef.current = restored;
+    }
     editSessionBaselineRef.current = null;
     setRowsToDelete(new Set());
     setRowsExcludedFromAnomaly(new Set());
@@ -1172,58 +1222,45 @@ const MonthlyAccounting: React.FC = () => {
     setEditMode(false);
     setSaveMessage(null);
     setEditExitConfirmOpen(false);
-    void loadViewData(selectedMonth);
-  }, [loadViewData, selectedMonth]);
+  }, []);
 
   const handleToggleEditMode = () => {
     if (!editMode) {
-      void (async () => {
-        setLoading(true);
-        setSaveMessage(null);
-        try {
-          if (!selectedMonth) {
-            setError(t('monthlyAccounting.errors.selectMonthBeforeEdit'));
-            return;
-          }
-          const monthData = await SourceDataCSVService.loadByMonth(selectedMonth);
-          if (!monthData) {
-            setError(t('monthlyAccounting.errors.fileMissing', { path: SOURCE_DATA_PATH }));
-            return;
-          }
-          setData(monthData);
-          editSessionBaselineRef.current = {
-            data: cloneSourceDataResult(monthData),
-            rowsToDelete: new Set(),
-            rowsExcludedFromAnomaly: new Set(),
-            newRowDrafts: [{}],
-          };
-          setRowsToDelete(new Set());
-          setRowsExcludedFromAnomaly(new Set());
-          setNewRowDrafts([{}]);
-          setEditMode(true);
-        } catch (err: unknown) {
-          setError(err instanceof Error ? err.message : t('transactions.edit.loadFailed'));
-        } finally {
-          setLoading(false);
-        }
-      })();
-    } else {
-      if (
-        data &&
-        editSessionBaselineRef.current &&
-        isMonthlyEditSessionDirty(
-          data,
-          rowsToDelete,
-          rowsExcludedFromAnomaly,
-          newRowDrafts,
-          editSessionBaselineRef.current
-        )
-      ) {
-        setEditExitConfirmOpen(true);
+      // Comme Transactions : bascule instantanée sur le jeu déjà chargé (pas de loading
+      // plein écran qui démonte la page et remonte le scroll).
+      if (!data || !selectedMonth) {
+        setError(t('monthlyAccounting.errors.selectMonthBeforeEdit'));
         return;
       }
-      performExitEditMode();
+      setSaveMessage(null);
+      dataForSortSnapshotRef.current = data;
+      editSessionBaselineRef.current = {
+        data: cloneSourceDataResult(data),
+        rowsToDelete: new Set(),
+        rowsExcludedFromAnomaly: new Set(),
+        newRowDrafts: [{}],
+      };
+      setRowsToDelete(new Set());
+      setRowsExcludedFromAnomaly(new Set());
+      setNewRowDrafts([{}]);
+      setEditMode(true);
+      return;
     }
+    if (
+      data &&
+      editSessionBaselineRef.current &&
+      isMonthlyEditSessionDirty(
+        data,
+        rowsToDelete,
+        rowsExcludedFromAnomaly,
+        newRowDrafts,
+        editSessionBaselineRef.current
+      )
+    ) {
+      setEditExitConfirmOpen(true);
+      return;
+    }
+    performExitEditMode();
   };
   const handleSaveSourceData = async () => {
     if (!data || !selectedMonth) return;
@@ -1263,12 +1300,14 @@ const MonthlyAccounting: React.FC = () => {
         const monthData = await SourceDataCSVService.loadByMonth(selectedMonth);
         if (monthData) {
           setData(monthData);
+          dataForSortSnapshotRef.current = monthData;
           editSessionBaselineRef.current = {
             data: cloneSourceDataResult(monthData),
             rowsToDelete: new Set(),
             rowsExcludedFromAnomaly: new Set(),
             newRowDrafts: [{}],
           };
+          applyEditSortSnapshot();
         }
         setSaveMessage(
           t('monthlyAccounting.edit.monthSaved', { month: selectedMonth, count: result.count })

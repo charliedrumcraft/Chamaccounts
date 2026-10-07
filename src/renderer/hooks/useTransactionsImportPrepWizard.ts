@@ -23,6 +23,18 @@ import {
 } from '../services/mappingWizardService';
 import { detectAnomalies, EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
 import type { ValidRow } from '@/shared/transactionsImportCore';
+import {
+  buildAutoCategorisationModel,
+  labeledTitlesFromSourceRows,
+  type AutoCategorisationModel,
+  type FixedAutoCatRule,
+} from '@/shared/autoCategorisation';
+import {
+  loadFixedAutoCatRules,
+} from '../services/autoCategorisationRulesStorage';
+import { SourceDataCSVService } from '../services/SourceDataCSVService';
+import type { AutoCatReviewRow } from '../components/AutoCategorisationReviewModal';
+import { reviewRowFromSuggestion } from '../components/AutoCategorisationReviewModal';
 import { transactionsImportFile } from '@/shared/dataPaths';
 import { removeImportedRowsFromImportFolder } from '../services/importWizardRemoveFromDiskService';
 import { translateImportPrepMessage } from '../i18n/translateImportPrepMessage';
@@ -66,6 +78,51 @@ export function useTransactionsImportPrepWizard(options: {
   const [mappingWizardActive, setMappingWizardActive] = useState(false);
   /** Après import réussi : retirer les lignes importées des CSV du dossier Import. */
   const [removeImportedFromImportFolder, setRemoveImportedFromImportFolder] = useState(false);
+  /** Modèle d’auto-catégorisation TYPE (TITLE→TYPE depuis la DB). */
+  const [autoCategorisationModel, setAutoCategorisationModel] =
+    useState<AutoCategorisationModel | null>(null);
+  const [fixedAutoCatRules, setFixedAutoCatRules] = useState<FixedAutoCatRule[]>(() =>
+    loadFixedAutoCatRules()
+  );
+  const [autoCatReviewOpen, setAutoCatReviewOpen] = useState(false);
+  const [knownOutputTypes, setKnownOutputTypes] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!mappingWizardActive) return;
+    let cancelled = false;
+    setFixedAutoCatRules(loadFixedAutoCatRules());
+    void SourceDataCSVService.load().then((data) => {
+      if (cancelled) return;
+      if (!data?.rows?.length) {
+        setAutoCategorisationModel(null);
+        setKnownOutputTypes([]);
+        return;
+      }
+      setAutoCategorisationModel(buildAutoCategorisationModel(labeledTitlesFromSourceRows(data.rows)));
+      const types = new Set<string>();
+      for (const row of data.rows) {
+        const ty = (row.TYPE ?? '').trim();
+        if (ty) types.add(ty);
+      }
+      try {
+        const stored = JSON.parse(
+          localStorage.getItem('settings-recognised-output-types') ?? '[]'
+        ) as unknown;
+        if (Array.isArray(stored)) {
+          for (const x of stored) {
+            const s = String(x ?? '').trim();
+            if (s) types.add(s);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      setKnownOutputTypes([...types].sort((a, b) => a.localeCompare(b)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mappingWizardActive, folderReloadToken, importWizardReloadKey]);
 
   const loadImportWizard = useCallback(async () => {
     const api = (
@@ -128,6 +185,8 @@ export function useTransactionsImportPrepWizard(options: {
             importWizardCellOverrides,
             importWizardManualCellValues,
             importMappedOutputOverrides,
+            autoCategorisationModel,
+            fixedAutoCatRules,
           })
         : null,
     [
@@ -139,8 +198,36 @@ export function useTransactionsImportPrepWizard(options: {
       importWizardCellOverrides,
       importWizardManualCellValues,
       importMappedOutputOverrides,
+      autoCategorisationModel,
+      fixedAutoCatRules,
     ]
   );
+
+  const autoCatReviewRows = useMemo((): AutoCatReviewRow[] => {
+    if (!importWizardPreview?.list.length) return [];
+    const out: AutoCatReviewRow[] = [];
+    for (const p of importWizardPreview.list) {
+      const title =
+        ('valid' in p.processed ? p.processed.valid.TITLE : p.valueMap.TITLE) ?? '';
+      const date =
+        ('valid' in p.processed ? p.processed.valid.DATE : p.valueMap.DATE) ?? '';
+      const row = reviewRowFromSuggestion(p.row.id, title, date, p.typeSuggestion);
+      if (row) out.push(row);
+    }
+    return out;
+  }, [importWizardPreview]);
+
+  const applyAutoCatReviewSelection = useCallback((selected: AutoCatReviewRow[]) => {
+    setImportWizardManualCellValues((prev) => {
+      const next = { ...prev };
+      for (const s of selected) {
+        if (!s.suggestedType.trim()) continue;
+        next[s.rowId] = { ...(next[s.rowId] ?? {}), TYPE: s.suggestedType.trim() };
+      }
+      return next;
+    });
+    setAutoCatReviewOpen(false);
+  }, []);
 
   /** Messages de statut par ligne (validation, anomalies détectées, doublon vs fichier traité). */
   const importPreviewRowStatusByRowId = useMemo(() => {
@@ -152,7 +239,8 @@ export function useTransactionsImportPrepWizard(options: {
     const list = importWizardPreview.list;
     const uncoveredRecommendedManual = getUncoveredManualFieldsRecommendedToFill(
       importWizardModel.columns,
-      importColumnMapping
+      importColumnMapping,
+      { defaultCurrency: importWizardModel.defaultCurrency }
     );
     const validRows: Record<string, string>[] = [];
     const rowIdAtValidIndex: string[] = [];
@@ -311,6 +399,7 @@ export function useTransactionsImportPrepWizard(options: {
         ? buildPrepTableColDefs({
             columns: importWizardModel?.columns,
             importColumnMapping,
+            defaultCurrency: importWizardModel?.defaultCurrency,
           })
         : buildPrepTableColDefsRaw({ columns: importWizardModel?.columns }),
     [mappingWizardActive, importWizardModel, importColumnMapping]
@@ -422,6 +511,14 @@ export function useTransactionsImportPrepWizard(options: {
       };
 
       if (trimmed === '') {
+        // TYPE : garder '' pour ne pas réactiver l’auto-catégorisation.
+        if (resultField === 'TYPE') {
+          setImportMappedOutputOverrides((prev) => {
+            const row = { ...(prev[rowId] ?? {}), TYPE: '' };
+            return { ...prev, [rowId]: row };
+          });
+          return;
+        }
         setImportMappedOutputOverrides((prev) => clearOverrideForRow(prev));
         return;
       }
@@ -435,6 +532,8 @@ export function useTransactionsImportPrepWizard(options: {
           importWizardCellOverrides,
           importWizardManualCellValues,
           importMappedOutputOverrides,
+          autoCategorisationModel,
+          fixedAutoCatRules,
           rowId,
           mappedAs,
           omitMappedOutputForField: resultField,
@@ -461,20 +560,25 @@ export function useTransactionsImportPrepWizard(options: {
       importWizardCellOverrides,
       importWizardManualCellValues,
       importMappedOutputOverrides,
+      autoCategorisationModel,
+      fixedAutoCatRules,
     ]
   );
 
   const updateWizardManualCell = useCallback((rowId: string, field: ImportWizardResultField, value: string) => {
     setImportWizardManualCellValues((prev) => {
       const row = { ...(prev[rowId] ?? {}) };
-      row[field] = value;
-      const next = { ...prev, [rowId]: row };
-      const empty = Object.values(row).every((x) => (x ?? '').trim() === '');
-      if (empty) {
-        const { [rowId]: _, ...rest } = next;
+      // TYPE : conserver '' (effacement volontaire) pour bloquer l’auto-catégorisation.
+      if (field !== 'TYPE' && (value ?? '').trim() === '') {
+        delete row[field];
+      } else {
+        row[field] = value;
+      }
+      if (Object.keys(row).length === 0) {
+        const { [rowId]: _, ...rest } = prev;
         return rest;
       }
-      return next;
+      return { ...prev, [rowId]: row };
     });
   }, []);
 
@@ -538,7 +642,13 @@ export function useTransactionsImportPrepWizard(options: {
       if (p.duplicateExisting) continue;
       const amt = parseAmountNumericForImport(p.valueMap.AMOUNT ?? '');
       if (amt !== null && amt !== 0) {
-        const fiat = resolveImportFiatEffective(p.row.id, p.valueMap, {});
+        const fiat = resolveImportFiatEffective(
+          p.row.id,
+          p.valueMap,
+          {},
+          undefined,
+          importWizardModel?.defaultCurrency
+        );
         if (fiat !== 'EUR' && fiat !== 'GBP' && fiat !== 'CHF') {
           setImportWizardMessage(t('transactions.importPrep.currencyRequired'));
           return;
@@ -691,5 +801,12 @@ export function useTransactionsImportPrepWizard(options: {
     updateImportPrepCell,
     importPreviewImportableRows,
     handleImportLinesToSource,
+    autoCatReviewOpen,
+    setAutoCatReviewOpen,
+    autoCatReviewRows,
+    applyAutoCatReviewSelection,
+    fixedAutoCatRules,
+    setFixedAutoCatRules,
+    knownOutputTypes,
   };
 }

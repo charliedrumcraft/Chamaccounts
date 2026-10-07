@@ -229,11 +229,11 @@ const TransactionsTable: React.FC = () => {
   const [editExitConfirmOpen, setEditExitConfirmOpen] = useState(false);
   /** Indices des lignes (dans data.rows) marquées pour suppression à la sauvegarde. */
   const [rowsToDelete, setRowsToDelete] = useState<Set<number>>(() => new Set());
-  /** Vue période (hors édition) : mois `YYYY-MM` ou {@link TX_VIEW_ALL_KEY}. */
+  /** Vue période (lecture et édition) : mois `YYYY-MM` ou {@link TX_VIEW_ALL_KEY}. */
   const [availableMonthKeys, setAvailableMonthKeys] = useState<string[]>([]);
   const [selectedMonth, setSelectedMonth] = useState<string>(() => readViewPeriodFromStorage());
-  /** true = data contient le jeu complet (vue « Tout » ou mode édition). */
-  const [hasFullDataset, setHasFullDataset] = useState(false);
+  /** Période demandée en mode édition avec modifications non enregistrées. */
+  const [pendingPeriodKey, setPendingPeriodKey] = useState<string | null>(null);
   /** Carte anomalies slim (IPC) — clé = index 0-based global source. */
   const [slimAnomalyByRowIndex, setSlimAnomalyByRowIndex] = useState<Map<number, string>>(
     () => new Map()
@@ -261,7 +261,7 @@ const TransactionsTable: React.FC = () => {
     setExistingTransactionSignatures(new Set(sigs ?? []));
   }, []);
 
-  const loadViewScope = useCallback(async (periodKey: string) => {
+  const loadViewScope = useCallback(async (periodKey: string): Promise<SourceDataResult | null> => {
     setLoading(true);
     setError(null);
     try {
@@ -279,36 +279,36 @@ const TransactionsTable: React.FC = () => {
 
       if (key === TX_VIEW_ALL_KEY) {
         const full = await SourceDataCSVService.load();
-        setData(
+        const next =
           full ?? {
             headers: [...TRANSACTION_SOURCE_HEADERS_FALLBACK],
             rows: [],
-          }
-        );
-        setHasFullDataset(true);
+          };
+        setData(next);
         if (!full?.rows?.length) {
           setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
         }
-        return;
+        return next;
       }
 
       const monthData = await SourceDataCSVService.loadByMonth(key);
-      setData(
+      const next =
         monthData ?? {
           headers: [...TRANSACTION_SOURCE_HEADERS_FALLBACK],
           rows: [],
-        }
-      );
-      setHasFullDataset(false);
+        };
+      setData(next);
       if (!monthData?.rows?.length && !monthKeys.length) {
         setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
       }
+      return next;
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('transactions.loadFailed'));
+      return null;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadViewScope(selectedMonth);
@@ -414,7 +414,7 @@ const TransactionsTable: React.FC = () => {
 
   /**
    * Colonne Anomalie : payload slim IPC hors édition (remap Index global → index local) ;
-   * en édition, détection locale sur le brouillon plein.
+   * en édition, détection locale sur le brouillon de la période affichée.
    */
   const transactionAnomalyByDataRowIndex = useMemo(() => {
     if (editMode && data?.rows) {
@@ -858,54 +858,61 @@ const TransactionsTable: React.FC = () => {
     }
   };
 
+  const resetEditSessionUi = useCallback(() => {
+    setRowsToDelete(new Set());
+    setSaveMessage(null);
+    setEditShowAnomaliesOnly(false);
+    setAnomalyFilterStickyIndices(new Set());
+  }, []);
+
   const performExitEditMode = useCallback(() => {
     editSessionBaselineRef.current = null;
-    setRowsToDelete(new Set());
+    resetEditSessionUi();
     setEditMode(false);
-    setSaveMessage(null);
     setEditExitConfirmOpen(false);
+    setPendingPeriodKey(null);
     void loadViewScope(selectedMonth);
-  }, [loadViewScope, selectedMonth]);
+  }, [loadViewScope, selectedMonth, resetEditSessionUi]);
+
+  const applyViewPeriodChange = useCallback(
+    async (periodKey: string) => {
+      setPendingPeriodKey(null);
+      const loaded = await loadViewScope(periodKey);
+      if (editMode) {
+        resetEditSessionUi();
+        editSessionBaselineRef.current = loaded ? cloneSourceDataResult(loaded) : null;
+        dataForFilterSnapshotRef.current = loaded;
+        applyEditFilterSnapshot();
+      }
+    },
+    [loadViewScope, editMode, resetEditSessionUi, applyEditFilterSnapshot]
+  );
 
   const handleToggleEditMode = () => {
     if (!editMode) {
-      void (async () => {
-        setLoading(true);
-        setSaveMessage(null);
-        try {
-          let full = data;
-          if (!hasFullDataset) {
-            full = await SourceDataCSVService.load();
-            if (!full?.rows?.length) {
-              setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
-              return;
-            }
-            setData(full);
-            setHasFullDataset(true);
-          }
-          if (full) editSessionBaselineRef.current = cloneSourceDataResult(full);
-          setEditMode(true);
-        } catch (err: unknown) {
-          setError(err instanceof Error ? err.message : t('transactions.edit.loadFailed'));
-        } finally {
-          setLoading(false);
-        }
-      })();
-    } else {
-      if (
-        data &&
-        editSessionBaselineRef.current &&
-        isTransactionsEditSessionDirty(data, editSessionBaselineRef.current, rowsToDelete)
-      ) {
-        setEditExitConfirmOpen(true);
+      if (!data) {
+        setError(t('transactions.edit.loadFailed'));
         return;
       }
-      performExitEditMode();
+      setSaveMessage(null);
+      editSessionBaselineRef.current = cloneSourceDataResult(data);
+      setEditMode(true);
+      return;
     }
+    if (
+      data &&
+      editSessionBaselineRef.current &&
+      isTransactionsEditSessionDirty(data, editSessionBaselineRef.current, rowsToDelete)
+    ) {
+      setEditExitConfirmOpen(true);
+      return;
+    }
+    performExitEditMode();
   };
 
   const handleSaveSourceData = async () => {
     if (!data) return;
+    const periodKey = selectedMonth || TX_VIEW_ALL_KEY;
     setSaveLoading(true);
     setSaveMessage(null);
     try {
@@ -919,30 +926,47 @@ const TransactionsTable: React.FC = () => {
       const rowsToKeep = rowsWithExclusion.filter((_, index) => !rowsToDelete.has(index));
       const withIndexHeader =
         headers.some((h) => /^index$/i.test(h)) ? headers : ['Index', ...headers];
-      const normalized = normalizeOrderAndIndex(
-        stripSourceColumnFromSourceData({
-          headers: withIndexHeader,
-          rows: rowsToKeep,
-        })
-      );
-      const result = await SourceDataCSVService.replaceAll(normalized.rows);
+      const stripped = stripSourceColumnFromSourceData({
+        headers: withIndexHeader,
+        rows: rowsToKeep,
+      });
+
+      if (periodKey === TX_VIEW_ALL_KEY) {
+        const normalized = normalizeOrderAndIndex(stripped);
+        const result = await SourceDataCSVService.replaceAll(normalized.rows);
+        if (result.success) {
+          setData(normalized);
+          dataForFilterSnapshotRef.current = normalized;
+          editSessionBaselineRef.current = cloneSourceDataResult(normalized);
+          resetEditSessionUi();
+          applyEditFilterSnapshot();
+          setEditExitConfirmOpen(false);
+          setSaveMessage(t('transactions.edit.saved'));
+          void refreshSlimAnomalies(false);
+          void refreshRowSignatures();
+        } else {
+          setSaveMessage(result.error ?? "Erreur lors de l'enregistrement.");
+        }
+        return;
+      }
+
+      const result = await SourceDataCSVService.mergeMonthEdit(periodKey, stripped.rows);
       if (result.success) {
-        setData(normalized);
-        setHasFullDataset(true);
-        dataForFilterSnapshotRef.current = normalized;
-        editSessionBaselineRef.current = cloneSourceDataResult(normalized);
-        setRowsToDelete(new Set());
-        /* Comme à la sortie du mode édition : repartir d’un affichage aligné sur les données enregistrées
-         * (filtre « anomalies seulement » + lignes collantes après correction d’anomalie). */
-        setEditShowAnomaliesOnly(false);
-        setAnomalyFilterStickyIndices(new Set());
-        applyEditFilterSnapshot();
+        resetEditSessionUi();
         setEditExitConfirmOpen(false);
-        setSaveMessage(t('transactions.edit.saved'));
+        const monthData = await loadViewScope(periodKey);
+        if (monthData) {
+          dataForFilterSnapshotRef.current = monthData;
+          editSessionBaselineRef.current = cloneSourceDataResult(monthData);
+          applyEditFilterSnapshot();
+        }
+        setSaveMessage(
+          t('transactions.edit.monthSaved', { month: periodKey, count: result.count })
+        );
         void refreshSlimAnomalies(false);
         void refreshRowSignatures();
       } else {
-        setSaveMessage(result.error ?? 'Erreur lors de l\'enregistrement.');
+        setSaveMessage(result.error ?? "Erreur lors de l'enregistrement.");
       }
     } finally {
       setSaveLoading(false);
@@ -978,10 +1002,17 @@ const TransactionsTable: React.FC = () => {
   };
 
   const handleViewPeriodChange = (periodKey: string) => {
-    if (editMode) return;
-    setSelectedMonth(periodKey);
-    persistViewPeriod(periodKey);
-    void loadViewScope(periodKey);
+    if (periodKey === selectedMonth) return;
+    if (
+      editMode &&
+      data &&
+      editSessionBaselineRef.current &&
+      isTransactionsEditSessionDirty(data, editSessionBaselineRef.current, rowsToDelete)
+    ) {
+      setPendingPeriodKey(periodKey);
+      return;
+    }
+    void applyViewPeriodChange(periodKey);
   };
 
   const handleCellChange = useCallback(
@@ -1381,7 +1412,7 @@ const TransactionsTable: React.FC = () => {
         {data && !loading && (
           <div className="flex flex-col bg-white rounded-lg shadow border border-gray-200 overflow-hidden h-[calc(100vh-6rem)] min-h-[320px]">
             <div className="shrink-0 px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center gap-3">
-              {!editMode && (availableMonthKeys.length > 0 || selectedMonth === TX_VIEW_ALL_KEY) && (
+              {(availableMonthKeys.length > 0 || selectedMonth === TX_VIEW_ALL_KEY) && (
                 <div className="flex items-center gap-2">
                   <label htmlFor="tx-view-period" className="text-gray-600 text-sm whitespace-nowrap">
                     {t('transactions.filters.show')}
@@ -1390,7 +1421,8 @@ const TransactionsTable: React.FC = () => {
                     id="tx-view-period"
                     value={selectedMonth || TX_VIEW_ALL_KEY}
                     onChange={(e) => handleViewPeriodChange(e.target.value)}
-                    className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800"
+                    disabled={saveLoading}
+                    className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 disabled:opacity-60"
                   >
                     <option value={TX_VIEW_ALL_KEY}>{t('transactions.filters.allTable')}</option>
                     {availableMonthKeys.map((k) => (
@@ -1400,11 +1432,6 @@ const TransactionsTable: React.FC = () => {
                     ))}
                   </select>
                 </div>
-              )}
-              {editMode && (
-                <span className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                  {t('transactions.edit.fullDataset')}
-                </span>
               )}
               <div className="flex items-center gap-2 min-w-0">
                 <label htmlFor="tx-filter-col" className="text-gray-600 text-sm whitespace-nowrap">
@@ -1819,6 +1846,46 @@ const TransactionsTable: React.FC = () => {
                 className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
               >
                 {t('transactions.edit.exitConfirmLeave')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingPeriodKey != null && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="transactions-edit-period-title"
+          onClick={() => setPendingPeriodKey(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="transactions-edit-period-title" className="text-lg font-semibold text-gray-900">
+              {t('transactions.edit.periodChangeConfirmTitle')}
+            </h2>
+            <p className="text-sm text-gray-600">
+              {t('transactions.edit.exitConfirmBody')}
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPendingPeriodKey(null)}
+                className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                {t('transactions.edit.exitConfirmBack')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const key = pendingPeriodKey;
+                  if (key) void applyViewPeriodChange(key);
+                }}
+                className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                {t('transactions.edit.periodChangeConfirmLeave')}
               </button>
             </div>
           </div>

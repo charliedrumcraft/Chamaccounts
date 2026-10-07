@@ -37,6 +37,11 @@ export interface ParseImportCsvOptions {
   /** Devises de travail autorisées (primaire + secondaires). */
   workingCurrencies?: string[];
   fiatChoiceByRowId?: Record<string, ImportFiatCurrency | '' | undefined>;
+  /**
+   * Devise implicite du fichier (ex. en-tête Amount (EUR)).
+   * Si absent, parseImportCsv peut la dériver des en-têtes.
+   */
+  defaultCurrency?: string;
 }
 
 /**
@@ -190,14 +195,15 @@ function detectFiatFromAmountText(raw: string, allowed?: string[]): string | nul
 }
 
 /**
- * Devise effective pour une ligne (choix utilisateur, sinon détection sur AMOUNT, sinon colonne CURRENCY).
- * Aligné sur le mapping wizard (renderer).
+ * Devise effective pour une ligne :
+ * choix utilisateur → symbole/code dans AMOUNT → colonne CURRENCY → devise implicite (ex. en-tête Amount (EUR)).
  */
 export function resolveImportFiatEffective(
   rowId: string,
   valueMap: Record<string, string>,
   fiatChoice: Record<string, ImportFiatCurrency | '' | undefined>,
-  allowedCurrencies?: string[]
+  allowedCurrencies?: string[],
+  defaultCurrency?: string
 ): string {
   const choice = fiatChoice[rowId];
   if (choice === '') return '';
@@ -207,6 +213,8 @@ export function resolveImportFiatEffective(
   if (det) return det;
   const m = (valueMap.CURRENCY ?? '').trim().toUpperCase();
   if (m && (!allowedCurrencies || allowedCurrencies.includes(m))) return m;
+  const def = (defaultCurrency ?? '').trim().toUpperCase();
+  if (def && (!allowedCurrencies || allowedCurrencies.includes(def))) return def;
   return '';
 }
 
@@ -215,9 +223,16 @@ export function applyImportFiatResolutionToValueMap(
   valueMap: Record<string, string>,
   rowId: string,
   fiatChoice: Record<string, ImportFiatCurrency | '' | undefined>,
-  allowedCurrencies?: string[]
+  allowedCurrencies?: string[],
+  defaultCurrency?: string
 ): string {
-  const fiatEffective = resolveImportFiatEffective(rowId, valueMap, fiatChoice, allowedCurrencies);
+  const fiatEffective = resolveImportFiatEffective(
+    rowId,
+    valueMap,
+    fiatChoice,
+    allowedCurrencies,
+    defaultCurrency
+  );
   if (fiatEffective) valueMap.CURRENCY = fiatEffective;
   return fiatEffective;
 }

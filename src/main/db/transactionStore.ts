@@ -36,6 +36,10 @@ import {
 import type { RefreshGbpRatesResult } from '../../shared/transactionQueryTypes';
 import { amountIndicatorHeader, isAmountIndicatorHeader } from '../../shared/workingCurrencies';
 import { writeTransactionsCsvMirror } from './csvMirror';
+import {
+  csvMirrorNeedsResyncFromCsv,
+  rememberCsvMirrorHash,
+} from './csvMirrorSync';
 import { getWorkingCurrenciesOrDefault } from './workingCurrenciesStore';
 import {
   closeTransactionDb,
@@ -45,6 +49,25 @@ import {
   queryAll,
   queryOne,
 } from './transactionDb';
+
+function transactionsCsvPath(dataRoot: string): string {
+  return path.join(dataRoot, SOURCE_DATA_PATH);
+}
+
+/** Écrit le miroir CSV et mémorise son empreinte (anti-dérive). */
+function writeTxCsvMirror(dataRoot: string, rows: ValidRow[], database: Database): void {
+  writeTransactionsCsvMirror(dataRoot, rows);
+  rememberCsvMirrorHash(database, transactionsCsvPath(dataRoot), persistTransactionDb);
+}
+
+function importTransactionsFromCsv(database: Database, dataRoot: string): void {
+  const fromCsv = readCsvAsValidRows(dataRoot);
+  for (const row of fromCsv) {
+    fillAmountCurrencyFromAmountGbpIfNeeded(row);
+  }
+  insertValidRows(database, fromCsv, true);
+  writeTxCsvMirror(dataRoot, fromCsv, database);
+}
 
 function isExcludedAnomalyFlag(raw: string | undefined): boolean {
   const v = (raw ?? '').trim().toLowerCase();
@@ -270,7 +293,7 @@ function backfillAmountCurrencyFromGbpIfNeeded(database: Database, dataRoot: str
       throw err;
     }
     persistTransactionDb();
-    writeTransactionsCsvMirror(dataRoot, selectAllValidRows(database));
+    writeTxCsvMirror(dataRoot, selectAllValidRows(database), database);
   }
 
   const existing = queryOne(database, 'SELECT value FROM meta WHERE key = ?', [
@@ -353,20 +376,18 @@ function selectAllValidRows(database: Database): ValidRow[] {
   });
 }
 
-/** Ouvre la DB du profil, migre depuis CSV si table vide. */
+/** Ouvre la DB du profil, migre depuis CSV si table vide ou si le miroir CSV a divergé. */
 export async function ensureTransactionStore(dataRoot: string): Promise<void> {
   const database = await openTransactionDb(dataRoot);
+  const csvPath = transactionsCsvPath(dataRoot);
+
   if (countTransactions(database) === 0) {
     const fromCsv = readCsvAsValidRows(dataRoot);
     for (const row of fromCsv) {
       fillAmountCurrencyFromAmountGbpIfNeeded(row);
     }
-    if (fromCsv.length > 0) {
-      insertValidRows(database, fromCsv, true);
-      writeTransactionsCsvMirror(dataRoot, fromCsv);
-    } else {
-      writeTransactionsCsvMirror(dataRoot, []);
-    }
+    insertValidRows(database, fromCsv, true);
+    writeTxCsvMirror(dataRoot, fromCsv, database);
     const existing = queryOne(database, 'SELECT value FROM meta WHERE key = ?', [
       AMOUNT_CURRENCY_FROM_GBP_META,
     ]);
@@ -377,9 +398,20 @@ export async function ensureTransactionStore(dataRoot: string): Promise<void> {
       ]);
       persistTransactionDb();
     }
-  } else {
+  } else if (!fs.existsSync(csvPath)) {
+    writeTxCsvMirror(dataRoot, selectAllValidRows(database), database);
+  } else if (csvMirrorNeedsResyncFromCsv(database, csvPath)) {
+    console.info(
+      '[transactions] CSV miroir modifié hors SQLite — réimport depuis',
+      csvPath
+    );
+    importTransactionsFromCsv(database, dataRoot);
+  }
+
+  if (countTransactions(database) > 0) {
     backfillDateMsIfNeeded(database);
     backfillAmountCurrencyFromGbpIfNeeded(database, dataRoot);
+    rememberCsvMirrorHash(database, csvPath, persistTransactionDb);
   }
 }
 
@@ -431,7 +463,7 @@ export async function replaceAllTransactions(
     const database = await openTransactionDb(dataRoot);
     const valid = rows.map(sourceRowToValidRow).filter((r) => !isValidRowEmpty(r));
     insertValidRows(database, valid, true);
-    writeTransactionsCsvMirror(dataRoot, valid);
+    writeTxCsvMirror(dataRoot, valid, database);
     return { success: true, count: valid.length };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -455,7 +487,7 @@ export async function replaceAllValidRows(
       sortByDate(list);
     }
     insertValidRows(database, list, true);
-    writeTransactionsCsvMirror(dataRoot, list);
+    writeTxCsvMirror(dataRoot, list, database);
     return { success: true, count: list.length };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -488,8 +520,9 @@ export async function appendValidRows(
 /** Force le miroir CSV à jour (ex. avant export ZIP). */
 export async function syncCsvMirror(dataRoot: string): Promise<void> {
   await ensureTransactionStore(dataRoot);
-  const rows = await getAllAsValidRows(dataRoot);
-  writeTransactionsCsvMirror(dataRoot, rows);
+  const database = await openTransactionDb(dataRoot);
+  const rows = selectAllValidRows(database);
+  writeTxCsvMirror(dataRoot, rows, database);
 }
 
 /**

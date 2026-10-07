@@ -10,6 +10,7 @@
 import { TRANSACTIONS_IMPORT_DIR, transactionsImportFile } from '@/shared/dataPaths';
 import {
   detectDelimiterForWizardFirstLine,
+  extractImpliedCurrencyFromHeaderLabel,
   firstLineLooksLikeHeader,
   inferColumnMappingFromDataLines,
   normalizeHeader,
@@ -22,7 +23,11 @@ import {
   type ValidRow,
 } from '@/shared/transactionsImportCore';
 import i18n from '../i18n';
-import { getEffectiveRates } from './EffectiveExchangeRates';
+import {
+  getCachedWorkingCurrencies,
+  getEffectiveRates,
+  getPrimaryMappingRates,
+} from './EffectiveExchangeRates';
 import {
   applyGbpFromAmountAndFiatWithRates,
   applyImportFiatResolutionToValueMap,
@@ -30,7 +35,14 @@ import {
   parseAmountNumericForImport as parseAmountNumericForImportShared,
   resolveImportFiatEffective as resolveImportFiatEffectiveShared,
   type ImportMappingRates,
+  type PrimaryMappingRates,
 } from '@/shared/transactionsImportMappingPolicy';
+import {
+  suggestTypeForTitle,
+  type AutoCategorisationModel,
+  type CategorySuggestion,
+  type FixedAutoCatRule,
+} from '@/shared/autoCategorisation';
 
 export { WIZARD_STANDARD_KEYS };
 export type { WizardStandardKey };
@@ -58,6 +70,12 @@ export interface ImportWizardRawRow {
 export interface ImportWizardModel {
   columns: ImportWizardColumn[];
   rows: ImportWizardRawRow[];
+  /**
+   * Devise implicite du fichier (ex. en-tête « Amount (EUR) »).
+   * Utilisée pour convertir AMOUNT → AMOUNT GBP via les taux AppState / Paramètres
+   * quand la colonne CURRENCY est vide.
+   */
+  defaultCurrency?: string;
 }
 
 /** Options de lecture CSV / collage (première ligne). */
@@ -104,6 +122,17 @@ function parseFileForWizard(
 
   const colToStandardName = inferColumnMappingFromDataLines(lines, delimiter, dataStartIndex);
 
+  let defaultCurrency: string | undefined;
+  if (useFirstLineAsHeader) {
+    for (const label of headerLabels) {
+      const implied = extractImpliedCurrencyFromHeaderLabel(label);
+      if (implied) {
+        defaultCurrency = implied;
+        break;
+      }
+    }
+  }
+
   for (let c = 0; c < headerLabels.length; c++) {
     columns.push({
       key: `${fileName}#${c}`,
@@ -129,7 +158,7 @@ function parseFileForWizard(
     });
   }
 
-  return { columns, rows };
+  return { columns, rows, defaultCurrency };
 }
 
 /** Fusionne deux modèles (ex. CSV dossier Import + collage presse-papiers). */
@@ -137,6 +166,7 @@ export function mergeImportWizardModels(a: ImportWizardModel, b: ImportWizardMod
   return {
     columns: [...a.columns, ...b.columns],
     rows: [...a.rows, ...b.rows],
+    defaultCurrency: a.defaultCurrency || b.defaultCurrency,
   };
 }
 
@@ -200,6 +230,7 @@ export async function loadImportWizardModel(
 
   const allColumns: ImportWizardColumn[] = [];
   const allRows: ImportWizardRawRow[] = [];
+  let defaultCurrency: string | undefined;
 
   for (const file of csvFiles) {
     const relPath = transactionsImportFile(file);
@@ -207,14 +238,15 @@ export async function loadImportWizardModel(
     if (!read.success || read.data === undefined) continue;
     const firstLine = read.data.split(/\r?\n/)[0] ?? '';
     const delim = detectDelimiterForWizardFirstLine(firstLine);
-    const { columns, rows } = parseFileForWizard(read.data, file, delim, parseOptions);
-    allColumns.push(...columns);
-    allRows.push(...rows);
+    const parsed = parseFileForWizard(read.data, file, delim, parseOptions);
+    allColumns.push(...parsed.columns);
+    allRows.push(...parsed.rows);
+    if (!defaultCurrency && parsed.defaultCurrency) defaultCurrency = parsed.defaultCurrency;
   }
 
   if (allRows.length === 0) return null;
 
-  return { columns: allColumns, rows: allRows };
+  return { columns: allColumns, rows: allRows, defaultCurrency };
 }
 
 // --- Prévisualisation, table de préparation, filtres d’import ---
@@ -389,6 +421,8 @@ export type ImportWizardPreviewItem = {
   valueMap: Record<string, string>;
   processed: ReturnType<typeof processImportRow>;
   duplicateExisting: boolean;
+  /** Suggestion auto TYPE (si appliquée ou proposée pour la ligne). */
+  typeSuggestion?: CategorySuggestion | null;
 };
 
 export type ImportWizardPreviewResult = {
@@ -405,12 +439,16 @@ export type ImportWizardPreviewComputeParams = {
   importWizardManualCellValues: Record<string, Partial<Record<ImportWizardResultField, string>>>;
   /** Saisie directe des champs src_transaction_data (colonnes jumelles éditables). */
   importMappedOutputOverrides?: Record<string, Partial<Record<ImportWizardResultField, string>>>;
+  /** Modèle TITLE→TYPE (DB) pour préremplir TYPE vide. */
+  autoCategorisationModel?: AutoCategorisationModel | null;
+  /** Règles fixes manuelles (prioritaires sur similarité / stats). */
+  fixedAutoCatRules?: FixedAutoCatRule[] | null;
 };
 
 function computeSingleImportWizardPreviewItem(
   row: ImportWizardRawRow,
   params: ImportWizardPreviewComputeParams,
-  rates: ImportMappingRates
+  rates: ImportMappingRates | PrimaryMappingRates
 ): ImportWizardPreviewItem {
   const {
     model,
@@ -419,6 +457,8 @@ function computeSingleImportWizardPreviewItem(
     importWizardCellOverrides,
     importWizardManualCellValues,
     importMappedOutputOverrides = {},
+    autoCategorisationModel = null,
+    fixedAutoCatRules = null,
   } = params;
   const { columns } = model;
   const values = row.values.slice();
@@ -444,7 +484,33 @@ function computeSingleImportWizardPreviewItem(
     }
   }
 
-  const fiatEffective = applyImportFiatResolutionToValueMap(valueMap, row.id, {});
+  // TYPE vide → règles fixes, puis similarité / stats mots (historique DB).
+  // Ne pas réécrire si l’utilisateur a déjà saisi TYPE (y compris effacé → '').
+  let typeSuggestion: CategorySuggestion | null = null;
+  const typeManuallySet =
+    manualRow?.TYPE !== undefined || mappedOut?.TYPE !== undefined;
+  const typeWasEmpty = !(valueMap.TYPE ?? '').trim();
+  if (!typeManuallySet && typeWasEmpty && (valueMap.TITLE ?? '').trim()) {
+    const suggestion = suggestTypeForTitle(
+      valueMap.TITLE,
+      autoCategorisationModel,
+      fixedAutoCatRules
+    );
+    typeSuggestion = suggestion;
+    if (suggestion.category) {
+      valueMap.TYPE = suggestion.category;
+    }
+  }
+
+  const working = getCachedWorkingCurrencies();
+  const allowed = [working.primary, ...(working.secondaries ?? [])].map((c) => c.toUpperCase());
+  const fiatEffective = applyImportFiatResolutionToValueMap(
+    valueMap,
+    row.id,
+    {},
+    allowed,
+    model.defaultCurrency
+  );
 
   let processed = processImportRow(
     effectiveRow.sourceFile,
@@ -458,15 +524,23 @@ function computeSingleImportWizardPreviewItem(
       valid: applyValidRowPostProcessMappingPolicy(processed.valid, fiatEffective, rates, {
         expenseRaw: valueMap.EXPENSE ?? '',
         incomeRaw: valueMap.INCOME ?? '',
+        primaryCurrency: working.primary,
+        workingCurrencies: allowed,
       }),
     };
+    // Remonter AMOUNT GBP / CURRENCY / TYPE calculés dans valueMap pour l’UI wizard.
+    const vr = processed.valid;
+    if ((vr['AMOUNT GBP'] ?? '').trim()) valueMap['AMOUNT GBP'] = vr['AMOUNT GBP'];
+    if ((vr.CURRENCY ?? '').trim()) valueMap.CURRENCY = vr.CURRENCY;
+    if ((vr.AMOUNT ?? '').trim()) valueMap.AMOUNT = vr.AMOUNT;
+    if ((vr.TYPE ?? '').trim()) valueMap.TYPE = vr.TYPE;
   }
   const dup =
     'valid' in processed &&
     existingTransactionSignatures.has(
       rowSignature(processed.valid, { accountAliasLookup: params.accountAliasLookup })
     );
-  return { row: effectiveRow, valueMap, processed, duplicateExisting: dup };
+  return { row: effectiveRow, valueMap, processed, duplicateExisting: dup, typeSuggestion };
 }
 
 export function computeTransactionsImportWizardPreview(
@@ -476,7 +550,8 @@ export function computeTransactionsImportWizardPreview(
   const { rows } = model;
   const list: ImportWizardPreviewItem[] = [];
   let validOrdinal = 0;
-  const rates = getEffectiveRates();
+  // Taux AppState / Paramètres (localStorage synchronisé) — pivot = devise primaire du profil.
+  const rates = getPrimaryMappingRates();
 
   for (const row of rows) {
     const item = computeSingleImportWizardPreviewItem(row, params, rates);
@@ -514,7 +589,7 @@ export function getPipelineSrcMappedFieldDisplay(
     nextOverrides[rowId] = rowOv;
   }
 
-  const rates = getEffectiveRates();
+  const rates = getPrimaryMappingRates();
   const item = computeSingleImportWizardPreviewItem(row, { ...rest, importMappedOutputOverrides: nextOverrides }, rates);
   return getSrcMappedFieldDisplayValue(item, mappedAs);
 }
@@ -567,9 +642,12 @@ export function computeImportWizardDateCoherenceWarnings(
 /** Champs src_transaction_data déjà alimentés par au moins une colonne source mappée. */
 export function getResultFieldsCoveredByImportColumnMapping(
   columns: ImportWizardColumn[] | undefined,
-  importColumnMapping: Record<string, WizardStandardKey>
+  importColumnMapping: Record<string, WizardStandardKey>,
+  options?: { defaultCurrency?: string }
 ): Set<ImportWizardResultField> {
   const covered = new Set<ImportWizardResultField>();
+  let hasAmount = false;
+  let hasCurrency = false;
   for (const col of columns ?? []) {
     const m = importColumnMapping[col.key];
     if (!m) continue;
@@ -578,6 +656,12 @@ export function getResultFieldsCoveredByImportColumnMapping(
     } else if ((IMPORT_WIZARD_RESULT_FIELDS as readonly string[]).includes(m)) {
       covered.add(m as ImportWizardResultField);
     }
+    if (m === 'AMOUNT') hasAmount = true;
+    if (m === 'CURRENCY') hasCurrency = true;
+  }
+  // AMOUNT + devise (colonne ou implicite Amount (EUR)) → AMOUNT GBP via taux AppState.
+  if (hasAmount && (hasCurrency || !!(options?.defaultCurrency ?? '').trim())) {
+    covered.add('AMOUNT GBP');
   }
   return covered;
 }
@@ -587,9 +671,10 @@ const WIZARD_MANUAL_OPTIONAL_FOR_STATUS: ReadonlySet<ImportWizardResultField> = 
 
 export function getUncoveredManualFieldsRecommendedToFill(
   columns: ImportWizardColumn[] | undefined,
-  importColumnMapping: Record<string, WizardStandardKey>
+  importColumnMapping: Record<string, WizardStandardKey>,
+  options?: { defaultCurrency?: string }
 ): ImportWizardResultField[] {
-  const covered = getResultFieldsCoveredByImportColumnMapping(columns, importColumnMapping);
+  const covered = getResultFieldsCoveredByImportColumnMapping(columns, importColumnMapping, options);
   return IMPORT_WIZARD_RESULT_FIELDS.filter(
     (f) => !covered.has(f) && !WIZARD_MANUAL_OPTIONAL_FOR_STATUS.has(f)
   );
@@ -601,9 +686,12 @@ export const getUncoveredManualFieldsRequiringInput = getUncoveredManualFieldsRe
 export function buildPrepTableColDefs(params: {
   columns: ImportWizardColumn[] | undefined;
   importColumnMapping: Record<string, WizardStandardKey>;
+  defaultCurrency?: string;
 }): PrepTableColDef[] {
-  const { columns, importColumnMapping } = params;
-  const covered = getResultFieldsCoveredByImportColumnMapping(columns, importColumnMapping);
+  const { columns, importColumnMapping, defaultCurrency } = params;
+  const covered = getResultFieldsCoveredByImportColumnMapping(columns, importColumnMapping, {
+    defaultCurrency,
+  });
   const base: PrepTableColDef[] = [
     { kind: 'line', key: PREP_COL_LINE },
     { kind: 'dup', key: PREP_COL_DUP },
@@ -614,6 +702,7 @@ export function buildPrepTableColDefs(params: {
     }
   }
   let addedCombinedIncomeExpenseGbp = false;
+  let addedDerivedAmountGbp = false;
   for (const col of columns ?? []) {
     base.push({ kind: 'source', key: col.key, col });
     const m = importColumnMapping[col.key];
@@ -635,6 +724,21 @@ export function buildPrepTableColDefs(params: {
         sourceColKey: col.key,
         mappedAs: m,
       });
+      // Colonne jumelle AMOUNT GBP dérivée (AMOUNT × taux AppState).
+      if (
+        m === 'AMOUNT' &&
+        !addedDerivedAmountGbp &&
+        covered.has('AMOUNT GBP') &&
+        !columns.some((c) => importColumnMapping[c.key] === 'AMOUNT GBP')
+      ) {
+        base.push({
+          kind: 'srcMappedField',
+          key: `${col.key}${PREP_SRC_MAPPED_FIELD_SUFFIX}#amountGbp`,
+          sourceColKey: col.key,
+          mappedAs: 'AMOUNT GBP',
+        });
+        addedDerivedAmountGbp = true;
+      }
     }
   }
   base.push({ kind: 'ign', key: PREP_COL_IGN });
@@ -663,17 +767,11 @@ export function getPrepSourceCellDisplayValue(
 export function computeImportPreviewMappedOutputFields(params: {
   columns: ImportWizardColumn[] | undefined;
   importColumnMapping: Record<string, WizardStandardKey>;
+  defaultCurrency?: string;
 }): ImportWizardResultField[] {
-  const { columns, importColumnMapping } = params;
+  const { columns, importColumnMapping, defaultCurrency } = params;
   if (!columns?.length) return [];
-  const want = new Set<string>();
-  for (const col of columns) {
-    const m = importColumnMapping[col.key];
-    if (!m) continue;
-    if (m === 'EXPENSE' || m === 'INCOME') want.add('AMOUNT GBP');
-    else if ((IMPORT_WIZARD_RESULT_FIELDS as readonly string[]).includes(m)) want.add(m);
-  }
-  return IMPORT_WIZARD_RESULT_FIELDS.filter((f) => want.has(f));
+  return [...getResultFieldsCoveredByImportColumnMapping(columns, importColumnMapping, { defaultCurrency })];
 }
 
 /** En mode mapping wizard, tous les champs src_transaction_data sont toujours éditables (mapping et/ou colonnes manuelles). */

@@ -86,10 +86,61 @@ export function normalizeHeader(h: string): string {
 
 export function mapToStandardHeader(norm: string): string | null {
   if (/^index$/i.test(norm)) return null;
-  const fromMap = HEADER_MAP[norm.toLowerCase()];
+  const lower = norm.toLowerCase().trim();
+  const fromMap = HEADER_MAP[lower];
   if (fromMap) return fromMap;
-  if (/^amount\s+[A-Za-z]{3}$/i.test(norm)) return 'AMOUNT GBP';
+  // Exports bancaires courants (N26, etc.)
+  if (/booking\s*date|date\s*de\s*comptabilisation|date\s*d['’]?op[eé]ration|date\s*operation/i.test(lower)) {
+    return 'DATE';
+  }
+  if (/^value\s*date$|date\s*de\s*valeur/i.test(lower)) return 'DATE';
+  if (/partner\s*name|beneficiary|counterparty|nom\s*du\s*partenaire/i.test(lower)) return 'TITLE';
+  if (/account\s*name|nom\s*du\s*compte/i.test(lower)) return 'ACCOUNT';
+  if (/^amount\s*\(\s*[a-z]{3}\s*\)$/i.test(lower)) return 'AMOUNT';
+  if (/^amount\s+[a-z]{3}$/i.test(lower)) return 'AMOUNT GBP';
+  if (/original\s*currency/i.test(lower)) return 'CURRENCY';
   if ((OUTPUT_HEADERS as readonly string[]).includes(norm) || IMPORT_HEADERS.includes(norm)) return norm;
+  return null;
+}
+
+/**
+ * Suggestion de mapping depuis un libellé d'en-tête pour l'auto-mapping wizard.
+ * TYPE est inclus s'il est présent (CSV pré-édité) ; absent sinon → auto-catégorisation plus tard.
+ */
+export function suggestStandardFromHeaderLabel(headerLabel: string): string | null {
+  const std = mapToStandardHeader(normalizeHeader(headerLabel));
+  if (!std || std === 'INDEX') return null;
+  return std;
+}
+
+/** Types d'opération bancaire (N26, etc.) — ne doivent pas être mappés vers TYPE (catégorie). */
+const BANK_OPERATION_TYPE_RE =
+  /^(presentment|credit\s*transfer|debit\s*transfer|card\s*payment|direct\s*debit|sepa(\s|$)|transfer|payment|fee|interest|atm|withdrawal|cash\s*withdrawal)$/i;
+
+function columnLooksLikeBankOperationType(lines: string[][], col: number): boolean {
+  let bankLike = 0;
+  let filled = 0;
+  for (const row of lines) {
+    const v = (row[col] ?? '').trim();
+    if (!v) continue;
+    filled++;
+    if (BANK_OPERATION_TYPE_RE.test(v)) bankLike++;
+  }
+  return filled > 0 && bankLike / filled >= 0.5;
+}
+
+/**
+ * Devise implicite depuis un en-tête de montant bancaire, ex. « Amount (EUR) » → EUR.
+ * Sert de repli quand la colonne CURRENCY est vide (exports N26, etc.).
+ */
+export function extractImpliedCurrencyFromHeaderLabel(headerLabel: string): string | null {
+  const lower = normalizeHeader(headerLabel).toLowerCase().trim();
+  const paren = lower.match(/^amount\s*\(\s*([a-z]{3})\s*\)$/i);
+  if (paren) return paren[1]!.toUpperCase();
+  const spaced = lower.match(/^amount\s+([a-z]{3})$/i);
+  if (spaced) return spaced[1]!.toUpperCase();
+  const fr = lower.match(/^montant\s*\(\s*([a-z]{3})\s*\)$/i);
+  if (fr) return fr[1]!.toUpperCase();
   return null;
 }
 
@@ -260,11 +311,42 @@ export function parseCsvLine(line: string, delimiter: string): string[] {
   return result;
 }
 
-function inferDateColumnIndex(lines: string[][]): number {
-  let bestIdx = 0;
+/** True si la cellule est une date (à exclure des heuristiques de montants). */
+function isDateLikeCell(v: string): boolean {
+  return parseDateToTime(v) > 0;
+}
+
+const CURRENCY_CODE_RE =
+  /^(EUR|GBP|CHF|USD|CAD|AUD|JPY|SEK|NOK|DKK|PLN|CZK|HUF|RON|BGN|TRY|MXN|BRL|INR|CNY|HKD|SGD|NZD|ZAR|AED|ILS)$/i;
+
+function isCurrencyCodeCell(v: string): boolean {
+  return CURRENCY_CODE_RE.test(v.trim());
+}
+
+/** Montant numérique utilisable (pas une date, pas un code devise). */
+function isAmountLikeCell(v: string): boolean {
+  const t = (v ?? '').trim();
+  if (!t) return false;
+  if (isDateLikeCell(t)) return false;
+  if (isCurrencyCodeCell(t)) return false;
+  return parseAmountNumericForImport(t) !== null;
+}
+
+function columnFillRatio(lines: string[][], col: number): number {
+  if (lines.length === 0) return 0;
+  let filled = 0;
+  for (const row of lines) {
+    if ((row[col] ?? '').trim()) filled++;
+  }
+  return filled / lines.length;
+}
+
+function inferDateColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
+  let bestIdx = -1;
   let bestScore = 0;
   const colCount = Math.max(0, ...lines.map((r) => r.length));
   for (let c = 0; c < colCount; c++) {
+    if (exclude.has(c)) continue;
     let dateCount = 0;
     let filled = 0;
     for (const row of lines) {
@@ -281,46 +363,100 @@ function inferDateColumnIndex(lines: string[][]): number {
   return bestScore >= 0.5 ? bestIdx : -1;
 }
 
-function inferTitleColumnIndex(lines: string[][], dateCol: number): number {
+function inferTitleColumnIndex(lines: string[][], exclude: Set<number>): number {
   let bestIdx = -1;
   let bestScore = 0;
   const colCount = Math.max(0, ...lines.map((r) => r.length));
   for (let c = 0; c < colCount; c++) {
-    if (c === dateCol) continue;
+    if (exclude.has(c)) continue;
     let textLike = 0;
     let filled = 0;
+    const uniqueness = new Set<string>();
     for (const row of lines) {
       const v = (row[c] ?? '').trim();
       if (!v) continue;
       filled++;
-      const isDate = parseDateToTime(v) > 0;
-      const isNum = parseAmountNumericForImport(v) !== null;
-      if (!isDate && (!isNum || v.length > 6)) textLike++;
+      uniqueness.add(v.toUpperCase());
+      const isDate = isDateLikeCell(v);
+      const isNum = isAmountLikeCell(v);
+      if (!isDate && !isCurrencyCodeCell(v) && (!isNum || v.length > 6)) textLike++;
     }
-    if (filled >= 2 && textLike / filled > bestScore) {
-      bestScore = textLike / filled;
+    if (filled < 2) continue;
+    const textRatio = textLike / filled;
+    // Favoriser les libellés variés (marchands) plutôt qu'un libellé de compte constant.
+    const diversity = uniqueness.size / filled;
+    const score = textRatio * (0.55 + 0.45 * Math.min(1, diversity * 2));
+    if (score > bestScore) {
+      bestScore = score;
       bestIdx = c;
     }
   }
   return bestIdx;
 }
 
-function inferEurColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
+/**
+ * Colonne AMOUNT (montant unique, souvent signé).
+ * Exclut les dates (sinon Value Date / ISO volent le slot via parseFloat).
+ * Préfère les colonnes avec signes +/− et un fort taux de remplissage.
+ */
+function inferAmountColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
   let bestIdx = -1;
   let bestScore = 0;
   const colCount = Math.max(0, ...lines.map((r) => r.length));
   for (let c = 0; c < colCount; c++) {
     if (exclude.has(c)) continue;
-    let withEur = 0;
+    let amountLike = 0;
+    let filled = 0;
+    let neg = 0;
+    let pos = 0;
+    for (const row of lines) {
+      const v = (row[c] ?? '').trim();
+      if (!v) continue;
+      filled++;
+      if (!isAmountLikeCell(v)) continue;
+      amountLike++;
+      const n = parseAmountNumericForImport(v);
+      if (n !== null && n < 0) neg++;
+      if (n !== null && n > 0) pos++;
+    }
+    if (filled === 0 || amountLike / filled < 0.5) continue;
+    const fillRatio = columnFillRatio(lines, c);
+    const signedBonus = neg > 0 && pos > 0 ? 0.35 : neg > 0 || pos > 0 ? 0.1 : 0;
+    const score = (amountLike / filled) * fillRatio + signedBonus;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = c;
+    }
+  }
+  return bestIdx;
+}
+
+/** Alias historique. */
+function inferEurColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
+  return inferAmountColumnIndex(lines, exclude);
+}
+
+/** Colonne CURRENCY : codes ISO (EUR, GBP…), pas les taux de change (~1.0). */
+function inferCurrencyColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
+  let bestIdx = -1;
+  let bestScore = 0;
+  const colCount = Math.max(0, ...lines.map((r) => r.length));
+  for (let c = 0; c < colCount; c++) {
+    if (exclude.has(c)) continue;
+    let codeLike = 0;
     let filled = 0;
     for (const row of lines) {
       const v = (row[c] ?? '').trim();
       if (!v) continue;
       filled++;
-      if (/€|eur/i.test(v) || (normalizeAmount(v) !== null && v.length >= 4)) withEur++;
+      if (isCurrencyCodeCell(v)) codeLike++;
     }
-    if (filled > 0 && withEur / filled > bestScore) {
-      bestScore = withEur / filled;
+    if (filled === 0) continue;
+    const ratio = codeLike / filled;
+    if (ratio < 0.5) continue;
+    const score = ratio * columnFillRatio(lines, c);
+    if (score > bestScore) {
+      bestScore = score;
       bestIdx = c;
     }
   }
@@ -328,28 +464,13 @@ function inferEurColumnIndex(lines: string[][], exclude: Set<number> = new Set()
 }
 
 function inferFxColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
-  let bestIdx = -1;
-  let bestScore = 0;
-  const colCount = Math.max(0, ...lines.map((r) => r.length));
-  for (let c = 0; c < colCount; c++) {
-    if (exclude.has(c)) continue;
-    let fxLike = 0;
-    let filled = 0;
-    for (const row of lines) {
-      const v = (row[c] ?? '').trim();
-      if (!v) continue;
-      filled++;
-      const n = parseFloat(v.replace(/,/, '.'));
-      if (!Number.isNaN(n) && n >= 0.5 && n <= 2 && v.length <= 6) fxLike++;
-    }
-    if (filled > 0 && fxLike / filled > bestScore) {
-      bestScore = fxLike / filled;
-      bestIdx = c;
-    }
-  }
-  return bestIdx;
+  return inferCurrencyColumnIndex(lines, exclude);
 }
 
+/**
+ * Colonne ACCOUNT : texte court, peu de valeurs distinctes (ex. « Compte courant »),
+ * plutôt qu'un type d'opération (Presentment / Credit Transfer).
+ */
 function inferAccountColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
   let bestIdx = -1;
   let bestScore = 0;
@@ -358,15 +479,23 @@ function inferAccountColumnIndex(lines: string[][], exclude: Set<number> = new S
     if (exclude.has(c)) continue;
     let shortText = 0;
     let filled = 0;
+    const unique = new Set<string>();
     for (const row of lines) {
       const v = (row[c] ?? '').trim();
       if (!v) continue;
       filled++;
-      const isNum = parseAmountNumericForImport(v) !== null;
-      if (!isNum && v.length >= 2 && v.length <= 20) shortText++;
+      if (isDateLikeCell(v) || isAmountLikeCell(v) || isCurrencyCodeCell(v)) continue;
+      if (v.length >= 2 && v.length <= 40) {
+        shortText++;
+        unique.add(v.toUpperCase());
+      }
     }
-    if (filled > 0 && shortText / filled > bestScore) {
-      bestScore = shortText / filled;
+    if (filled === 0 || shortText / filled < 0.7) continue;
+    const fillRatio = columnFillRatio(lines, c);
+    const uniquenessPenalty = Math.min(1, unique.size / Math.max(1, filled));
+    const score = (shortText / filled) * fillRatio * (1.15 - uniquenessPenalty);
+    if (score > bestScore) {
+      bestScore = score;
       bestIdx = c;
     }
   }
@@ -381,21 +510,36 @@ function inferExpenseColumnIndex(lines: string[][], exclude: Set<number> = new S
     if (exclude.has(c)) continue;
     let expenseLike = 0;
     let filled = 0;
+    let negOrAbs = 0;
     for (const row of lines) {
       const v = (row[c] ?? '').trim();
       if (!v) continue;
       filled++;
-      if (/£|gbp|expense|debit|débit|depense/i.test(v) || normalizeAmount(v) !== null) expenseLike++;
+      if (/£|gbp|expense|debit|débit|depense/i.test(v)) {
+        expenseLike++;
+        continue;
+      }
+      if (!isAmountLikeCell(v)) continue;
+      expenseLike++;
+      const n = parseAmountNumericForImport(v);
+      if (n !== null && n <= 0) negOrAbs++;
     }
-    if (filled > 0 && expenseLike / filled > bestScore) {
-      bestScore = expenseLike / filled;
+    if (filled === 0 || expenseLike / filled < 0.5) continue;
+    const score =
+      (expenseLike / filled) * columnFillRatio(lines, c) * (0.7 + 0.3 * (negOrAbs / Math.max(1, expenseLike)));
+    if (score > bestScore) {
+      bestScore = score;
       bestIdx = c;
     }
   }
   return bestIdx;
 }
 
-function inferIncomeColumnIndex(lines: string[][], expenseCol: number, exclude: Set<number> = new Set()): number {
+function inferIncomeColumnIndex(
+  lines: string[][],
+  expenseCol: number,
+  exclude: Set<number> = new Set()
+): number {
   let bestIdx = -1;
   let bestScore = 0;
   const colCount = Math.max(0, ...lines.map((r) => r.length));
@@ -403,72 +547,78 @@ function inferIncomeColumnIndex(lines: string[][], expenseCol: number, exclude: 
     if (c === expenseCol || exclude.has(c)) continue;
     let incomeLike = 0;
     let filled = 0;
+    let pos = 0;
     for (const row of lines) {
       const v = (row[c] ?? '').trim();
       if (!v) continue;
       filled++;
-      if (/£|gbp|income|credit|crédit|revenu/i.test(v) || normalizeAmount(v) !== null) incomeLike++;
+      if (/£|gbp|income|credit|crédit|revenu/i.test(v)) {
+        incomeLike++;
+        continue;
+      }
+      if (!isAmountLikeCell(v)) continue;
+      incomeLike++;
+      const n = parseAmountNumericForImport(v);
+      if (n !== null && n > 0) pos++;
     }
-    if (filled > 0 && incomeLike / filled > bestScore) {
-      bestScore = incomeLike / filled;
+    if (filled === 0 || incomeLike / filled < 0.5) continue;
+    const score =
+      (incomeLike / filled) * columnFillRatio(lines, c) * (0.7 + 0.3 * (pos / Math.max(1, incomeLike)));
+    if (score > bestScore) {
+      bestScore = score;
       bestIdx = c;
     }
   }
   return bestIdx;
 }
 
-function inferTypeColumnIndex(lines: string[][], exclude: Set<number> = new Set()): number {
-  let bestIdx = -1;
-  let bestScore = 0;
-  const colCount = Math.max(0, ...lines.map((r) => r.length));
-  for (let c = 0; c < colCount; c++) {
-    if (exclude.has(c)) continue;
-    let textLike = 0;
-    let filled = 0;
-    for (const row of lines) {
-      const v = (row[c] ?? '').trim();
-      if (!v) continue;
-      filled++;
-      const isNum = parseAmountNumericForImport(v) !== null;
-      if (!isNum && v.length <= 30) textLike++;
-    }
-    if (filled > 0 && textLike / filled > bestScore) {
-      bestScore = textLike / filled;
-      bestIdx = c;
-    }
+/** True si la colonne AMOUNT déjà choisie contient des montants signés (+ et −). */
+function amountColumnLooksSigned(lines: string[][], amountCol: number): boolean {
+  if (amountCol < 0) return false;
+  let neg = 0;
+  let pos = 0;
+  for (const row of lines) {
+    const v = (row[amountCol] ?? '').trim();
+    if (!isAmountLikeCell(v)) continue;
+    const n = parseAmountNumericForImport(v);
+    if (n !== null && n < 0) neg++;
+    if (n !== null && n > 0) pos++;
   }
-  return bestIdx;
+  return neg > 0 && pos > 0;
 }
 
-/** Infère le mapping colonne index → standard header à partir des lignes de données (sans en-tête). */
-export function inferColumnMapping(parsed: string[][]): Map<number, number> {
+export function inferColumnMapping(
+  parsed: string[][],
+  preUsedCols: Set<number> = new Set(),
+  options?: { amountAlreadyMapped?: boolean; amountColHint?: number }
+): Map<number, number> {
   const colToStandardIdx = new Map<number, number>();
   if (parsed.length === 0) return colToStandardIdx;
 
-  const used = new Set<number>();
+  const used = new Set<number>(preUsedCols);
 
-  const dateCol = inferDateColumnIndex(parsed);
+  const dateCol = inferDateColumnIndex(parsed, used);
   if (dateCol >= 0) {
     colToStandardIdx.set(dateCol, IMPORT_HEADERS.indexOf('DATE'));
     used.add(dateCol);
   }
 
-  const titleCol = inferTitleColumnIndex(parsed, dateCol);
+  const titleCol = inferTitleColumnIndex(parsed, used);
   if (titleCol >= 0) {
     colToStandardIdx.set(titleCol, IMPORT_HEADERS.indexOf('TITLE'));
     used.add(titleCol);
   }
 
-  const eurCol = inferEurColumnIndex(parsed, used);
-  if (eurCol >= 0) {
-    colToStandardIdx.set(eurCol, IMPORT_HEADERS.indexOf('AMOUNT'));
-    used.add(eurCol);
+  const amountCol = inferAmountColumnIndex(parsed, used);
+  if (amountCol >= 0) {
+    colToStandardIdx.set(amountCol, IMPORT_HEADERS.indexOf('AMOUNT'));
+    used.add(amountCol);
   }
 
-  const fxCol = inferFxColumnIndex(parsed, used);
-  if (fxCol >= 0) {
-    colToStandardIdx.set(fxCol, IMPORT_HEADERS.indexOf('CURRENCY'));
-    used.add(fxCol);
+  const currencyCol = inferCurrencyColumnIndex(parsed, used);
+  if (currencyCol >= 0) {
+    colToStandardIdx.set(currencyCol, IMPORT_HEADERS.indexOf('CURRENCY'));
+    used.add(currencyCol);
   }
 
   const accountCol = inferAccountColumnIndex(parsed, used);
@@ -477,27 +627,36 @@ export function inferColumnMapping(parsed: string[][]): Map<number, number> {
     used.add(accountCol);
   }
 
-  const expenseCol = inferExpenseColumnIndex(parsed, used);
-  if (expenseCol >= 0) {
-    colToStandardIdx.set(expenseCol, IMPORT_HEADERS.indexOf('EXPENSE'));
-    used.add(expenseCol);
+  const amountColForSign =
+    amountCol >= 0 ? amountCol : typeof options?.amountColHint === 'number' ? options.amountColHint : -1;
+  // Si AMOUNT est déjà mappé (en-tête) ou signé, ne pas inventer EXPENSE/INCOME
+  // (évite Exchange Rate → EXPENSE / Original Amount → INCOME sur N26).
+  const skipSplitAmounts =
+    options?.amountAlreadyMapped === true || amountColumnLooksSigned(parsed, amountColForSign);
+  if (!skipSplitAmounts) {
+    const expenseCol = inferExpenseColumnIndex(parsed, used);
+    if (expenseCol >= 0) {
+      colToStandardIdx.set(expenseCol, IMPORT_HEADERS.indexOf('EXPENSE'));
+      used.add(expenseCol);
+    }
+
+    const incomeCol = inferIncomeColumnIndex(parsed, expenseCol, used);
+    if (incomeCol >= 0) {
+      colToStandardIdx.set(incomeCol, IMPORT_HEADERS.indexOf('INCOME'));
+      used.add(incomeCol);
+    }
   }
 
-  const incomeCol = inferIncomeColumnIndex(parsed, expenseCol, used);
-  if (incomeCol >= 0) {
-    colToStandardIdx.set(incomeCol, IMPORT_HEADERS.indexOf('INCOME'));
-    used.add(incomeCol);
-  }
-
-  const typeCol = inferTypeColumnIndex(parsed, used);
-  if (typeCol >= 0) colToStandardIdx.set(typeCol, IMPORT_HEADERS.indexOf('TYPE'));
+  // TYPE non auto-assigné : réservé à l'auto-catégorisation ultérieure.
 
   return colToStandardIdx;
 }
 
 /**
- * Mapping colonne → champ standard uniquement par inférence sur les lignes de données.
- * Les libellés de la première ligne ne servent pas au mapping (même si elle ressemble à un en-tête CSV).
+ * Mapping colonne → champ standard :
+ * 1) indices d'en-têtes si la 1re ligne est un header
+ *    (TYPE seulement si ce n'est pas un type d'opération bancaire type N26) ;
+ * 2) complété par inférence sur les lignes de données (sans inventer TYPE).
  */
 export function inferColumnMappingFromDataLines(
   lines: string[],
@@ -511,12 +670,40 @@ export function inferColumnMappingFromDataLines(
   if (dataLines.length === 0) {
     return new Map<number, string>();
   }
-  const colToStandardIdx = inferColumnMapping(dataLines);
+
   const colToStandardName = new Map<number, string>();
-  colToStandardIdx.forEach((stdIdx: number, colIdx: number) => {
-    const name = stdIdx < IMPORT_HEADERS.length ? IMPORT_HEADERS[stdIdx] : OUTPUT_HEADERS[stdIdx];
-    if (name && name !== 'INDEX') colToStandardName.set(colIdx, name);
+  const usedStandards = new Set<string>();
+  const usedCols = new Set<number>();
+
+  let amountColHint = -1;
+  if (dataStartIndex > 0 && lines.length > 0) {
+    const headers = parseCsvLine(lines[0], delimiter);
+    for (let c = 0; c < headers.length; c++) {
+      const std = suggestStandardFromHeaderLabel(headers[c] ?? '');
+      if (!std || usedStandards.has(std)) continue;
+      // « Type » N26 (Presentment / Credit Transfer…) ≠ catégorie comptable.
+      if (std === 'TYPE' && columnLooksLikeBankOperationType(dataLines, c)) continue;
+      colToStandardName.set(c, std);
+      usedStandards.add(std);
+      usedCols.add(c);
+      if (std === 'AMOUNT') amountColHint = c;
+    }
+  }
+
+  const colToStandardIdx = inferColumnMapping(dataLines, usedCols, {
+    amountAlreadyMapped: usedStandards.has('AMOUNT'),
+    amountColHint,
   });
+  colToStandardIdx.forEach((stdIdx: number, colIdx: number) => {
+    if (usedCols.has(colIdx)) return;
+    const name = stdIdx < IMPORT_HEADERS.length ? IMPORT_HEADERS[stdIdx] : OUTPUT_HEADERS[stdIdx];
+    // Ne jamais inventer TYPE par heuristique données — seulement via en-tête catégorie réel.
+    if (!name || name === 'INDEX' || name === 'TYPE' || usedStandards.has(name)) return;
+    colToStandardName.set(colIdx, name);
+    usedStandards.add(name);
+    usedCols.add(colIdx);
+  });
+
   return colToStandardName;
 }
 
@@ -609,13 +796,27 @@ export function parseImportCsv(
 
   if (lines.length === 0) return { valid, anomalies };
 
-  const rates = options?.importMappingRates ?? DEFAULT_IMPORT_MAPPING_RATES;
   const fiatChoiceByRowId = options?.fiatChoiceByRowId ?? {};
+  const primaryRates = options?.primaryMappingRates;
+  const rates = primaryRates ?? options?.importMappingRates ?? DEFAULT_IMPORT_MAPPING_RATES;
+  const workingCurrencies = options?.workingCurrencies;
+  const primaryCurrency = options?.primaryCurrency;
 
   const firstLineValues = parseCsvLine(lines[0], delimiter);
   const useFirstLineAsHeader = firstLineLooksLikeHeader(firstLineValues);
   const dataStartIndex = useFirstLineAsHeader && lines.length >= 2 ? 1 : 0;
   const colToStandardName = inferColumnMappingFromDataLines(lines, delimiter, dataStartIndex);
+
+  let defaultCurrency = (options?.defaultCurrency ?? '').trim().toUpperCase() || undefined;
+  if (!defaultCurrency && useFirstLineAsHeader) {
+    for (const h of firstLineValues) {
+      const implied = extractImpliedCurrencyFromHeaderLabel(h ?? '');
+      if (implied) {
+        defaultCurrency = implied;
+        break;
+      }
+    }
+  }
 
   for (let i = dataStartIndex; i < lines.length; i++) {
     const rawLine = lines[i];
@@ -627,7 +828,13 @@ export function parseImportCsv(
     });
 
     const rowId = `${sourceFile}:${i + 1}`;
-    const fiatEffective = applyImportFiatResolutionToValueMap(valueByStandardName, rowId, fiatChoiceByRowId);
+    const fiatEffective = applyImportFiatResolutionToValueMap(
+      valueByStandardName,
+      rowId,
+      fiatChoiceByRowId,
+      workingCurrencies,
+      defaultCurrency
+    );
 
     const dataLineNumber = i - dataStartIndex + 1;
     const result = processImportRow(sourceFile, dataLineNumber, values, valueByStandardName, rawLine);
@@ -635,6 +842,8 @@ export function parseImportCsv(
       const row = applyValidRowPostProcessMappingPolicy(result.valid, fiatEffective, rates, {
         expenseRaw: valueByStandardName.EXPENSE ?? '',
         incomeRaw: valueByStandardName.INCOME ?? '',
+        primaryCurrency,
+        workingCurrencies,
       });
       valid.push({ row, sourceFile, lineNumber: dataLineNumber, rawLine });
     } else anomalies.push(result.anomaly);

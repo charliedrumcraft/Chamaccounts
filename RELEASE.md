@@ -1,3 +1,27 @@
+# Chamaccounts v1.2.1
+
+Import CSV (wizard) : auto-catégorisation TYPE améliorée, revue des confiances, règles fixes TITLE→TYPE, et suggestions enrichies.
+
+### Changements par rapport à v1.2.0
+- **Auto-catégorisation TYPE** : suggestion depuis l’historique (similarité de libellés + stats mots), avec pourcentage de confiance dans le wizard
+- **Revue auto-catégorisation** : fenêtre pour inspecter les suggestions, les appliquer, et gérer des **règles fixes** TITLE → TYPE (ex. « DM » → Shopping), sans doublons
+- **Suggestions TYPE** : les types d’entrées/sorties reconnus (Paramètres) sont aussi proposés, même s’ils n’apparaissent pas encore dans le lot
+- **Saisie wizard** : Entrée valide la prédiction comme Tab, puis passe à la ligne suivante ; un TYPE effacé ou modifié à la main n’est plus réécrit par l’auto-cat
+- **Import / miroirs** : synchronisation CSV↔SQLite et améliorations du mapping (AMOUNT GBP, colonnes banque, etc.)
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.2.1-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.2.1-mac-x64.dmg` / `.zip` |
+| macOS Apple Silicon | `Chamaccounts-1.2.1-mac-arm64.dmg` / `.zip` |
+| Linux (AppImage) | `Chamaccounts-1.2.1-linux-x64.AppImage` |
+
+[Télécharger v1.2.1](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.2.1)
+
+---
+
 # Chamaccounts v1.2.0
 
 Stockage SQLite des données métier, devises de travail par profil, interface bilingue FR/EN, et profil Data Template enrichi pour la démo.

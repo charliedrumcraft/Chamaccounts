@@ -17,12 +17,30 @@ import {
 } from '../../shared/accountBalanceCodes';
 import { writeAccountBalanceCsvMirror } from './accountBalanceCsvMirror';
 import {
+  csvMirrorNeedsResyncFromCsv,
+  rememberCsvMirrorHash,
+} from './csvMirrorSync';
+import {
   closeAccountBalanceDb,
   openAccountBalanceDb,
   persistAccountBalanceDb,
 } from './accountBalanceDb';
 import { queryAll, queryOne } from './sqlJsRuntime';
 import { tm } from '../uiI18n';
+
+function accountBalanceCsvPath(dataRoot: string): string {
+  return path.join(dataRoot, ACCOUNT_BALANCE_CSV_PATH);
+}
+
+function writeBalanceMirror(
+  dataRoot: string,
+  rows: BalanceRowDto[],
+  accounts: BalanceAccountColumn[],
+  database: Database
+): void {
+  writeAccountBalanceCsvMirror(dataRoot, rows, accounts);
+  rememberCsvMirrorHash(database, accountBalanceCsvPath(dataRoot), persistAccountBalanceDb);
+}
 
 const CSV_CANDIDATES = [
   'src_account_balance.csv',
@@ -210,22 +228,42 @@ function defaultAccountsFromRows(rows: BalanceRowDto[]): BalanceAccountColumn[] 
     .map((code) => ({ name: code, currency: 'EUR' as const }));
 }
 
+function importBalancesFromCsv(
+  database: Database,
+  dataRoot: string,
+  accountsForMirror?: BalanceAccountColumn[]
+): void {
+  const fromCsv = readCsvAsBalanceDtos(dataRoot);
+  insertBalanceRows(database, fromCsv, true);
+  const accounts =
+    accountsForMirror?.length ? accountsForMirror : defaultAccountsFromRows(fromCsv);
+  writeBalanceMirror(dataRoot, fromCsv, accounts, database);
+}
+
 export async function ensureAccountBalanceStore(
   dataRoot: string,
   accountsForMirror?: BalanceAccountColumn[]
 ): Promise<void> {
   const database = await openAccountBalanceDb(dataRoot);
+  const csvPath = accountBalanceCsvPath(dataRoot);
+
   if (countSnapshots(database) === 0) {
-    const fromCsv = readCsvAsBalanceDtos(dataRoot);
-    if (fromCsv.length > 0) {
-      insertBalanceRows(database, fromCsv, true);
-      const accounts = accountsForMirror?.length ? accountsForMirror : defaultAccountsFromRows(fromCsv);
-      writeAccountBalanceCsvMirror(dataRoot, fromCsv, accounts);
-    } else {
-      // Assure un CSV miroir minimal
-      const accounts = accountsForMirror ?? [];
-      writeAccountBalanceCsvMirror(dataRoot, [], accounts);
-    }
+    importBalancesFromCsv(database, dataRoot, accountsForMirror);
+  } else if (!fs.existsSync(csvPath)) {
+    const rows = selectAllBalanceDtos(database);
+    const accounts =
+      accountsForMirror?.length ? accountsForMirror : defaultAccountsFromRows(rows);
+    writeBalanceMirror(dataRoot, rows, accounts, database);
+  } else if (csvMirrorNeedsResyncFromCsv(database, csvPath)) {
+    console.info(
+      '[accountBalance] CSV miroir modifié hors SQLite — réimport depuis',
+      csvPath
+    );
+    importBalancesFromCsv(database, dataRoot, accountsForMirror);
+  }
+
+  if (countSnapshots(database) > 0) {
+    rememberCsvMirrorHash(database, csvPath, persistAccountBalanceDb);
   }
 }
 
@@ -287,7 +325,7 @@ export async function replaceAllBalanceRows(
         balances: { ...r.balances },
       }));
     insertBalanceRows(database, valid, true);
-    writeAccountBalanceCsvMirror(dataRoot, valid, accounts);
+    writeBalanceMirror(dataRoot, valid, accounts, database);
     return { success: true, count: valid.length };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -312,7 +350,8 @@ export async function rewriteBalanceColumns(
       if (!after.length) {
         return { success: false, error: tm('error.balanceCsvMissing') };
       }
-      writeAccountBalanceCsvMirror(dataRoot, after, accounts);
+      const database = await openAccountBalanceDb(dataRoot);
+      writeBalanceMirror(dataRoot, after, accounts, database);
       return { success: true };
     }
     // Ne garde que les codes présents dans la liste Paramètres (merge par code)
@@ -340,7 +379,13 @@ export async function syncAccountBalanceCsvMirror(
   accounts: BalanceAccountColumn[]
 ): Promise<void> {
   const rows = await getAllBalanceRows(dataRoot);
-  writeAccountBalanceCsvMirror(dataRoot, rows, accounts.length ? accounts : defaultAccountsFromRows(rows));
+  const database = await openAccountBalanceDb(dataRoot);
+  writeBalanceMirror(
+    dataRoot,
+    rows,
+    accounts.length ? accounts : defaultAccountsFromRows(rows),
+    database
+  );
 }
 
 const DEFAULT_ACCOUNT_COLORS: Record<string, string> = {
