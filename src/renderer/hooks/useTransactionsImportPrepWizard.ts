@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   loadImportWizardModel,
   buildImportWizardModelFromClipboardText,
@@ -24,6 +25,9 @@ import { detectAnomalies, EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDete
 import type { ValidRow } from '@/shared/transactionsImportCore';
 import { transactionsImportFile } from '@/shared/dataPaths';
 import { removeImportedRowsFromImportFolder } from '../services/importWizardRemoveFromDiskService';
+import { translateImportPrepMessage } from '../i18n/translateImportPrepMessage';
+import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
+import type { AnomalyReason } from '@/shared/anomalyReasons';
 
 export type { ImportWizardResultField, PrepTableColDef };
 
@@ -34,6 +38,7 @@ export function useTransactionsImportPrepWizard(options: {
   /** Incrémenter depuis la page (ex. après vidage du dossier Import) pour forcer un rechargement du wizard. */
   folderReloadToken?: number;
 }) {
+  const { t, i18n } = useTranslation();
   const { existingTransactionSignatures, accountAliasLookup, onAfterSuccessfulAppend, folderReloadToken = 0 } = options;
 
   const [importWizardModel, setImportWizardModel] = useState<ImportWizardModel | null>(null);
@@ -167,7 +172,7 @@ export function useTransactionsImportPrepWizard(options: {
         rowIdAtValidIndex.push(p.row.id);
       }
     }
-    const anomalyReasonsByRowId = new Map<string, string[]>();
+    const anomalyReasonsByRowId = new Map<string, AnomalyReason[]>();
     if (validRows.length > 0) {
       const headers = [
         'DATE',
@@ -191,21 +196,23 @@ export function useTransactionsImportPrepWizard(options: {
       string,
       { messages: string[]; pendingManualRecommended: boolean; hasAmberAside: boolean }
     >();
-    const dupMsg = 'Doublon (ligne déjà présente dans src_transaction_data.csv)';
+    const dupMsg = t('transactions.importPrep.duplicateRow');
     for (const p of list) {
       const aside: string[] = [];
       if ('anomaly' in p.processed) {
-        aside.push(p.processed.anomaly.reason);
+        aside.push(
+          ...p.processed.anomaly.reason.split(' ; ').map((part) => translateImportPrepMessage(part.trim(), t))
+        );
       }
       const ar = anomalyReasonsByRowId.get(p.row.id);
-      if (ar?.length) aside.push(...ar);
+      if (ar?.length) aside.push(formatAnomalyReasons(ar, t));
       const dateMsgs = dateCoherenceByRowId.get(p.row.id);
       if (dateMsgs?.length) aside.push(...dateMsgs);
       if (p.duplicateExisting) aside.push(dupMsg);
       const missingManual = uncoveredRecommendedManual.filter((f) => !(p.valueMap[f] ?? '').trim());
       const pendingManualRecommended = missingManual.length > 0;
       const manualLine = pendingManualRecommended
-        ? `Saisie manuelle recommandée : ${missingManual.join(', ')}. Vous pouvez importer quand même et compléter plus tard dans src_transaction_data.csv.`
+        ? t('transactions.importPrep.manualRecommended', { fields: missingManual.join(', ') })
         : null;
       const messages = manualLine ? [manualLine, ...aside] : aside;
       map.set(p.row.id, {
@@ -215,7 +222,7 @@ export function useTransactionsImportPrepWizard(options: {
       });
     }
     return map;
-  },     [importWizardPreview, importWizardModel, importColumnMapping]);
+  }, [importWizardPreview, importWizardModel, importColumnMapping, t, i18n.language]);
 
   const anomalousRowIds = useMemo(() => {
     if (!mappingWizardActive || !importWizardPreview?.list.length) return [] as string[];
@@ -503,11 +510,11 @@ export function useTransactionsImportPrepWizard(options: {
 
   const handleImportLinesToSource = useCallback(async () => {
     if (!mappingWizardActive) {
-      setImportWizardMessage('Activez le mapping wizard pour préparer et importer les lignes vers src_transaction_data.csv.');
+      setImportWizardMessage(t('transactions.importPrep.enableMappingFirst'));
       return;
     }
     if (!importWizardPreview?.list.length) {
-      setImportWizardMessage('Aucune ligne à importer.');
+      setImportWizardMessage(t('transactions.importPrep.noRowsToImport'));
       return;
     }
     const api = (window as unknown as {
@@ -520,7 +527,7 @@ export function useTransactionsImportPrepWizard(options: {
       };
     }).electronAPI;
     if (!api?.appendForcedTransactionRows) {
-      setImportWizardMessage('Fonction d’import non disponible.');
+      setImportWizardMessage(t('transactions.importPrep.importUnavailable'));
       return;
     }
     const toAppend: ValidRow[] = [];
@@ -533,9 +540,7 @@ export function useTransactionsImportPrepWizard(options: {
       if (amt !== null && amt !== 0) {
         const fiat = resolveImportFiatEffective(p.row.id, p.valueMap, {});
         if (fiat !== 'EUR' && fiat !== 'GBP' && fiat !== 'CHF') {
-          setImportWizardMessage(
-            'Montant non nul sans devise reconnue : indiquez €, £ ou CHF dans le montant, ou complétez la devise (mapping wizard / colonne CURRENCY).'
-          );
+          setImportWizardMessage(t('transactions.importPrep.currencyRequired'));
           return;
         }
       }
@@ -543,9 +548,7 @@ export function useTransactionsImportPrepWizard(options: {
       importedDiskRows.push({ id: p.row.id, sourceFile: p.row.sourceFile });
     }
     if (toAppend.length === 0) {
-      setImportWizardMessage(
-        'Aucune ligne valide à ajouter (vérifiez les doublons ou les lignes ignorées).'
-      );
+      setImportWizardMessage(t('transactions.importPrep.noValidRows'));
       return;
     }
     setImportLinesLoading(true);
@@ -570,7 +573,10 @@ export function useTransactionsImportPrepWizard(options: {
             });
             if (!diskResult.success) {
               setImportWizardMessage(
-                `${result.appendedCount ?? toAppend.length} ligne(s) ajoutée(s) à src_transaction_data.csv, mais retrait du dossier Import impossible : ${diskResult.error ?? 'erreur inconnue'}.`
+                t('transactions.importPrep.appendedWithDiskFail', {
+                  count: result.appendedCount ?? toAppend.length,
+                  error: diskResult.error ?? t('transactions.importPrep.unknownError'),
+                })
               );
               onAfterSuccessfulAppend?.();
               setImportWizardReloadKey((k) => k + 1);
@@ -579,22 +585,28 @@ export function useTransactionsImportPrepWizard(options: {
             if (diskResult.removedLineCount > 0) {
               const parts: string[] = [];
               if (diskResult.updatedFiles.length) {
-                parts.push(`${diskResult.updatedFiles.length} fichier(s) mis à jour`);
+                parts.push(t('transactions.importPrep.filesUpdated', { count: diskResult.updatedFiles.length }));
               }
               if (diskResult.deletedFiles.length) {
-                parts.push(`${diskResult.deletedFiles.length} fichier(s) supprimé(s) (vide)`);
+                parts.push(t('transactions.importPrep.filesDeleted', { count: diskResult.deletedFiles.length }));
               }
-              diskMsg = ` ${diskResult.removedLineCount} ligne(s) retirée(s) du dossier Import${parts.length ? ` (${parts.join(', ')})` : ''}.`;
+              diskMsg = t('transactions.importPrep.diskRemoved', {
+                count: diskResult.removedLineCount,
+                detail: parts.length ? ` (${parts.join(', ')})` : '',
+              });
             }
           }
         }
         onAfterSuccessfulAppend?.();
         setImportWizardReloadKey((k) => k + 1);
         setImportWizardMessage(
-          `${result.appendedCount ?? toAppend.length} ligne(s) ajoutée(s) à src_transaction_data.csv.${diskMsg}`
+          t('transactions.importPrep.appended', {
+            count: result.appendedCount ?? toAppend.length,
+            disk: diskMsg,
+          })
         );
       } else {
-        setImportWizardMessage(result.error ?? 'Erreur lors de l’import.');
+        setImportWizardMessage(result.error ?? t('transactions.importPrep.importFailed'));
       }
     } finally {
       setImportLinesLoading(false);
@@ -605,20 +617,23 @@ export function useTransactionsImportPrepWizard(options: {
     importRowSkip,
     onAfterSuccessfulAppend,
     removeImportedFromImportFolder,
+    t,
   ]);
 
   const applyImportWizardClipboardPaste = useCallback(
     (raw: string, parseOptions?: ImportWizardParseOptions) => {
       const pasted = buildImportWizardModelFromClipboardText(raw, parseOptions);
       if (!pasted?.rows.length) {
-        setImportWizardMessage('Collage vide ou aucune ligne de données exploitable.');
+        setImportWizardMessage(t('transactions.importPrep.pasteEmpty'));
         return;
       }
       setImportWizardModel((prev) => (prev ? mergeImportWizardModels(prev, pasted) : pasted));
-      const src = pasted.rows[0]?.sourceFile ?? 'presse-papiers';
-      setImportWizardMessage(`${pasted.rows.length} ligne(s) ajoutée(s) depuis le presse-papiers (${src}).`);
+      const src = pasted.rows[0]?.sourceFile ?? t('transactions.importPrep.clipboardSource');
+      setImportWizardMessage(
+        t('transactions.importPrep.pasteAdded', { count: pasted.rows.length, source: src })
+      );
     },
-    []
+    [t]
   );
 
   const handleOpenImportFolder = useCallback(async () => {

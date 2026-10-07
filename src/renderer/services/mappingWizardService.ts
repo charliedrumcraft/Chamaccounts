@@ -21,6 +21,7 @@ import {
   rowSignature,
   type ValidRow,
 } from '@/shared/transactionsImportCore';
+import i18n from '../i18n';
 import { getEffectiveRates } from './EffectiveExchangeRates';
 import {
   applyGbpFromAmountAndFiatWithRates,
@@ -552,12 +553,10 @@ export function computeImportWizardDateCoherenceWarnings(
 
     const msgs: string[] = [];
     if (t < refMonthStart) {
-      msgs.push(
-        'Date antérieure au mois passé par rapport au lot (avant le 1er jour du mois le plus récent dans l’import).'
-      );
+      msgs.push(i18n.t('transactions.importPrep.dateBeforeRefMonth'));
     }
     if (prevValidTime !== null && t < prevValidTime) {
-      msgs.push('Date non chronologique : antérieure à la ligne valide précédente dans le fichier.');
+      msgs.push(i18n.t('transactions.importPrep.dateNotChronological'));
     }
     prevValidTime = t;
     if (msgs.length > 0) out.set(p.row.id, msgs);

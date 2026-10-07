@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Trans, useTranslation } from 'react-i18next';
 import { useAccountBalanceImportPrepWizard } from '../hooks/useAccountBalanceImportPrepWizard';
 import {
   abWizardColumnSamplePreview,
@@ -7,6 +8,8 @@ import {
   type AbImportWizardRawRow,
 } from '../services/accountBalanceImportWizardService';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
+import { formatAnomalyReason } from '../i18n/formatAnomalyReason';
+import type { AnomalyReason } from '@/shared/anomalyReasons';
 
 export type AccountBalanceImportPrepWizardProps = ReturnType<typeof useAccountBalanceImportPrepWizard>;
 
@@ -23,6 +26,7 @@ function getRawCellDisplay(
 }
 
 const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionProps> = (props) => {
+  const { t } = useTranslation();
   const {
     abImportWizardModel,
     abImportWizardLoading,
@@ -140,26 +144,28 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
   return (
     <>
       <div>
-        <h2 className="text-sm font-semibold text-gray-700 mb-2">Édition des données avant import</h2>
+        <h2 className="text-sm font-semibold text-gray-700 mb-2">{t('accountBalance.importPrep.title')}</h2>
         <p className="text-xs text-gray-600 mb-2 max-w-3xl">
-          Par défaut, les <strong className="font-semibold text-gray-800">données brutes</strong> des CSV du dossier
-          Import (soldes) sont affichées. Activez le <strong className="font-semibold text-gray-800">mapping wizard</strong>{' '}
-          pour voir le tableau aligné sur <code className="text-gray-800">src_account_balance.csv</code> (DATE + comptes
-          Paramètres), modifier les cellules puis importer les lignes valides. La colonne d’alerte (⚠️) résume les
-          anomalies : survolez pour le détail.
+          <Trans
+            i18nKey="accountBalance.importPrep.description"
+            components={{
+              raw: <strong className="font-semibold text-gray-800" />,
+              mw: <strong className="font-semibold text-gray-800" />,
+              code: <code className="text-gray-800" />,
+            }}
+          />
         </p>
         <div className="mb-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 max-w-3xl">
-          <p className="text-xs font-medium text-gray-700 mb-1">Coller depuis un tableur</p>
+          <p className="text-xs font-medium text-gray-700 mb-1">{t('accountBalance.importPrep.pasteTitle')}</p>
           <p className="text-[11px] text-gray-500 mb-2">
-            Copiez une plage (DATE + colonnes de soldes / comptes) depuis Excel, Numbers ou Google Sheets, ou du texte
-            CSV, puis collez ici. Les lignes s’ajoutent au lot en cours (en plus des fichiers du dossier Import soldes).
+            {t('accountBalance.importPrep.pasteDescription')}
           </p>
           <textarea
             value={clipboardDraft}
             onChange={(e) => setClipboardDraft(e.target.value)}
             spellCheck={false}
             rows={4}
-            placeholder="Collez ici (Ctrl+V / Cmd+V)…"
+            placeholder={t('accountBalance.importPrep.pastePlaceholder')}
             disabled={abImportWizardLoading}
             className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-400 disabled:opacity-50"
           />
@@ -171,7 +177,7 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                 onChange={(e) => setPasteFirstLineAsData(e.target.checked)}
                 className="rounded border-gray-400"
               />
-              Pas d’en-tête (1re ligne = donnée)
+              {t('accountBalance.importPrep.pasteNoHeader')}
             </label>
             <button
               type="button"
@@ -184,7 +190,7 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
               }}
               className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-45"
             >
-              Ajouter au tableau
+              {t('accountBalance.importPrep.pasteAdd')}
             </button>
           </div>
         </div>
@@ -197,8 +203,8 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
             disabled={abImportWizardLoading || !abImportWizardModel?.rows.length}
             title={
               mappingWizardActive
-                ? 'Désactiver : revenir aux données brutes'
-                : 'Activer : tableau comme après import (src_account_balance)'
+                ? t('accountBalance.importPrep.mappingOnTitle')
+                : t('accountBalance.importPrep.mappingOffTitle')
             }
             className={`relative overflow-hidden rounded-xl border px-4 py-2 text-sm font-semibold shadow-md disabled:cursor-not-allowed disabled:opacity-45 ${
               mappingWizardActive
@@ -222,7 +228,7 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
               Mapping wizard
             </span>
             <span className={`relative ml-2 text-xs font-normal ${mappingWizardActive ? 'text-slate-300' : 'text-gray-600'}`}>
-              {mappingWizardActive ? 'activé' : 'désactivé — données brutes'}
+              {mappingWizardActive ? t('accountBalance.importPrep.mappingOn') : t('accountBalance.importPrep.mappingOff')}
             </span>
           </button>
           <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer select-none max-w-xs">
@@ -233,7 +239,7 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
               disabled={abImportWizardLoading}
               className="rounded border-gray-400"
             />
-            CSV Import (soldes) : 1re ligne = donnée (relecture auto)
+            {t('accountBalance.importPrep.diskFirstLine')}
           </label>
         </div>
         {importWizardMessage && (
@@ -242,22 +248,21 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
           </p>
         )}
         {abImportWizardLoading && (
-          <p className="text-sm text-gray-500 mb-2">Lecture des fichiers CSV dans Import (soldes)…</p>
+          <p className="text-sm text-gray-500 mb-2">{t('accountBalance.importPrep.readingFiles')}</p>
         )}
         {mappingWizardActive && fileLevelAnomalyReasons.length > 0 && (
           <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-2 text-xs text-amber-900 space-y-1">
-            <p className="font-semibold">Anomalies au niveau fichier (aperçu)</p>
+            <p className="font-semibold">{t('accountBalance.importPrep.fileLevelTitle')}</p>
             <ul className="list-disc pl-4">
-              {fileLevelAnomalyReasons.map((r, i) => (
-                <li key={i}>{r}</li>
+              {fileLevelAnomalyReasons.map((r: AnomalyReason, i: number) => (
+                <li key={i}>{formatAnomalyReason(r, t)}</li>
               ))}
             </ul>
           </div>
         )}
         {!abImportWizardLoading && !abImportWizardModel?.rows.length && (
           <p className="text-sm text-amber-800 rounded border border-amber-200 bg-amber-50 px-2 py-1">
-            Aucune ligne à afficher : ajoutez des fichiers CSV dans le dossier Import (soldes), ou utilisez la zone «
-            Coller depuis un tableur » ci-dessus.
+            {t('accountBalance.importPrep.emptyState')}
           </p>
         )}
         {abImportWizardModel && abImportWizardModel.rows.length > 0 && (
@@ -265,25 +270,28 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
             <div className="px-2 py-1.5 bg-gray-100 text-xs font-medium text-gray-700">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span>
-                  Préparation —{' '}
+                  {t('accountBalance.importPrep.prepHeader')}{' '}
                   <span className="font-semibold text-gray-900" title={sourceFileNames.join(', ')}>
                     {sourceFileNames.join(', ')}
                   </span>{' '}
                   ({mappingWizardActive
-                    ? `${importPrepIgnSkipHeader.total} lignes au total · ${importPrepIgnSkipHeader.active} non ignorée${importPrepIgnSkipHeader.active !== 1 ? 's' : ''}`
-                    : `${abImportWizardModel.rows.length} lignes`}
+                    ? t('accountBalance.importPrep.statsMapped', {
+                        total: importPrepIgnSkipHeader.total,
+                        active: importPrepIgnSkipHeader.active,
+                      })
+                    : t('accountBalance.importPrep.statsRaw', { count: abImportWizardModel.rows.length })}
                   )
                   {mappingWizardActive
-                    ? ' — aperçu aligné sur src_account_balance.csv'
-                    : ' — données brutes (mapping wizard désactivé)'}
+                    ? t('accountBalance.importPrep.modeMapped')
+                    : t('accountBalance.importPrep.modeRaw')}
                 </span>
                 {mappingWizardActive && (
                   <label
                     className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
                     title={
                       importPrepAnomalySkipHeader.count === 0
-                        ? 'Aucune ligne en anomalie (⚠️)'
-                        : 'Cocher pour ignorer toutes les lignes affichant une alerte ⚠️ ; décocher pour les rétablir'
+                        ? t('accountBalance.importPrep.skipAnomaliesNone')
+                        : t('accountBalance.importPrep.skipAnomaliesHint')
                     }
                   >
                     <input
@@ -293,9 +301,9 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                       checked={importPrepAnomalySkipHeader.allSkipped}
                       disabled={importPrepAnomalySkipHeader.count === 0}
                       onChange={toggleSkipAllAnomalous}
-                      aria-label="Ignorer toutes les lignes en anomalie"
+                      aria-label={t('accountBalance.importPrep.skipAnomaliesAria')}
                     />
-                    Ignorer les lignes en anomalie
+                    {t('accountBalance.importPrep.skipAnomalies')}
                     {importPrepAnomalySkipHeader.count > 0 && (
                       <span className="text-gray-500">({importPrepAnomalySkipHeader.count})</span>
                     )}
@@ -305,10 +313,9 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
             </div>
             {mappingWizardActive && abImportWizardModel.columns.length > 0 && (
               <div className="px-2 py-2 border-b border-indigo-100 bg-indigo-50/50 text-xs text-gray-800">
-                <p className="font-semibold text-gray-900 mb-0.5">Attribution des colonnes sources</p>
+                <p className="font-semibold text-gray-900 mb-0.5">{t('accountBalance.importPrep.columnMappingTitle')}</p>
                 <p className="text-[11px] text-gray-600 mb-2">
-                  Numéro = position dans le fichier. « Auto » utilise le libellé d’en-tête tel quel. À droite :
-                  aperçu des premières valeurs.
+                  {t('accountBalance.importPrep.columnMappingHint')}
                 </p>
                 <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
                   {abImportWizardModel.columns.map((col) => {
@@ -320,7 +327,7 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                       <div
                         key={col.key}
                         className="flex flex-wrap items-center gap-x-2 gap-y-1"
-                        title={`Fichier source : ${col.fileName}`}
+                        title={t('accountBalance.importPrep.sourceFile', { name: col.fileName })}
                       >
                         <span className="w-10 shrink-0 font-mono text-[11px] font-semibold text-gray-700">
                           {colNo}
@@ -329,10 +336,10 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                           className="min-w-[10rem] shrink-0 rounded border border-gray-300 bg-white px-1 py-0.5 text-[11px]"
                           value={selectVal}
                           onChange={(e) => updateAbColumnTargetUser(col.key, e.target.value)}
-                          aria-label={`Cible colonne ${colNo}`}
+                          aria-label={t('accountBalance.importPrep.mapColumnAria', { n: colNo })}
                         >
-                          <option value="__AUTO__">Auto (libellé : {col.label || '—'})</option>
-                          <option value="">Ignorer</option>
+                          <option value="__AUTO__">{t('accountBalance.importPrep.autoOption', { label: col.label || '—' })}</option>
+                          <option value="">{t('accountBalance.importPrep.ignoreOption')}</option>
                           {outputHeaderKeys.map((h) => (
                             <option key={h} value={h}>
                               {h}
@@ -362,14 +369,14 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                             checked={importPrepIgnSkipHeader.allSkipped}
                             disabled={abImportWizardModel.rows.length === 0}
                             onChange={toggleImportPrepSkipAll}
-                            aria-label="Tout ignorer ou tout rétablir les lignes"
+                            aria-label={t('accountBalance.importPrep.skipAllAria')}
                           />
                           <label htmlFor="ab-prep-ign-header" className="cursor-pointer select-none ml-0.5">
-                            Ign.
+                            {t('accountBalance.importPrep.skipCol')}
                           </label>
                         </th>
                         <th className="w-8 px-1 py-1 align-top">#</th>
-                        <th className="w-8 px-1 py-1 align-top text-center" aria-label="Alertes">
+                        <th className="w-8 px-1 py-1 align-top text-center" aria-label={t('accountBalance.importPrep.alertsAria')}>
                           !
                         </th>
                         {outputHeaderKeys.map((h) => (
@@ -381,7 +388,7 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                     ) : (
                       <>
                         <th className="w-8 px-1 py-1 align-top">#</th>
-                        <th className="w-8 px-1 py-1 align-top text-center" aria-label="Alertes">
+                        <th className="w-8 px-1 py-1 align-top text-center" aria-label={t('accountBalance.importPrep.alertsAria')}>
                           !
                         </th>
                         {abImportWizardModel.columns.map((col) => (
@@ -420,7 +427,7 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                                     return n;
                                   });
                                 }}
-                                aria-label="Ignorer cette ligne"
+                                aria-label={t('accountBalance.importPrep.skipRowAria')}
                               />
                             </td>
                             <td className="px-1 py-0.5 text-right text-gray-600 tabular-nums">{row.lineNumber}</td>

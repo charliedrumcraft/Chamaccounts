@@ -8,6 +8,11 @@
 import type { RecognisedAccountEntry } from '../constants/recognisedAccountsStorage';
 import { DEFAULT_ACCOUNT_ALIASES_FOR_DUPLICATES } from '@/shared/accountAliasForDuplicates';
 
+export interface SuggestionItem {
+  value: string;
+  count: number;
+}
+
 /**
  * Indique si une colonne doit avoir des suggestions texte (Title, Type, Comptes/Account).
  * Utilisé pour activer getSuggestions et la validation TAB sur la première suggestion.

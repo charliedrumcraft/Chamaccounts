@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Chart as ChartJS, ChartOptions, Filler, registerables } from 'chart.js';
 import { Line } from 'react-chartjs-2';
+import { useTranslation } from 'react-i18next';
 import { formatCurrency } from '../../utils/format';
 import { calculateBalanceYAxisLimits } from './AccountBalanceLineChart';
 
@@ -27,6 +28,7 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
   yAxisCurrency,
   height = 220,
 }) => {
+  const { t } = useTranslation();
   const [isDarkMode, setIsDarkMode] = useState(() =>
     document.documentElement.classList.contains('dark')
   );
@@ -68,7 +70,7 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
   const dataset = useMemo(() => {
     const data = balanceData.map((v) => (v != null && !Number.isNaN(v) ? v : null));
     return {
-      label: 'Solde',
+      label: t('dashboard.series.balanceOnly'),
       data,
       borderColor: SEGMENT_UP,
       backgroundColor: 'transparent',
@@ -89,7 +91,7 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
       },
       spanGaps: false,
     };
-  }, [balanceData, isDarkMode]);
+  }, [balanceData, isDarkMode, t]);
 
   const yLimits = useMemo(
     () => calculateBalanceYAxisLimits([{ data: balanceData }]),
@@ -123,7 +125,7 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
           max: yLimits.max,
           title: {
             display: true,
-            text: `Solde (${yAxisCurrency})`,
+            text: t('dashboard.series.balanceAxis', { currency: yAxisCurrency }),
             font: { size: 12, weight: 'bold' },
             color: isDarkMode ? '#cbd5e1' : '#1e293b',
           },
@@ -159,17 +161,17 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
               const i = context.dataIndex;
               const v = context.parsed.y;
               if (v == null) return '';
-              const lines: string[] = [`Solde: ${formatCurrency(v, yAxisCurrency)}`];
+              const lines: string[] = [`${t('dashboard.series.balanceOnly')}: ${formatCurrency(v, yAxisCurrency)}`];
               if (i > 0 && data?.length) {
                 const vPrev = data[i - 1];
                 if (vPrev != null && !Number.isNaN(vPrev)) {
                   const balanceDiff = v - vPrev;
                   lines.push(
-                    `Écart: ${balanceDiff >= 0 ? '+' : ''}${formatCurrency(balanceDiff, yAxisCurrency)}`
+                    `${t('dashboard.charts.diff')}: ${balanceDiff >= 0 ? '+' : ''}${formatCurrency(balanceDiff, yAxisCurrency)}`
                   );
                   if (vPrev !== 0) {
                     const balancePct = ((v - vPrev) / vPrev) * 100;
-                    lines.push(`Variation: ${balancePct >= 0 ? '+' : ''}${balancePct.toFixed(1)} %`);
+                    lines.push(`${t('dashboard.charts.variation')}: ${balancePct >= 0 ? '+' : ''}${balancePct.toFixed(1)} %`);
                   }
                 }
               }
@@ -179,7 +181,7 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
         },
       },
     }),
-    [isDarkMode, yAxisCurrency, yLimits]
+    [isDarkMode, yAxisCurrency, yLimits, t]
   );
 
   if (!periods.length || balanceData.every((v) => v == null || Number.isNaN(v))) {
@@ -188,7 +190,7 @@ const AccountBalanceStockChart: React.FC<AccountBalanceStockChartProps> = ({
         className="flex items-center justify-center text-gray-500 text-sm border border-dashed border-gray-200 rounded-lg"
         style={{ height }}
       >
-        Aucune donnée pour ce compte sur la période.
+        {t('dashboard.charts.noDataAccount')}
       </div>
     );
   }

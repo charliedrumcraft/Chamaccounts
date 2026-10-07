@@ -12,17 +12,23 @@ export const formatCurrency = (amount: number, currency: string = '£'): string 
 };
 
 /** Affichage tableau des soldes : aligné sur la devise choisie en Paramètres (pas de conversion). */
-export function formatBalanceAmountForUi(
-  amount: number,
-  fiat: 'EUR' | 'GBP' | 'CHF'
-): string {
-  if (fiat === 'CHF') {
+export function formatBalanceAmountForUi(amount: number, fiat: string): string {
+  const code = (fiat ?? 'EUR').trim().toUpperCase();
+  if (code === 'CHF') {
     const abs = Math.abs(amount);
     const [intPart, decPart] = abs.toFixed(2).split('.');
     const withThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     return `${amount < 0 ? '-' : ''}${withThousands}.${decPart} CHF`;
   }
-  const sym = fiat === 'GBP' ? '£' : '€';
+  const sym =
+    code === 'GBP' ? '£' : code === 'EUR' ? '€' : code === 'USD' ? '$' : code === 'JPY' ? '¥' : code;
+  // Codes ISO inconnus : symbole = code en suffixe si > 1 char non-symbole
+  if (sym.length > 1 && sym === code) {
+    const abs = Math.abs(amount);
+    const [intPart, decPart] = abs.toFixed(2).split('.');
+    const withThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `${amount < 0 ? '-' : ''}${withThousands}.${decPart} ${code}`;
+  }
   return formatCurrency(amount, sym);
 }
 
@@ -48,6 +54,24 @@ export const formatGbp = (value: string): string => {
   if (Number.isNaN(num)) return value;
   return formatCurrency(num, '£');
 };
+
+/** Affichage colonne AMOUNT selon la devise de la ligne (CURRENCY). Défaut EUR si vide. */
+export const formatAmountForRowCurrency = (value: string, currencyCode: string): string => {
+  const s = (value ?? '').trim();
+  if (s === '') return '';
+  const num = parseFloat(s.replace(/\s/g, '').replace(',', '.'));
+  if (Number.isNaN(num)) return value;
+  const c = (currencyCode ?? '').trim().toUpperCase();
+  if (c === 'GBP') return formatCurrency(num, '£');
+  if (c === 'CHF') {
+    const abs = Math.abs(num);
+    const [intPart, decPart] = abs.toFixed(2).split('.');
+    const withThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `${num < 0 ? '-' : ''}${withThousands}.${decPart} CHF`;
+  }
+  return formatCurrency(num, '€');
+};
+
 export const formatFx = (value: string): string => {
   const s = (value ?? '').trim();
   if (s === '') return '';

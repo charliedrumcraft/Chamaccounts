@@ -1,5 +1,5 @@
 /**
- * Service pour lire les soldes des comptes depuis account_balance.csv (ou src_account_balance.csv) dans data/AccountBalanceData/Processed.
+ * Service soldes de comptes : SQLite account_balance.db via IPC + miroir CSV.
  * On utilise uniquement les lignes au début de chaque mois (jour = 1) pour le graphique.
  */
 
@@ -8,52 +8,26 @@ import { FileService } from './FileService';
 import Papa from 'papaparse';
 import { parse, isValid, format, startOfDay, getDate } from 'date-fns';
 import { fr } from 'date-fns/locale';
+import {
+  SETTINGS_ACCOUNT_NAME_TO_CODE,
+  COLUMN_TO_ACCOUNT_CODE,
+  ACCOUNT_CODE_TO_CURRENCY,
+  getBalanceCodeForSettingsAccountName,
+  resolveAccountHeaderToCode as resolveAccountHeaderToCodeShared,
+  defaultFiatForSettingsAccountName as defaultFiatShared,
+  formatAmountForFiat as formatAmountForFiatShared,
+  type AccountFiatCurrency,
+  type BalanceAccountColumn,
+  type BalanceRowDto,
+} from '@/shared/accountBalanceCodes';
+import i18n from '../i18n';
 
-/**
- * Noms des comptes actifs (Paramètres) → code interne stable.
- * Les en-têtes de src_account_balance.csv utilisent ces libellés après migration.
- */
-export const SETTINGS_ACCOUNT_NAME_TO_CODE: Record<string, string> = {
-  CM: 'CM',
-  'REV EUR': 'REV_EUR',
-  'REV GBP': 'REV_GBP',
-  'REV CHF': 'REV_CHF',
-  N26FR: 'N26FR',
-  N26DE: 'N26DE',
-  'HSBC A/C': 'HSBC_AC',
-  'HSBC OBS': 'HSBC_SAVINGS',
-  Advanzia: 'ADVZ',
-  Cash: 'CASH',
+export {
+  SETTINGS_ACCOUNT_NAME_TO_CODE,
+  COLUMN_TO_ACCOUNT_CODE,
+  getBalanceCodeForSettingsAccountName,
 };
-
-/**
- * Clé des soldes pour un libellé Paramètres : code prédéfini (ex. Advanzia → ADVZ, CM → CM)
- * ou le libellé lui-même pour un compte ajouté par l’utilisateur (= en-tête de colonne dans src_account_balance.csv).
- */
-export function getBalanceCodeForSettingsAccountName(name: string): string | null {
-  const t = name.trim();
-  if (!t) return null;
-  if (t === 'LM') return 'CM';
-  const mapped = SETTINGS_ACCOUNT_NAME_TO_CODE[t];
-  if (mapped !== undefined) return mapped;
-  return t;
-}
-
-/** En-têtes CSV → code interne (import, anomalies, fusion). */
-export const COLUMN_TO_ACCOUNT_CODE: Record<string, string> = {
-  ...SETTINGS_ACCOUNT_NAME_TO_CODE,
-  // Anciens en-têtes CSV (rétrocompatibilité)
-  'HSBC SAVINGS': 'HSBC_SAVINGS',
-  /** Ancien libellé Paramètres / en-tête CSV (même code interne que CM). */
-  LM: 'CM',
-  'LB CM': 'CM',
-  'Revolut GBP': 'REV_GBP',
-  'Revolut GBP Savings': 'REV_GBP',
-  'Revolut EUR': 'REV_EUR',
-  'Revolut CHF': 'REV_CHF',
-  'Cash EUR': 'CASH',
-  Advanz: 'ADVZ',
-};
+export type { AccountFiatCurrency };
 
 /** Libellés d’affichage par code de compte (légende graphique, repli si pas dans Paramètres). */
 export const ACCOUNT_CODE_TO_LABEL: Record<string, string> = {
@@ -89,50 +63,16 @@ export const KNOWN_ACCOUNT_NAMES = new Set<string>([
   'HSBC', // libellé court utilisé dans source_data
 ]);
 
-/** Symbole ou code devise par code de compte (défaut si non surchargé dans Paramètres). */
-export const ACCOUNT_CODE_TO_CURRENCY: Record<string, string> = {
-  REV_GBP: '£',
-  REV_CHF: 'CHF',
-  HSBC_SAVINGS: '£',
-  HSBC_AC: '£',
-  CM: '€',
-  N26FR: '€',
-  N26DE: '€',
-  REV_EUR: '€',
-  ADVZ: '€',
-  CASH: '€',
-};
-
-/** Devise d’affichage / du CSV pour un compte Paramètres (les montants ne sont pas convertis, seul le format change). */
-export type AccountFiatCurrency = 'EUR' | 'GBP' | 'CHF';
+export { ACCOUNT_CODE_TO_CURRENCY };
 
 /** Devise par défaut d’après le code interne (aligné sur l’existant src_account_balance.csv). */
 export function defaultFiatForSettingsAccountName(name: string): AccountFiatCurrency {
-  const code = getBalanceCodeForSettingsAccountName(name);
-  if (!code) return 'EUR';
-  const sym = ACCOUNT_CODE_TO_CURRENCY[code] ?? '€';
-  if (sym === '£') return 'GBP';
-  if (sym === 'CHF') return 'CHF';
-  return 'EUR';
+  return defaultFiatShared(name);
 }
 
 /** Formate un montant pour le CSV ou l’UI selon la devise choisie (pas de conversion de valeur). */
 export function formatAmountForFiat(amount: number, fiat: AccountFiatCurrency): string {
-  if (Math.abs(amount) < 1e-9) return '';
-  const neg = amount < 0;
-  const v = Math.abs(amount);
-  const [intPart, dec] = v
-    .toFixed(2)
-    .replace('.', ',')
-    .split(',');
-  const intDotted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  if (fiat === 'GBP') {
-    return `${neg ? '-' : ''}£${intDotted},${dec}`;
-  }
-  if (fiat === 'CHF') {
-    return `${neg ? '-' : ''}${intDotted},${dec} CHF`;
-  }
-  return `${neg ? '-' : ''}${intDotted},${dec} €`;
+  return formatAmountForFiatShared(amount, fiat);
 }
 
 export const ACCOUNT_BALANCE_PROCESSED_FILENAMES = [
@@ -144,27 +84,79 @@ export const ACCOUNT_BALANCE_PROCESSED_FILENAMES = [
 const ACCOUNT_BALANCE_FILES = ACCOUNT_BALANCE_PROCESSED_FILENAMES;
 
 const DEFAULT_ACCOUNT_COLORS: Record<string, string> = {
-  // HSBC = nuances de rouge
   HSBC_SAVINGS: '#dc2626',
   HSBC_AC: '#ef4444',
-  // CM : bleu un peu plus clair qu’Advanzia (#2563eb)
   CM: '#3b82f6',
-  // N26 = nuances de vert
   N26FR: '#059669',
   N26DE: '#10b981',
-  // Revolut = nuances de violet
   REV_GBP: '#7c3aed',
   REV_EUR: '#8b5cf6',
   REV_CHF: '#a78bfa',
-  // Advanzia = bleu
   ADVZ: '#2563eb',
-  // Cash = gris
   CASH: '#64748b',
 };
 
 export interface BalanceRow {
   date: Date;
   balances: Record<string, number>;
+}
+
+type ElectronBalanceApi = {
+  accountBalanceGetAll?: () => Promise<{
+    success: boolean;
+    data?: BalanceRowDto[] | null;
+    error?: string;
+  }>;
+  accountBalanceGetMonthlyChart?: () => Promise<{
+    success: boolean;
+    data?: {
+      periods: string[];
+      dateMsList: number[];
+      accounts: string[];
+      accountCodes: string[];
+      balanceData: number[][];
+      accountColors: Record<string, string>;
+      granularity: 'month';
+    } | null;
+    error?: string;
+  }>;
+  accountBalanceNearestRow?: (
+    targetMs: number
+  ) => Promise<{ success: boolean; data?: BalanceRowDto | null; error?: string }>;
+  accountBalanceGetMirrorHeaders?: () => Promise<{
+    success: boolean;
+    data?: string[] | null;
+    error?: string;
+  }>;
+  accountBalanceDetectAnomalies?: (payload: {
+    activeAccounts: Array<{ name: string; currency: AccountFiatCurrency }>;
+    writeReport?: boolean;
+  }) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  accountBalanceReplaceAll?: (payload: {
+    rows: BalanceRowDto[];
+    accounts: BalanceAccountColumn[];
+  }) => Promise<{ success: boolean; error?: string; count: number }>;
+  accountBalanceRewriteColumns?: (
+    accounts: BalanceAccountColumn[]
+  ) => Promise<{ success: boolean; error?: string }>;
+};
+
+function getBalanceApi(): ElectronBalanceApi | undefined {
+  return (window as unknown as { electronAPI?: ElectronBalanceApi }).electronAPI;
+}
+
+function dtoToBalanceRow(dto: BalanceRowDto): BalanceRow {
+  return {
+    date: startOfDay(new Date(dto.dateMs)),
+    balances: { ...dto.balances },
+  };
+}
+
+function balanceRowToDto(row: BalanceRow): BalanceRowDto {
+  return {
+    dateMs: startOfDay(row.date).getTime(),
+    balances: { ...row.balances },
+  };
 }
 
 export class AccountBalanceCSVService {
@@ -188,7 +180,6 @@ export class AccountBalanceCSVService {
     if (!dateStr || !String(dateStr).trim()) return null;
     const s = String(dateStr).trim();
     const ref = new Date();
-    // Accepter DD.MM.YYYY et DD/MM/YYYY (même traitement)
     const formats = ['dd.MM.yy', 'dd.MM.yyyy', 'dd/MM/yy', 'dd/MM/yyyy'] as const;
     for (const fmt of formats) {
       const d = parse(s, fmt, ref);
@@ -294,39 +285,34 @@ export class AccountBalanceCSVService {
   }
 
   /**
-   * Charge et parse le CSV (toutes les lignes). Utilisé en interne et pour le tableau.
+   * Charge toutes les lignes depuis SQLite (IPC). Utilisé en interne et pour le tableau.
    */
   private static async loadAllRows(): Promise<BalanceRow[] | null> {
     if (this.cache) return this.cache;
 
-    const dataDir = this.getDataDirectory();
-    let content: string | null = null;
-    for (const fileName of ACCOUNT_BALANCE_FILES) {
-      try {
-        content = await FileService.readFile(`${dataDir}/${fileName}`);
-        break;
-      } catch {
-        continue;
-      }
-    }
-    if (!content) return null;
-
-    const rows = this.parseBalanceCsvContent(content);
-    if (rows !== null) {
+    const api = getBalanceApi();
+    if (!api?.accountBalanceGetAll) return null;
+    try {
+      const result = await api.accountBalanceGetAll();
+      if (!result.success || !result.data) return null;
+      const rows = result.data.map(dtoToBalanceRow);
+      rows.sort((a, b) => a.date.getTime() - b.date.getTime());
       this.cache = rows;
+      return rows;
+    } catch {
+      return null;
     }
-    return rows;
   }
 
   /**
-   * Charge toutes les lignes du CSV Account-balance (pour affichage tableau).
+   * Charge toutes les lignes Account-balance (pour affichage tableau).
    */
   static async loadAllBalanceRows(): Promise<BalanceRow[] | null> {
     return this.loadAllRows();
   }
 
   /**
-   * Charge et parse le CSV. Ne conserve que les lignes au 1er du mois.
+   * Charge et ne conserve que les lignes au 1er du mois.
    */
   static async loadMonthlyBalanceRows(): Promise<BalanceRow[] | null> {
     const allRows = await this.loadAllRows();
@@ -338,8 +324,57 @@ export class AccountBalanceCSVService {
     this.cache = null;
   }
 
+  static async loadNearestBalanceRow(targetMs: number): Promise<BalanceRow | null> {
+    const api = getBalanceApi();
+    if (!api?.accountBalanceNearestRow) return null;
+    try {
+      const result = await api.accountBalanceNearestRow(targetMs);
+      if (!result.success || !result.data) return null;
+      return {
+        date: startOfDay(new Date(result.data.dateMs)),
+        balances: { ...result.data.balances },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  static async loadMirrorHeaders(): Promise<string[] | null> {
+    const api = getBalanceApi();
+    if (!api?.accountBalanceGetMirrorHeaders) return null;
+    try {
+      const result = await api.accountBalanceGetMirrorHeaders();
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async detectAnomalies(payload: {
+    activeAccounts: Array<{ name: string; currency: AccountFiatCurrency }>;
+    writeReport?: boolean;
+  }): Promise<
+    | (import('@/shared/transactionQueryTypes').DetectAnomaliesResultDto & {
+        fileLevelReasons?: import('@/shared/anomalyReasons').AnomalyReason[];
+      })
+    | null
+  > {
+    const api = getBalanceApi();
+    if (!api?.accountBalanceDetectAnomalies) return null;
+    try {
+      const result = await api.accountBalanceDetectAnomalies(payload);
+      if (!result.success || !result.data) return null;
+      return result.data as import('@/shared/transactionQueryTypes').DetectAnomaliesResultDto & {
+        fileLevelReasons?: import('@/shared/anomalyReasons').AnomalyReason[];
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /**
-   * Lit le CSV Processed tel quel (lignes brutes) pour la détection d'anomalies.
+   * Lit le CSV miroir Processed tel quel (lignes brutes) pour la détection d'anomalies.
    */
   static async loadRawCsvRows(): Promise<{
     headers: string[];
@@ -367,168 +402,54 @@ export class AccountBalanceCSVService {
   }
 
   static resolveAccountHeaderToCode(header: string | undefined): string | undefined {
-    if (!header) return undefined;
-    const normalizedHeader = header.replace(/^\uFEFF/, '').trim().replace(/\s+/g, ' ');
-    if (!normalizedHeader || /^date$/i.test(normalizedHeader)) return undefined;
-    let code =
-      COLUMN_TO_ACCOUNT_CODE[header] ??
-      COLUMN_TO_ACCOUNT_CODE[normalizedHeader] ??
-      COLUMN_TO_ACCOUNT_CODE[header.trim()];
-    if (!code) {
-      for (const [csvHeader, accountCode] of Object.entries(COLUMN_TO_ACCOUNT_CODE)) {
-        if (normalizedHeader.includes(csvHeader) || csvHeader.includes(normalizedHeader)) {
-          code = accountCode;
-          break;
-        }
-      }
-    }
-    if (code) return code;
-    return normalizedHeader;
+    return resolveAccountHeaderToCodeShared(header);
   }
 
   /**
-   * Agrège les cellules du fichier courant pour un libellé Paramètres (même code interne, ex. deux colonnes Revolut GBP).
-   */
-  private static mergedCellForAccount(
-    row: Record<string, string>,
-    accountDisplayName: string,
-    fiat: AccountFiatCurrency
-  ): string {
-    const code = getBalanceCodeForSettingsAccountName(accountDisplayName);
-    if (!code) return '';
-    let sum = 0;
-    let anyRaw = false;
-    for (const h of Object.keys(row)) {
-      const ht = h.replace(/^\uFEFF/, '').trim();
-      if (!ht || /^date$/i.test(ht)) continue;
-      const mapped = this.resolveAccountHeaderToCode(h);
-      if (mapped !== code) continue;
-      const raw = row[h];
-      if (raw !== undefined && String(raw).trim() !== '') anyRaw = true;
-      sum += this.parseAmount(raw);
-    }
-    if (!anyRaw && Math.abs(sum) < 1e-9) return '';
-    return formatAmountForFiat(sum, fiat);
-  }
-
-  /**
-   * Réécrit src_account_balance.csv : colonnes après DATE = ordre des comptes Paramètres (nom + devise d’affichage).
+   * Réécrit colonnes soldes (DB + miroir CSV) selon l’ordre des comptes Paramètres.
    */
   static async rewriteCsvWithColumnOrder(
     accounts: { name: string; currency: AccountFiatCurrency }[]
   ): Promise<{ success: boolean; error?: string }> {
     this.invalidateCache();
-    const dataDir = this.getDataDirectory();
-    let fileNameUsed: string | null = null;
-    let content: string | null = null;
-    for (const fileName of ACCOUNT_BALANCE_FILES) {
-      try {
-        content = await FileService.readFile(`${dataDir}/${fileName}`);
-        fileNameUsed = fileName;
-        break;
-      } catch {
-        continue;
-      }
+    const api = getBalanceApi();
+    if (!api?.accountBalanceRewriteColumns) {
+      return { success: false, error: i18n.t('system.apiUnavailable', { name: 'accountBalanceRewriteColumns' }) };
     }
-    if (!content || !fileNameUsed) {
-      return { success: false, error: 'src_account_balance.csv introuvable.' };
+    try {
+      const result = await api.accountBalanceRewriteColumns(accounts);
+      this.invalidateCache();
+      return result.success ? { success: true } : { success: false, error: result.error };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
     }
-
-    const parsed = Papa.parse(content, {
-      header: true,
-      delimiter: ';',
-      skipEmptyLines: true,
-    });
-
-    if (!parsed.data?.length) {
-      return { success: false, error: 'Fichier src_account_balance.csv vide.' };
-    }
-
-    const rawFields = (parsed.meta.fields || []).map((f) => f?.replace(/^\uFEFF/, '').trim() ?? '');
-    const dateKey = rawFields.find((f) => /^date$/i.test(f)) ?? 'DATE';
-
-    const orderedEntries = accounts
-      .map((a) => ({ name: a.name.trim(), currency: a.currency }))
-      .filter((a) => a.name && getBalanceCodeForSettingsAccountName(a.name));
-
-    const outRows: Record<string, string>[] = [];
-    for (const row of parsed.data as Record<string, string>[]) {
-      const dateVal = row[dateKey] ?? row['DATE'] ?? row['Date'] ?? '';
-      if (!String(dateVal).trim()) continue;
-      const date = this.parseCSVDate(String(dateVal).trim());
-      if (!date) continue;
-      const out: Record<string, string> = { [dateKey]: String(dateVal).trim() };
-      for (const { name, currency } of orderedEntries) {
-        out[name] = this.mergedCellForAccount(row, name, currency);
-      }
-      outRows.push(out);
-    }
-
-    if (outRows.length === 0) {
-      return { success: false, error: 'Aucune ligne de données valide dans src_account_balance.csv.' };
-    }
-
-    const csvOut = Papa.unparse(
-      {
-        fields: [dateKey, ...orderedEntries.map((e) => e.name)],
-        data: outRows,
-      },
-      { delimiter: ';' }
-    );
-
-    const api = (
-      window as unknown as {
-        electronAPI?: {
-          writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
-        };
-      }
-    ).electronAPI;
-    if (!api?.writeFile) {
-      return { success: false, error: 'Écriture fichier non disponible (Electron).' };
-    }
-
-    const result = await api.writeFile(`${dataDir}/${fileNameUsed}`, csvOut);
-    this.invalidateCache();
-    return result.success ? { success: true } : { success: false, error: result.error ?? 'Écriture refusée.' };
   }
 
   /**
-   * Enregistre les lignes de soldes dans Processed (même nom de fichier qu’à l’ouverture, sinon src_account_balance.csv).
+   * Enregistre les lignes de soldes dans SQLite (+ miroir CSV).
    */
   static async saveBalanceRowsToProcessed(
     rows: BalanceRow[],
     accounts: { name: string; currency: AccountFiatCurrency }[]
   ): Promise<{ success: boolean; error?: string }> {
     this.invalidateCache();
-    const dataDir = this.getDataDirectory();
-    let fileNameUsed: string | null = null;
-    for (const fileName of ACCOUNT_BALANCE_FILES) {
-      try {
-        await FileService.readFile(`${dataDir}/${fileName}`);
-        fileNameUsed = fileName;
-        break;
-      } catch {
-        continue;
-      }
+    const api = getBalanceApi();
+    if (!api?.accountBalanceReplaceAll) {
+      return { success: false, error: i18n.t('system.apiUnavailable', { name: 'accountBalanceReplaceAll' }) };
     }
-    const target = fileNameUsed ?? 'src_account_balance.csv';
-    const sorted = [...rows].sort((a, b) => a.date.getTime() - b.date.getTime());
-    const csvOut = this.balanceRowsToCsv(sorted, accounts);
-
-    const api = (
-      window as unknown as {
-        electronAPI?: {
-          writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
-        };
-      }
-    ).electronAPI;
-    if (!api?.writeFile) {
-      return { success: false, error: 'Écriture fichier non disponible (Electron).' };
+    try {
+      const sorted = [...rows].sort((a, b) => a.date.getTime() - b.date.getTime());
+      const result = await api.accountBalanceReplaceAll({
+        rows: sorted.map(balanceRowToDto),
+        accounts,
+      });
+      this.invalidateCache();
+      return result.success ? { success: true } : { success: false, error: result.error };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
     }
-
-    const result = await api.writeFile(`${dataDir}/${target}`, csvOut);
-    this.invalidateCache();
-    return result.success ? { success: true } : { success: false, error: result.error ?? 'Écriture refusée.' };
   }
 
   /**
@@ -543,6 +464,26 @@ export class AccountBalanceCSVService {
     accountColors: Record<string, string>;
     granularity: 'day' | 'week' | 'month';
   } | null> {
+    const api = getBalanceApi();
+    if (api?.accountBalanceGetMonthlyChart) {
+      try {
+        const result = await api.accountBalanceGetMonthlyChart();
+        if (result.success && result.data) {
+          return {
+            periods: result.data.periods,
+            dates: result.data.dateMsList.map((ms) => new Date(ms)),
+            accounts: result.data.accounts,
+            accountCodes: result.data.accountCodes,
+            balanceData: result.data.balanceData,
+            accountColors: result.data.accountColors,
+            granularity: 'month',
+          };
+        }
+      } catch {
+        /* fallback below */
+      }
+    }
+
     const rows = await this.loadMonthlyBalanceRows();
     if (!rows || rows.length === 0) return null;
 
@@ -564,9 +505,7 @@ export class AccountBalanceCSVService {
       });
     });
 
-    const accountLabels = accountList.map(
-      (code) => ACCOUNT_CODE_TO_LABEL[code] ?? code
-    );
+    const accountLabels = accountList.map((code) => ACCOUNT_CODE_TO_LABEL[code] ?? code);
 
     return {
       periods,

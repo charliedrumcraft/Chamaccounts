@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Profile } from '@/shared/profiles';
 import { DATA_TEMPLATE_PROFILE_NAME } from '@/shared/dataTemplateProfile';
 import {
@@ -6,6 +7,7 @@ import {
 } from '../../services/profileAppStateSync';
 
 const ProfilesSection: React.FC = () => {
+  const { t } = useTranslation();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeDataRoot, setActiveDataRoot] = useState<string | null>(null);
@@ -36,25 +38,25 @@ const ProfilesSection: React.FC = () => {
       try {
         const left = await syncAppStateOnProfileLeave();
         if (!left.ok) {
-          setMessage(left.error ?? 'Impossible de sauvegarder les réglages du profil actuel.');
+          setMessage(left.error ?? t('settings.profiles.saveCurrentFailed'));
           return;
         }
         const r = await api.setActiveProfile(profileId);
         if (!r.ok) {
-          setMessage(r.error ?? 'Impossible d’activer le profil.');
+          setMessage(r.error ?? t('settings.profiles.activateFailed'));
           return;
         }
         if (api.reloadWindowForActiveProfile) {
-          setMessage('Profil activé. Rechargement…');
+          setMessage(t('settings.profiles.activatedReloading'));
           await api.reloadWindowForActiveProfile();
           return;
         }
-        setMessage('Profil activé.');
+        setMessage(t('settings.profiles.activated'));
       } finally {
         setLoading(false);
       }
     },
-    [activeId]
+    [activeId, t]
   );
 
   const handleAddProfile = useCallback(async () => {
@@ -70,7 +72,7 @@ const ProfilesSection: React.FC = () => {
         const init = await api.initializeDataFolder(pick.path);
         if (init.success && init.path) dataRoot = init.path;
       }
-      const name = newName.trim() || pick.path.split(/[/\\]/).pop() || 'Profil';
+      const name = newName.trim() || pick.path.split(/[/\\]/).pop() || t('common.defaultProfileName');
       const r = await api.registerDataProfile({
         name,
         dataRoot,
@@ -78,67 +80,60 @@ const ProfilesSection: React.FC = () => {
         setActive: false,
       });
       if (!r.success) {
-        setMessage(r.error ?? 'Impossible d’ajouter le profil.');
+        setMessage(r.error ?? t('settings.profiles.addFailed'));
         return;
       }
       setNewName('');
       await refresh();
-      setMessage(`Profil « ${name} » ajouté. Activez-le pour l’utiliser.`);
+      setMessage(t('settings.profiles.added', { name }));
     } finally {
       setLoading(false);
     }
-  }, [newName, refresh]);
+  }, [newName, refresh, t]);
 
   const handleRename = useCallback(
     async (profileId: string, name: string) => {
       const api = window.electronAPI;
       if (!api?.renameDataProfile) return;
       const r = await api.renameDataProfile({ profileId, name });
-      if (!r.ok) setMessage(r.error ?? 'Renommage impossible.');
+      if (!r.ok) setMessage(r.error ?? t('settings.profiles.renameFailed'));
       else void refresh();
     },
-    [refresh]
+    [refresh, t]
   );
 
   const handleRemove = useCallback(
     async (profileId: string) => {
-      if (
-        !window.confirm(
-          'Retirer ce profil de la liste ? Les fichiers sur le disque ne seront pas supprimés.'
-        )
-      ) {
+      if (!window.confirm(t('settings.profiles.removeConfirm'))) {
         return;
       }
       const api = window.electronAPI;
       if (!api?.removeDataProfile) return;
       const wasActive = profileId === activeId;
       const r = await api.removeDataProfile(profileId);
-      if (!r.ok) setMessage(r.error ?? 'Suppression impossible.');
+      if (!r.ok) setMessage(r.error ?? t('settings.profiles.removeFailed'));
       else {
         await refresh();
         if (wasActive && api.reloadWindowForActiveProfile) {
-          setMessage('Profil retiré. Rechargement…');
+          setMessage(t('settings.profiles.removedReloading'));
           await api.reloadWindowForActiveProfile();
           return;
         }
-        setMessage('Profil retiré de la liste.');
+        setMessage(t('settings.profiles.removed'));
       }
     },
-    [refresh]
+    [activeId, refresh, t]
   );
 
   return (
     <div className="w-full bg-white rounded-lg shadow border border-gray-200 p-5" data-tour="settings-profiles">
-      <h2 className="text-lg font-semibold text-gray-800 mb-1">Profils de données</h2>
+      <h2 className="text-lg font-semibold text-gray-800 mb-1">{t('settings.profiles.title')}</h2>
       <p className="text-sm text-gray-600 mb-4 max-w-3xl">
-        Chaque profil pointe vers un dossier que vous choisissez (transactions, soldes, soutien,
-        réglages dans <code className="text-xs bg-slate-100 px-1 rounded">AppState/</code>). À
-        l’activation d’un autre profil, les réglages du profil sortant sont écrits dans son dossier,
-        puis la fenêtre se recharge avec ceux du profil choisi.
+        {t('settings.profiles.description')}
       </p>
       {activeDataRoot && (
         <p className="text-xs text-slate-500 mb-3 truncate" title={activeDataRoot}>
-          Dossier actif : {activeDataRoot}
+          {t('settings.profiles.activeFolder', { path: activeDataRoot })}
         </p>
       )}
       <ul className="space-y-3 mb-4">
@@ -162,7 +157,7 @@ const ProfilesSection: React.FC = () => {
               {p.dataRoot}
             </span>
             {p.id === activeId ? (
-              <span className="text-xs font-medium text-emerald-800">Actif</span>
+              <span className="text-xs font-medium text-emerald-800">{t('common.active')}</span>
             ) : (
               <button
                 type="button"
@@ -170,7 +165,7 @@ const ProfilesSection: React.FC = () => {
                 onClick={() => void handleActivate(p.id)}
                 className="text-xs rounded border border-emerald-600 px-2 py-1 text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
               >
-                Activer
+                {t('common.activate')}
               </button>
             )}
             {profiles.length > 1 && p.name !== DATA_TEMPLATE_PROFILE_NAME && (
@@ -180,7 +175,7 @@ const ProfilesSection: React.FC = () => {
                 onClick={() => void handleRemove(p.id)}
                 className="text-xs text-red-700 hover:underline disabled:opacity-50"
               >
-                Retirer
+                {t('common.remove')}
               </button>
             )}
           </li>
@@ -189,14 +184,14 @@ const ProfilesSection: React.FC = () => {
       <div className="flex flex-wrap gap-2 items-end">
         <div>
           <label className="block text-xs text-slate-600 mb-1" htmlFor="new-profile-name">
-            Nom du nouveau profil
+            {t('settings.profiles.newNameLabel')}
           </label>
           <input
             id="new-profile-name"
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="ex. Professionnel"
+            placeholder={t('settings.profiles.newNamePlaceholder')}
             className="rounded border border-slate-300 px-2 py-1.5 text-sm w-48"
           />
         </div>
@@ -206,7 +201,7 @@ const ProfilesSection: React.FC = () => {
           onClick={() => void handleAddProfile()}
           className="rounded border border-slate-600 bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
         >
-          Ajouter un profil…
+          {t('settings.profiles.add')}
         </button>
       </div>
       {message && <p className="mt-3 text-sm text-gray-700">{message}</p>}

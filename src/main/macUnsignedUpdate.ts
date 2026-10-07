@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import { existsSync } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { tm } from './uiI18n';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,10 +32,10 @@ async function findAppBundle(dir: string): Promise<string | null> {
 export async function installMacUpdateFromZip(zipPath: string): Promise<void> {
   const destApp = getRunningMacAppBundle();
   if (!destApp) {
-    throw new Error('Bundle macOS introuvable (application non packagée ?).');
+    throw new Error(tm('error.macBundleMissing'));
   }
   if (!existsSync(zipPath)) {
-    throw new Error('Archive de mise à jour introuvable.');
+    throw new Error(tm('error.updateArchiveMissing'));
   }
 
   const staging = path.join(app.getPath('temp'), 'chamaccounts-update-stage');
@@ -44,12 +45,14 @@ export async function installMacUpdateFromZip(zipPath: string): Promise<void> {
 
   const newApp = await findAppBundle(staging);
   if (!newApp) {
-    throw new Error('L’archive de mise à jour ne contient pas d’application .app.');
+    throw new Error(tm('error.updateArchiveNoApp'));
   }
 
   const scriptPath = path.join(app.getPath('temp'), 'chamaccounts-apply-update.sh');
   const logFile = path.join(app.getPath('temp'), 'chamaccounts-update.log');
   const pid = process.pid;
+  // Message du dialogue osascript (hors guillemets doubles pour AppleScript).
+  const replaceFailedMessage = tm('update.macReplaceFailedDialog').replace(/"/g, "'");
   const script = `#!/bin/bash
 set -uo pipefail
 exec >> ${shQuote(logFile)} 2>&1
@@ -66,7 +69,7 @@ if rm -rf ${shQuote(destApp)} && ditto ${shQuote(newApp)} ${shQuote(destApp)}; t
 else
   echo "replace failed"
   open -R ${shQuote(newApp)}
-  osascript -e 'display dialog "Impossible de remplacer Chamaccounts automatiquement. Glissez la nouvelle version dans le dossier Applications." buttons {"OK"} default button 1' || true
+  osascript -e ${shQuote(`display dialog "${replaceFailedMessage}" buttons {"OK"} default button 1`)} || true
 fi
 `;
   await fs.writeFile(scriptPath, script, { encoding: 'utf-8', mode: 0o755 });

@@ -6,6 +6,7 @@ import AdmZip from 'adm-zip';
 import { DATA_ZIP_PREFIX } from '../shared/dataPaths';
 import { getActiveDataRoot, requireActiveDataRoot } from './appConfig';
 import type { LegacyDataLocation } from '../shared/profiles';
+import { tm } from './uiI18n';
 
 /** Racine d’installation (asar / projet) — ressources app, pas les données utilisateur. */
 export function getInstallPath(): string {
@@ -78,8 +79,8 @@ export function detectLegacyDataLocations(): LegacyDataLocation[] {
     if (existsSync(repoData)) {
       found.push({
         path: repoData,
-        label: 'Dossier data/ du dépôt de développement',
-        suggestedName: 'Développement',
+        label: tm('dataDir.devRepo'),
+        suggestedName: tm('dataDir.devName'),
       });
     }
   }
@@ -90,8 +91,8 @@ export function detectLegacyDataLocations(): LegacyDataLocation[] {
     if (!already) {
       found.push({
         path: userDataData,
-        label: 'Données dans le dossier application (ancienne version)',
-        suggestedName: 'Principal',
+        label: tm('dataDir.legacyApp'),
+        suggestedName: tm('dataDir.mainName'),
       });
     }
   }
@@ -106,8 +107,8 @@ export function detectLegacyDataLocations(): LegacyDataLocation[] {
       if (!already) {
         found.push({
           path: candidate,
-          label: 'Données embarquées (migration)',
-          suggestedName: 'Principal',
+          label: tm('dataDir.embeddedMigration'),
+          suggestedName: tm('dataDir.mainName'),
         });
       }
     }

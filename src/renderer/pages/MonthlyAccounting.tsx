@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
+import { format as formatDateFns, type Locale } from 'date-fns';
+import { enUS, fr as frLocale } from 'date-fns/locale';
 import { createPortal } from 'react-dom';
 import { Chart as ChartJS, ChartOptions, Filler, registerables } from 'chart.js';
 import { Line } from 'react-chartjs-2';
@@ -7,19 +11,37 @@ import {
   SourceDataCSVService,
   type SourceDataResult,
   SOURCE_DATA_PATH,
-  normalizeOrderAndIndex,
   stripSourceColumnFromSourceData,
-  sortSourceDataByDateChronology,
 } from '../services/SourceDataCSVService';
+import type { MonthlyTotalDto } from '@/shared/transactionQueryTypes';
+import { TRANSACTION_SOURCE_HEADERS } from '@/shared/sourceDataTypes';
 import { EXCLUDE_ANOMALY_COLUMN, detectAnomalies } from '../services/AnomalyDetectionService';
+import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
 import { getSuggestions, getDateSuggestionsForMonth, completeDateForMonth, isTextSuggestibleColumn } from '../services/SuggestInputService';
 import { accountLabelFromSource } from '../constants/accountSourceLabels';
 import { resolveBalanceLineIdForTransactionType } from '../constants/annualBudgetTypeMapping';
 import { getYearSnapshot, type YearSnapshot } from '../services/annualBudgetStorage';
-import { formatDateDDMMYYYY, formatEur, formatFx, formatGbp, formatCurrency, formatAmountGbpForCsv } from '../utils/format';
-import { convertMovementsToDisplayCurrency, amountToGbp } from '../services/EffectiveExchangeRates';
-import type { CurrencySymbol } from '../services/EffectiveExchangeRates';
-import Papa from 'papaparse';
+import {
+  formatDateDDMMYYYY,
+  formatAmountForRowCurrency,
+  formatFx,
+  formatCurrency,
+} from '../utils/format';
+import { isAmountIndicatorHeader, currencyDisplaySymbol } from '@/shared/workingCurrencies';
+import {
+  isAmountGbpIndicatorReadOnly,
+  syncTransactionAmountCurrencyOnEdit,
+} from '../utils/syncTransactionAmountCurrency';
+import {
+  convertMovementsToDisplayCurrency,
+  getEffectiveRates,
+  getCachedWorkingCurrencies,
+  type CurrencySymbol,
+} from '../services/EffectiveExchangeRates';
+import {
+  coerceDisplayCurrency,
+  displayCurrencyOptionsFromWorking,
+} from '../utils/displayCurrencyOptions';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
 import { ResizableTableHeadCell } from '../components/Common/ResizableTableHeadCell';
@@ -78,38 +100,14 @@ function loadOverviewBarToggles(): { average: boolean; budget: boolean } {
   }
 }
 
-const AVERAGE_PERIOD_OPTIONS: { value: string; label: string }[] = [
-  { value: '1', label: 'Dernier mois' },
-  { value: '3', label: '3 derniers mois' },
-  { value: '6', label: '6 derniers mois' },
-  { value: '12', label: '12 derniers mois' },
-  { value: '24', label: '2 ans' },
-  { value: '36', label: '3 ans' },
-  { value: '48', label: '4 ans' },
-];
+/** Valeurs de période (libellés : `monthlyAccounting.period.options.*`). */
+const AVERAGE_PERIOD_VALUES = ['1', '3', '6', '12', '24', '36', '48'];
 
 /** Phrase complète pour l’infobulle « écart vs moyenne » (ex. « sur les 12 derniers mois »). */
-function phraseMoyenneSurPeriode(periodValue: string): string {
-  switch (periodValue) {
-    case '1':
-      return 'sur le dernier mois';
-    case '3':
-      return 'sur les 3 derniers mois';
-    case '6':
-      return 'sur les 6 derniers mois';
-    case '12':
-      return 'sur les 12 derniers mois';
-    case '24':
-      return 'sur les 2 ans';
-    case '36':
-      return 'sur les 3 ans';
-    case '48':
-      return 'sur les 4 ans';
-    default: {
-      const opt = AVERAGE_PERIOD_OPTIONS.find((o) => o.value === periodValue);
-      return opt ? `sur ${opt.label.toLowerCase()}` : '';
-    }
-  }
+function phraseMoyenneSurPeriode(periodValue: string, t: TFunction): string {
+  return AVERAGE_PERIOD_VALUES.includes(periodValue)
+    ? t(`monthlyAccounting.period.phrases.${periodValue}`)
+    : '';
 }
 
 /**
@@ -133,6 +131,7 @@ function OverviewStatBarTooltipBubble(props: {
   year?: number;
   isSortiesRow: boolean;
 }) {
+  const { t } = useTranslation();
   const { variant, diff, currency, periodPhrase, year, isSortiesRow: isSorties } = props;
   const formatted = `${diff > 0 ? '+' : ''}${formatCurrency(diff, currency)}`;
   const isZero = diff === 0;
@@ -154,21 +153,25 @@ function OverviewStatBarTooltipBubble(props: {
             }`}
             aria-hidden
           >
-            {isAvg ? 'Moy.' : 'Prév.'}
+            {isAvg ? t('monthlyAccounting.tooltip.averageBadge') : t('monthlyAccounting.tooltip.budgetBadge')}
           </span>
           <div className="min-w-0 flex-1">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">
-              {isAvg ? 'Comparaison à la moyenne' : 'Comparaison au budget'}
+              {isAvg ? t('monthlyAccounting.tooltip.averageTitle') : t('monthlyAccounting.tooltip.budgetTitle')}
             </p>
             <p className="mt-1 text-[11px] leading-snug text-slate-400">
               {isAvg && periodPhrase ? (
-                <>
-                  Moyenne calculée <span className="font-medium text-slate-300">{periodPhrase}</span>.
-                </>
+                <Trans
+                  i18nKey="monthlyAccounting.tooltip.averageComputed"
+                  values={{ period: periodPhrase }}
+                  components={{ em: <span className="font-medium text-slate-300" /> }}
+                />
               ) : !isAvg && year != null ? (
-                <>
-                  Prévision mensuelle dérivée du budget annuel <span className="font-medium text-slate-300">{year}</span>.
-                </>
+                <Trans
+                  i18nKey="monthlyAccounting.tooltip.budgetDerived"
+                  values={{ year }}
+                  components={{ em: <span className="font-medium text-slate-300" /> }}
+                />
               ) : (
                 '\u00a0'
               )}
@@ -177,7 +180,7 @@ function OverviewStatBarTooltipBubble(props: {
         </div>
         <div className="mt-3 border-t border-white/10 pt-3">
           {isZero ? (
-            <p className="text-center text-sm font-semibold text-emerald-400/95">Écart nul</p>
+            <p className="text-center text-sm font-semibold text-emerald-400/95">{t('monthlyAccounting.tooltip.zeroDiff')}</p>
           ) : (
             <p
               className={`text-center text-xl font-bold tabular-nums tracking-tight drop-shadow-sm ${amountClass || 'text-white'}`}
@@ -188,12 +191,12 @@ function OverviewStatBarTooltipBubble(props: {
           <p className="mt-2 text-center text-[11px] leading-relaxed text-slate-500">
             {isAvg && periodPhrase
               ? isZero
-                ? 'Réalisé du mois égal à cette référence.'
-                : 'Montant du mois par rapport à cette moyenne (hors mois courant dans le calcul).'
+                ? t('monthlyAccounting.tooltip.averageZeroHint')
+                : t('monthlyAccounting.tooltip.averageDiffHint')
               : !isAvg && year != null
                 ? isZero
-                  ? 'Réalisé aligné sur la prévision pour ce mois.'
-                  : 'Écart du mois par rapport à la prévision mensuelle budgétée.'
+                  ? t('monthlyAccounting.tooltip.budgetZeroHint')
+                  : t('monthlyAccounting.tooltip.budgetDiffHint')
                 : null}
           </p>
         </div>
@@ -208,11 +211,6 @@ function OverviewStatBarTooltipBubble(props: {
   );
 }
 
-const Y_AXIS_CURRENCIES = [
-  { value: '£', label: 'GBP (£)' },
-  { value: '€', label: 'EUR (€)' },
-  { value: 'CHF', label: 'CHF' },
-] as const;
 /** Parse une cellule date en Date ou null (ISO ou JJ/MM/AAAA, JJ.MM.AAAA). */
 function parseDateFromCell(raw: string): Date | null {
   const s = (raw ?? '').trim();
@@ -281,13 +279,9 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-const MONTH_NAMES = [
-  'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
-  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
-];
-
-function formatMonthLabel(year: number, month: number): string {
-  return `${MONTH_NAMES[month - 1]} ${year}`;
+/** Libellé « mois année » selon la locale de l’interface (date-fns). */
+function formatMonthLabel(year: number, month: number, locale: Locale): string {
+  return formatDateFns(new Date(year, month - 1, 1), 'MMMM yyyy', { locale });
 }
 
 function getCompareValue(header: string, raw: string): number | string {
@@ -391,6 +385,8 @@ function isMonthlyEditSessionDirty(
 }
 
 const MonthlyAccounting: React.FC = () => {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'fr' ? frLocale : enUS;
   const projects = useProjectsFromStorage();
   const [data, setData] = useState<SourceDataResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -430,15 +426,29 @@ const MonthlyAccounting: React.FC = () => {
       return true;
     }
   });
-  /** Devise de l'axe Y du graphique cumulé (GBP par défaut, comme source_data). */
+  /** Devise de l'axe Y du graphique cumulé (primaire du profil par défaut). */
   const [cumulativeChartYAxisCurrency, setCumulativeChartYAxisCurrency] = useState<string>(() => {
     try {
-      const v = localStorage.getItem(CUMULATIVE_CHART_Y_AXIS_CURRENCY);
-      return v === '£' || v === '€' || v === 'CHF' ? v : '£';
+      return coerceDisplayCurrency(localStorage.getItem(CUMULATIVE_CHART_Y_AXIS_CURRENCY));
     } catch {
-      return '£';
+      return coerceDisplayCurrency(null);
     }
   });
+  const yAxisCurrencies = displayCurrencyOptionsFromWorking();
+  const yAxisCurrenciesKey = yAxisCurrencies.map((o) => o.value).join('|');
+  useEffect(() => {
+    setCumulativeChartYAxisCurrency((prev) => {
+      const next = coerceDisplayCurrency(prev);
+      if (next !== prev) {
+        try {
+          localStorage.setItem(CUMULATIVE_CHART_Y_AXIS_CURRENCY, next);
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
+  }, [yAxisCurrenciesKey]);
   const [cumulativeChartHeightPx, setCumulativeChartHeightPx] = useState(() => {
     try {
       const v = localStorage.getItem(CUMULATIVE_CHART_HEIGHT_PX);
@@ -464,7 +474,7 @@ const MonthlyAccounting: React.FC = () => {
   const [overviewAveragePeriod, setOverviewAveragePeriod] = useState<string>(() => {
     try {
       const v = localStorage.getItem(OVERVIEW_AVERAGE_PERIOD);
-      const opts = AVERAGE_PERIOD_OPTIONS.map((o) => o.value);
+      const opts = AVERAGE_PERIOD_VALUES;
       return v && opts.includes(v) ? v : '3';
     } catch {
       return '3';
@@ -496,25 +506,43 @@ const MonthlyAccounting: React.FC = () => {
     return () => document.removeEventListener('scroll', clear, true);
   }, []);
 
-  const loadData = useCallback(() => {
+  const [availableMonthKeys, setAvailableMonthKeys] = useState<string[]>([]);
+  const [monthlyTotalsRaw, setMonthlyTotalsRaw] = useState<MonthlyTotalDto[]>([]);
+
+  /** Lecture mensuelle (pas de full load). Édition charge le jeu complet à part. */
+  const loadViewData = useCallback(async (monthKey: string) => {
     setLoading(true);
     setError(null);
-    SourceDataCSVService.load()
-      .then((result) => {
-        setData(result);
-        if (!result) {
-          setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
-        }
-      })
-      .catch((err) => {
-        setError(err?.message ?? 'Erreur lors du chargement des données.');
-      })
-      .finally(() => setLoading(false));
-  }, []);
+    try {
+      const [keys, totals, monthData] = await Promise.all([
+        SourceDataCSVService.getMonthKeys(),
+        SourceDataCSVService.getMonthlyTotals(),
+        monthKey ? SourceDataCSVService.loadByMonth(monthKey) : Promise.resolve(null),
+      ]);
+      setAvailableMonthKeys(keys?.monthKeys ?? []);
+      setMonthlyTotalsRaw(totals ?? []);
+      if (monthData?.headers?.length) {
+        setData(monthData);
+      } else {
+        setData({
+          headers: [...TRANSACTION_SOURCE_HEADERS],
+          rows: [],
+        });
+      }
+      if (!(keys?.monthKeys?.length) && !(monthData?.rows?.length)) {
+        setError(t('monthlyAccounting.errors.fileMissing', { path: SOURCE_DATA_PATH }));
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : t('transactions.loadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [t]);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (editMode) return;
+    void loadViewData(selectedMonth);
+  }, [selectedMonth, editMode, loadViewData]);
 
   /** Synchronise rowsExcludedFromAnomaly avec la colonne Exclure_anomalie au chargement. */
   useEffect(() => {
@@ -588,6 +616,9 @@ const MonthlyAccounting: React.FC = () => {
 
   /** Mois présents dans les données (année-mois), du plus récent au plus ancien. */
   const availableMonths = useMemo(() => {
+    if (availableMonthKeys.length > 0) {
+      return [...availableMonthKeys].sort((a, b) => b.localeCompare(a));
+    }
     if (!data?.rows?.length || !dateColumn) return [];
     const set = new Set<string>();
     for (const row of data.rows) {
@@ -595,7 +626,7 @@ const MonthlyAccounting: React.FC = () => {
       if (d) set.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
     }
     return Array.from(set).sort((a, b) => b.localeCompare(a));
-  }, [data?.rows, dateColumn]);
+  }, [availableMonthKeys, data?.rows, dateColumn]);
 
   /** Mois suivant le plus récent dans les données (ou mois courant si aucune donnée). */
   const nextMonth = useMemo(() => {
@@ -648,28 +679,24 @@ const MonthlyAccounting: React.FC = () => {
   };
 
   const rowsForMonth = useMemo(() => {
-    if (!data?.rows?.length || !dateColumn || !selectedMonth) return [];
+    if (!data?.rows?.length || !selectedMonth) return [];
+    if (!editMode) return data.rows;
+    if (!dateColumn) return [];
     const [y, m] = selectedMonth.split('-').map(Number);
     return data.rows.filter((row) => {
       const d = parseDateFromCell(row[dateColumn] ?? '');
       if (!d) return false;
       return d.getFullYear() === y && d.getMonth() + 1 === m;
     });
-  }, [data?.rows, dateColumn, selectedMonth]);
+  }, [data?.rows, dateColumn, selectedMonth, editMode]);
 
-  /** Indices dans data.rows des lignes du mois (même ordre que rowsForMonth), pour le rapport d'anomalies. */
+  /** Indices 0-based dans le fichier source (Index DB), pour le rapport d'anomalies. */
   const rowsForMonthIndicesInSource = useMemo(() => {
-    if (!data?.rows?.length || !dateColumn || !selectedMonth) return [];
-    const [y, m] = selectedMonth.split('-').map(Number);
-    return data.rows
-      .map((row, i) => ({ row, i }))
-      .filter(({ row }) => {
-        const d = parseDateFromCell(row[dateColumn] ?? '');
-        if (!d) return false;
-        return d.getFullYear() === y && d.getMonth() + 1 === m;
-      })
-      .map(({ i }) => i);
-  }, [data?.rows, dateColumn, selectedMonth]);
+    return rowsForMonth.map((row, i) => {
+      const idx = parseInt(String(row.Index ?? row.INDEX ?? '').trim(), 10);
+      return Number.isFinite(idx) && idx > 0 ? idx - 1 : i;
+    });
+  }, [rowsForMonth]);
 
   const sortedRows = useMemo(() => {
     if (!sortColumn || !displayHeaders.includes(sortColumn)) return rowsForMonth;
@@ -698,10 +725,10 @@ const MonthlyAccounting: React.FC = () => {
     const { anomalies } = detectAnomalies(monthData);
     const map = new Map<number, string>();
     for (const a of anomalies) {
-      map.set(a.rowIndex - 1, a.reasons.join(' ; '));
+      map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
     }
     return map;
-  }, [data?.headers, rowsForMonth, rowsForMonthIndicesInSource]);
+  }, [data?.headers, rowsForMonth, rowsForMonthIndicesInSource, t, i18n.language]);
 
   useEffect(() => {
     if (!editMode) setEditShowAnomaliesOnly(false);
@@ -825,34 +852,31 @@ const MonthlyAccounting: React.FC = () => {
     return () => window.removeEventListener('annual-budget-snapshot-changed', handler);
   }, [selectedMonth]);
 
-  /** Totaux par mois (et par type) pour calcul des moyennes. */
+  /** Totaux par mois (et par type) pour calcul des moyennes — depuis IPC (GBP → devise affichage). */
   const monthlyTotals = useMemo(() => {
-    if (!data?.rows?.length || !dateColumn || !amountCol) {
-      return new Map<string, { entrées: number; sorties: number; byTypeSorties: Record<string, number>; byTypeEntrées: Record<string, number> }>();
-    }
     const c = cumulativeChartYAxisCurrency as CurrencySymbol;
-    const map = new Map<string, { entrées: number; sorties: number; byTypeSorties: Record<string, number>; byTypeEntrées: Record<string, number> }>();
-    for (const row of data.rows) {
-      const d = parseDateFromCell(row[dateColumn] ?? '');
-      if (!d) continue;
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const cur = map.get(key) ?? { entrées: 0, sorties: 0, byTypeSorties: {}, byTypeEntrées: {} };
-      const typeLabel = (typeCol ? (row[typeCol] ?? '') : '').trim() || '—';
-      const amount = parseAmountCell(row[amountCol] ?? '');
-      if (amount < 0) {
-        const amt = convertMovementsToDisplayCurrency(Math.abs(amount), c);
-        cur.sorties += amt;
-        cur.byTypeSorties[typeLabel] = (cur.byTypeSorties[typeLabel] ?? 0) + amt;
-      }
-      if (amount > 0) {
-        const amt = convertMovementsToDisplayCurrency(amount, c);
-        cur.entrées += amt;
-        cur.byTypeEntrées[typeLabel] = (cur.byTypeEntrées[typeLabel] ?? 0) + amt;
-      }
-      map.set(key, cur);
+    const map = new Map<
+      string,
+      { entrées: number; sorties: number; byTypeSorties: Record<string, number>; byTypeEntrées: Record<string, number> }
+    >();
+    for (const tot of monthlyTotalsRaw) {
+      const byTypeSorties: Record<string, number> = {};
+      const byTypeEntrées: Record<string, number> = {};
+      Object.entries(tot.byTypeSorties).forEach(([type, val]) => {
+        byTypeSorties[type] = convertMovementsToDisplayCurrency(val, c);
+      });
+      Object.entries(tot.byTypeEntrées).forEach(([type, val]) => {
+        byTypeEntrées[type] = convertMovementsToDisplayCurrency(val, c);
+      });
+      map.set(tot.monthKey, {
+        entrées: convertMovementsToDisplayCurrency(tot.entrées, c),
+        sorties: convertMovementsToDisplayCurrency(tot.sorties, c),
+        byTypeSorties,
+        byTypeEntrées,
+      });
     }
     return map;
-  }, [data?.rows, dateColumn, amountCol, typeCol, cumulativeChartYAxisCurrency]);
+  }, [monthlyTotalsRaw, cumulativeChartYAxisCurrency]);
 
   /** Référence pour les barres (moyenne des N mois passés, hors mois courant), totaux et par type. */
   const overviewAverageReference = useMemo(() => {
@@ -962,7 +986,7 @@ const MonthlyAccounting: React.FC = () => {
       if (!d) continue;
       const day = d.getDate();
       if (day < 1 || day > daysInMonth) continue;
-      const label = (titleCol ? (row[titleCol] ?? '').trim() : '') || 'Sans libellé';
+      const label = (titleCol ? (row[titleCol] ?? '').trim() : '') || t('monthlyAccounting.chart.noLabel');
       const amount = parseAmountCell(row[amountCol] ?? '');
       if (amount < 0) {
         byDay[day - 1].push({
@@ -988,6 +1012,7 @@ const MonthlyAccounting: React.FC = () => {
     cumulativeChartData,
     rowsForMonth,
     cumulativeChartYAxisCurrency,
+    t,
   ]);
 
   /** Tooltip HTML externe : affiche la date et la liste des mouvements du jour. */
@@ -1018,13 +1043,19 @@ const MonthlyAccounting: React.FC = () => {
       const movementsContent =
         lines.length > 0
           ? lines.join('<br/>')
-          : 'Aucun mouvement ce jour';
+          : t('monthlyAccounting.chart.noMovementsDay');
       const cumEntrées = cumulativeChartDataDisplay?.cumEntrées[dataIndex] ?? 0;
       const cumSorties = cumulativeChartDataDisplay?.cumSorties[dataIndex] ?? 0;
       const balance = cumEntrées - cumSorties;
-      const cumEntréesStr = `Cumul entrées: +${formatCurrency(cumEntrées, currency)}`;
-      const cumSortiesStr = `Cumul sorties: −${formatCurrency(cumSorties, currency)}`;
-      const balanceStr = `Balance: ${balance >= 0 ? '+' : '−'}${formatCurrency(Math.abs(balance), currency)}`;
+      const cumEntréesStr = t('monthlyAccounting.chart.tooltipCumulEntries', {
+        amount: `+${formatCurrency(cumEntrées, currency)}`,
+      });
+      const cumSortiesStr = t('monthlyAccounting.chart.tooltipCumulExits', {
+        amount: `−${formatCurrency(cumSorties, currency)}`,
+      });
+      const balanceStr = t('monthlyAccounting.chart.tooltipBalance', {
+        amount: `${balance >= 0 ? '+' : '−'}${formatCurrency(Math.abs(balance), currency)}`,
+      });
       const separator = '<div class="border-t border-gray-600 my-1.5"></div>';
       const cumulBlock = [
         `<span class="text-green-400">${cumEntréesStr}</span>`,
@@ -1070,7 +1101,7 @@ const MonthlyAccounting: React.FC = () => {
         el.style.top = `${topPx}px`;
       }
     },
-    [selectedMonth, movementsByDay, cumulativeChartYAxisCurrency, cumulativeChartDataDisplay]
+    [selectedMonth, movementsByDay, cumulativeChartYAxisCurrency, cumulativeChartDataDisplay, t]
   );
 
   const handleSort = (header: string) => {
@@ -1085,19 +1116,19 @@ const MonthlyAccounting: React.FC = () => {
   const selectedMonthLabel = useMemo(() => {
     if (!selectedMonth) return '';
     const [y, m] = selectedMonth.split('-').map(Number);
-    return formatMonthLabel(y, m);
-  }, [selectedMonth]);
+    return formatMonthLabel(y, m, dateLocale);
+  }, [selectedMonth, dateLocale]);
 
   const handleDetectAnomalies = async () => {
     if (!data || !selectedMonth || rowsForMonth.length === 0) {
-      setAnomalyMessage('Sélectionnez un mois contenant des transactions.');
+      setAnomalyMessage(t('monthlyAccounting.anomaly.selectMonth'));
       return;
     }
     const api = (window as unknown as {
       electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
     }).electronAPI;
     if (!api?.writeFile) {
-      setAnomalyMessage("Fonction d'écriture non disponible.");
+      setAnomalyMessage(t('monthlyAccounting.errors.writeUnavailable'));
       return;
     }
     setAnomalyLoading(true);
@@ -1113,11 +1144,11 @@ const MonthlyAccounting: React.FC = () => {
       if (writeResult.success) {
         setAnomalyMessage(
           anomalies.length === 0
-            ? 'Aucune anomalie détectée. Rapport mis à jour dans Processed/monthly_anomaly_report.csv.'
-            : `${anomalies.length} anomalie(s) → rapport écrit dans Processed/monthly_anomaly_report.csv.`
+            ? t('monthlyAccounting.anomaly.noneFound')
+            : t('monthlyAccounting.anomaly.found', { count: anomalies.length })
         );
       } else {
-        setAnomalyMessage(writeResult.error ?? "Erreur lors de l'écriture du rapport.");
+        setAnomalyMessage(writeResult.error ?? t('monthlyAccounting.errors.writeReport'));
       }
     } finally {
       setAnomalyLoading(false);
@@ -1134,34 +1165,48 @@ const MonthlyAccounting: React.FC = () => {
   };
 
   const performExitEditMode = useCallback(() => {
-    if (editSessionBaselineRef.current) {
-      const b = editSessionBaselineRef.current;
-      setData(cloneSourceDataResult(b.data));
-      setRowsToDelete(new Set(b.rowsToDelete));
-      setRowsExcludedFromAnomaly(new Set(b.rowsExcludedFromAnomaly));
-      setNewRowDrafts(b.newRowDrafts.map((d) => ({ ...d })));
-      editSessionBaselineRef.current = null;
-    } else {
-      setRowsToDelete(new Set());
-      setNewRowDrafts([{}]);
-    }
+    editSessionBaselineRef.current = null;
+    setRowsToDelete(new Set());
+    setRowsExcludedFromAnomaly(new Set());
+    setNewRowDrafts([{}]);
     setEditMode(false);
     setSaveMessage(null);
     setEditExitConfirmOpen(false);
-  }, []);
+    void loadViewData(selectedMonth);
+  }, [loadViewData, selectedMonth]);
 
   const handleToggleEditMode = () => {
     if (!editMode) {
-      if (data) {
-        editSessionBaselineRef.current = {
-          data: cloneSourceDataResult(data),
-          rowsToDelete: new Set(rowsToDelete),
-          rowsExcludedFromAnomaly: new Set(rowsExcludedFromAnomaly),
-          newRowDrafts: newRowDrafts.map((d) => ({ ...d })),
-        };
-      }
-      setEditMode(true);
-      setSaveMessage(null);
+      void (async () => {
+        setLoading(true);
+        setSaveMessage(null);
+        try {
+          if (!selectedMonth) {
+            setError(t('monthlyAccounting.errors.selectMonthBeforeEdit'));
+            return;
+          }
+          const monthData = await SourceDataCSVService.loadByMonth(selectedMonth);
+          if (!monthData) {
+            setError(t('monthlyAccounting.errors.fileMissing', { path: SOURCE_DATA_PATH }));
+            return;
+          }
+          setData(monthData);
+          editSessionBaselineRef.current = {
+            data: cloneSourceDataResult(monthData),
+            rowsToDelete: new Set(),
+            rowsExcludedFromAnomaly: new Set(),
+            newRowDrafts: [{}],
+          };
+          setRowsToDelete(new Set());
+          setRowsExcludedFromAnomaly(new Set());
+          setNewRowDrafts([{}]);
+          setEditMode(true);
+        } catch (err: unknown) {
+          setError(err instanceof Error ? err.message : t('transactions.edit.loadFailed'));
+        } finally {
+          setLoading(false);
+        }
+      })();
     } else {
       if (
         data &&
@@ -1180,16 +1225,8 @@ const MonthlyAccounting: React.FC = () => {
       performExitEditMode();
     }
   };
-
   const handleSaveSourceData = async () => {
-    if (!data) return;
-    const api = (window as unknown as {
-      electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
-    }).electronAPI;
-    if (!api?.writeFile) {
-      setSaveMessage("Fonction d'écriture non disponible.");
-      return;
-    }
+    if (!data || !selectedMonth) return;
     setSaveLoading(true);
     setSaveMessage(null);
     try {
@@ -1211,36 +1248,33 @@ const MonthlyAccounting: React.FC = () => {
           rowsToKeep = [...rowsToKeep, newRow as (typeof rowsToKeep)[number]];
         }
       }
-      const withIndexHeader =
-        headers.some((h) => /^index$/i.test(h)) ? headers : ['Index', ...headers];
-      const normalized = normalizeOrderAndIndex(
-        stripSourceColumnFromSourceData({
-          headers: withIndexHeader,
-          rows: rowsToKeep,
-        })
-      );
-      const csvContent = Papa.unparse(normalized.rows, {
-        columns: normalized.headers,
-        delimiter: ';',
+      const stripped = stripSourceColumnFromSourceData({
+        headers: headers.some((h) => /^index$/i.test(h)) ? headers : ['Index', ...headers],
+        rows: rowsToKeep,
       });
-      const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
+      const result = await SourceDataCSVService.mergeMonthEdit(selectedMonth, stripped.rows);
       if (result.success) {
-        setData(normalized);
         setRowsToDelete(new Set());
         setNewRowDrafts([{}]);
         setRowsExcludedFromAnomaly(new Set());
         setEditShowAnomaliesOnly(false);
         setAnomalyFilterStickyIndices(new Set());
         setEditExitConfirmOpen(false);
-        editSessionBaselineRef.current = {
-          data: cloneSourceDataResult(normalized),
-          rowsToDelete: new Set(),
-          rowsExcludedFromAnomaly: new Set(),
-          newRowDrafts: [{}],
-        };
-        setSaveMessage('Fichier src_transaction_data.csv enregistré.');
+        const monthData = await SourceDataCSVService.loadByMonth(selectedMonth);
+        if (monthData) {
+          setData(monthData);
+          editSessionBaselineRef.current = {
+            data: cloneSourceDataResult(monthData),
+            rowsToDelete: new Set(),
+            rowsExcludedFromAnomaly: new Set(),
+            newRowDrafts: [{}],
+          };
+        }
+        setSaveMessage(
+          t('monthlyAccounting.edit.monthSaved', { month: selectedMonth, count: result.count })
+        );
       } else {
-        setSaveMessage(result.error ?? "Erreur lors de l'enregistrement.");
+        setSaveMessage(result.error ?? t('monthlyAccounting.errors.save'));
       }
     } finally {
       setSaveLoading(false);
@@ -1249,73 +1283,30 @@ const MonthlyAccounting: React.FC = () => {
 
   const handleRefreshSourceDataCsv = useCallback(async () => {
     if (editMode) {
-      setReorderChronoMessage(
-        'Quittez le mode édition pour rafraîchir le fichier (les brouillons non enregistrés ne sont pas pris en compte).'
-      );
+      setReorderChronoMessage(t('monthlyAccounting.refresh.exitEditWarning'));
       return;
     }
     setReorderChronoLoading(true);
     setReorderChronoMessage(null);
     try {
-      const fresh = await SourceDataCSVService.load();
-      if (!fresh?.headers?.length || !fresh?.rows?.length) {
-        setReorderChronoMessage(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
-        return;
-      }
-      const headers = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
-        ? fresh.headers
-        : [...fresh.headers, EXCLUDE_ANOMALY_COLUMN];
-      const rows = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
-        ? fresh.rows.map((r) => ({ ...r }))
-        : fresh.rows.map((r) => ({ ...r, [EXCLUDE_ANOMALY_COLUMN]: '' }));
-      const stripped = stripSourceColumnFromSourceData({ headers, rows });
-      const sorted = sortSourceDataByDateChronology(stripped);
-      const amountHeader = sorted.headers.find((h) => /^amount$/i.test(h)) ?? null;
-      const currencyHeader = sorted.headers.find((h) => /^currency$/i.test(h)) ?? null;
-      const amountGbpHeader = sorted.headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
-      if (!amountHeader || !currencyHeader || !amountGbpHeader) {
-        setReorderChronoMessage('Colonnes AMOUNT / CURRENCY / AMOUNT GBP introuvables.');
-        return;
-      }
-      let updated = 0;
-      const rowsOut = sorted.rows.map((row) => {
-        const next = { ...row };
-        const amountStr = (next[amountHeader] ?? '').trim().replace(',', '.');
-        const amount = parseFloat(amountStr);
-        const currency = (next[currencyHeader] ?? '').trim().toUpperCase();
-        if (!Number.isNaN(amount) && amount !== 0 && (currency === 'EUR' || currency === 'CHF')) {
-          const gbp = amountToGbp(amount, currency);
-          if (gbp !== null) {
-            next[amountGbpHeader] = formatAmountGbpForCsv(gbp);
-            updated++;
-          }
-        }
-        return next;
-      });
-      const refreshed: SourceDataResult = { headers: sorted.headers, rows: rowsOut };
-      const api = (window as unknown as {
-        electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
-      }).electronAPI;
-      if (!api?.writeFile) {
-        setReorderChronoMessage("Fonction d'écriture non disponible.");
-        return;
-      }
-      const csvContent = Papa.unparse(refreshed.rows, { columns: refreshed.headers, delimiter: ';' });
-      const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
+      const result = await SourceDataCSVService.refreshGbpRates(getEffectiveRates());
       if (result.success) {
-        setData(refreshed);
+        await loadViewData(selectedMonth);
         setReorderChronoMessage(
-          `${refreshed.rows.length} ligne(s) triées par date (index 1…${refreshed.rows.length}) ; ${updated} montant(s) GBP recalculé(s).`
+          t('transactions.refresh.result', {
+            rowCount: result.rowCount,
+            updatedCount: result.updatedCount,
+          })
         );
       } else {
-        setReorderChronoMessage(result.error ?? "Erreur lors de l'enregistrement.");
+        setReorderChronoMessage(result.error ?? t('monthlyAccounting.errors.save'));
       }
     } catch (e) {
-      setReorderChronoMessage(e instanceof Error ? e.message : 'Erreur lors du rafraîchissement.');
+      setReorderChronoMessage(e instanceof Error ? e.message : t('transactions.refresh.failed'));
     } finally {
       setReorderChronoLoading(false);
     }
-  }, [editMode]);
+  }, [editMode, loadViewData, selectedMonth, t]);
 
   const handleCellChange = useCallback(
     (dataRowIndex: number, header: string, value: string) => {
@@ -1323,23 +1314,20 @@ const MonthlyAccounting: React.FC = () => {
         if (!prev) return prev;
         const amountHeader = prev.headers.find((h) => /^amount$/i.test(h)) ?? null;
         const currencyHeader = prev.headers.find((h) => /^currency$/i.test(h)) ?? null;
-        const amountGbpHeader = prev.headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
+        const amountGbpHeader = prev.headers.find((h) => isAmountIndicatorHeader(h)) ?? null;
         return {
           ...prev,
           rows: prev.rows.map((row, i) => {
             if (i !== dataRowIndex) return row;
             const next = { ...row, [header]: value };
-            if ((header === amountHeader || header === currencyHeader) && amountHeader && currencyHeader && amountGbpHeader) {
-              const amountRaw = (next[amountHeader] ?? '').trim().replace(',', '.');
-              const amount = parseFloat(amountRaw);
-              if (!Number.isNaN(amount) && amount !== 0) {
-                if (!(next[currencyHeader] ?? '').trim()) next[currencyHeader] = 'EUR';
-                const effectiveCurrency = (next[currencyHeader] ?? '').trim().toUpperCase() || 'EUR';
-                if (effectiveCurrency === 'EUR' || effectiveCurrency === 'CHF') {
-                  const gbp = amountToGbp(amount, effectiveCurrency);
-                  if (gbp !== null) next[amountGbpHeader] = formatAmountGbpForCsv(gbp);
-                }
-              }
+            if (amountHeader && currencyHeader && amountGbpHeader) {
+              syncTransactionAmountCurrencyOnEdit(
+                next,
+                header,
+                amountHeader,
+                currencyHeader,
+                amountGbpHeader
+              );
             }
             return next;
           }),
@@ -1393,26 +1381,18 @@ const MonthlyAccounting: React.FC = () => {
       setNewRowDrafts((prev) => {
         const amountHeader = displayHeaders.find((h) => /^amount$/i.test(h));
         const currencyHeader = displayHeaders.find((h) => /^currency$/i.test(h));
-        const amountGbpHeader = displayHeaders.find((h) => /^amount\s*gbp$/i.test(h));
+        const amountGbpHeader = displayHeaders.find((h) => isAmountIndicatorHeader(h));
         return prev.map((d, i) => {
           if (i !== draftIndex) return d;
           const next = { ...d, [header]: value };
-          if (
-            (header === amountHeader || header === currencyHeader) &&
-            amountHeader &&
-            currencyHeader &&
-            amountGbpHeader
-          ) {
-            const amountRaw = (next[amountHeader] ?? '').trim().replace(',', '.');
-            const amount = parseFloat(amountRaw);
-            if (!Number.isNaN(amount) && amount !== 0) {
-              if (!(next[currencyHeader] ?? '').trim()) next[currencyHeader] = 'EUR';
-              const effectiveCurrency = (next[currencyHeader] ?? '').trim().toUpperCase() || 'EUR';
-              if (effectiveCurrency === 'EUR' || effectiveCurrency === 'CHF') {
-                const gbp = amountToGbp(amount, effectiveCurrency);
-                if (gbp !== null) next[amountGbpHeader] = formatAmountGbpForCsv(gbp);
-              }
-            }
+          if (amountHeader && currencyHeader && amountGbpHeader) {
+            syncTransactionAmountCurrencyOnEdit(
+              next,
+              header,
+              amountHeader,
+              currencyHeader,
+              amountGbpHeader
+            );
           }
           return next;
         });
@@ -1437,11 +1417,11 @@ const MonthlyAccounting: React.FC = () => {
     <>
       <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4 flex flex-wrap items-center gap-4">
-          <h1 className="text-2xl font-bold text-gray-800">Comptabilité mensuelle</h1>
+          <h1 className="text-2xl font-bold text-gray-800">{t('nav.monthlyAccounting')}</h1>
           {data && selectableMonths.length > 0 && (
             <div className="flex items-center gap-2">
               <label htmlFor="monthly-accounting-month" className="text-sm font-medium text-gray-700">
-                Mois sélectionné
+                {t('monthlyAccounting.month.selected')}
               </label>
               <select
                 id="monthly-accounting-month"
@@ -1454,7 +1434,7 @@ const MonthlyAccounting: React.FC = () => {
                   const isFuture = !availableMonths.includes(value);
                   return (
                     <option key={value} value={value}>
-                      {formatMonthLabel(y, m)}{isFuture ? ' (sans donnée)' : ''}
+                      {formatMonthLabel(y, m, dateLocale)}{isFuture ? ` ${t('monthlyAccounting.month.noData')}` : ''}
                     </option>
                   );
                 })}
@@ -1464,10 +1444,10 @@ const MonthlyAccounting: React.FC = () => {
                 onClick={handleAddNextMonth}
                 className="rounded border border-blue-600 bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 focus:ring-2 focus:ring-blue-500"
               >
-                Ajouter le mois suivant
+                {t('monthlyAccounting.month.addNext')}
               </button>
               <span className="text-gray-500 text-sm">
-                {sortedRows.length} transaction{sortedRows.length !== 1 ? 's' : ''}
+                {t('monthlyAccounting.transactionCount', { count: sortedRows.length })}
               </span>
             </div>
           )}
@@ -1475,7 +1455,7 @@ const MonthlyAccounting: React.FC = () => {
 
         {loading && (
           <div className="flex items-center justify-center py-12 text-gray-500">
-            Chargement…
+            {t('common.loading')}
           </div>
         )}
 
@@ -1518,10 +1498,10 @@ const MonthlyAccounting: React.FC = () => {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                      Graphique cumulé
+                      {t('monthlyAccounting.chart.title')}
                     </span>
                     <span className="block text-sm text-gray-500 mt-1.5">
-                      Suivi des mouvements sur le mois sélectionné
+                      {t('monthlyAccounting.chart.subtitle')}
                     </span>
                   </span>
                 </button>
@@ -1537,7 +1517,7 @@ const MonthlyAccounting: React.FC = () => {
                         return next;
                       });
                     }}
-                    title="Paramètres"
+                    title={t('dashboard.settings.title')}
                     className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
                       cumulativeChartFiltersOpen
                         ? 'bg-gray-200 border-gray-300 text-gray-800'
@@ -1578,28 +1558,26 @@ const MonthlyAccounting: React.FC = () => {
                           }}
                           className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
                         >
-                          Paramètres
+                          {t('dashboard.settings.title')}
                           <span className="text-gray-500">▼</span>
                         </button>
                         <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-hidden">
                           <div className="flex-shrink-0">
                             <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                              Devise de l&apos;axe vertical
+                              {t('monthlyAccounting.chart.axisCurrency')}
                             </label>
                             <select
                               value={cumulativeChartYAxisCurrency}
                               onChange={(e) => {
-                                const v = e.target.value;
-                                if (v === '£' || v === '€' || v === 'CHF') {
-                                  setCumulativeChartYAxisCurrency(v);
-                                  try {
-                                    localStorage.setItem(CUMULATIVE_CHART_Y_AXIS_CURRENCY, v);
-                                  } catch {}
-                                }
+                                const v = coerceDisplayCurrency(e.target.value);
+                                setCumulativeChartYAxisCurrency(v);
+                                try {
+                                  localStorage.setItem(CUMULATIVE_CHART_Y_AXIS_CURRENCY, v);
+                                } catch {}
                               }}
                               className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                             >
-                              {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                              {yAxisCurrencies.map(({ value, label }) => (
                                 <option key={value} value={value}>
                                   {label}
                                 </option>
@@ -1608,7 +1586,7 @@ const MonthlyAccounting: React.FC = () => {
                           </div>
                           <div className="flex-shrink-0">
                             <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                              Hauteur du graphique
+                              {t('dashboard.settings.chartHeight')}
                             </label>
                             <div className="flex items-center gap-2">
                               <input
@@ -1656,7 +1634,7 @@ const MonthlyAccounting: React.FC = () => {
                     labels: cumulativeChartDataDisplay.labels,
                     datasets: [
                       {
-                        label: 'Sorties (cumul)',
+                        label: t('monthlyAccounting.series.cumulativeExits'),
                         data: cumulativeChartDataDisplay.cumSorties,
                         borderColor: '#dc2626',
                         backgroundColor: 'rgba(220, 38, 38, 0.25)',
@@ -1666,7 +1644,7 @@ const MonthlyAccounting: React.FC = () => {
                         pointHoverRadius: 6,
                       },
                       {
-                        label: 'Entrées (cumul)',
+                        label: t('monthlyAccounting.series.cumulativeEntries'),
                         data: cumulativeChartDataDisplay.cumEntrées,
                         borderColor: '#16a34a',
                         backgroundColor: 'rgba(22, 163, 74, 0.25)',
@@ -1683,14 +1661,14 @@ const MonthlyAccounting: React.FC = () => {
                     interaction: { mode: 'index', intersect: false },
                     scales: {
                       x: {
-                        title: { display: true, text: 'Jour du mois', font: { size: 12 }, color: '#374151' },
+                        title: { display: true, text: t('monthlyAccounting.chart.xAxis'), font: { size: 12 }, color: '#374151' },
                         grid: { color: 'rgba(0, 0, 0, 0.06)' },
                         ticks: { maxRotation: 0, font: { size: 11 }, color: '#374151' },
                       },
                       y: {
                         title: {
                           display: true,
-                          text: `Cumul (${cumulativeChartYAxisCurrency})`,
+                          text: t('monthlyAccounting.chart.yAxis', { currency: cumulativeChartYAxisCurrency }),
                           font: { size: 12 },
                           color: '#374151',
                         },
@@ -1754,12 +1732,14 @@ const MonthlyAccounting: React.FC = () => {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                      Résultats et statistiques
+                      {t('monthlyAccounting.overview.title')}
                     </span>
                     <span className="block text-sm text-gray-500 mt-1.5">
                       {overviewLastTransactionDate
-                        ? `Résultat au ${formatDateObjDDMMYYYY(overviewLastTransactionDate)}`
-                        : 'Résultat (aucune transaction ce mois-ci)'}
+                        ? t('monthlyAccounting.overview.resultAt', {
+                            date: formatDateObjDDMMYYYY(overviewLastTransactionDate),
+                          })
+                        : t('monthlyAccounting.overview.resultNoTransactions')}
                     </span>
                   </span>
                 </button>
@@ -1775,7 +1755,7 @@ const MonthlyAccounting: React.FC = () => {
                         return next;
                       });
                     }}
-                    title="Paramètres"
+                    title={t('dashboard.settings.title')}
                     className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
                       overviewFiltersOpen
                         ? 'bg-gray-200 border-gray-300 text-gray-800'
@@ -1816,13 +1796,13 @@ const MonthlyAccounting: React.FC = () => {
                     }}
                     className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
                   >
-                    Paramètres
+                    {t('dashboard.settings.title')}
                     <span className="text-gray-500">▼</span>
                   </button>
                   <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-y-auto">
                     <div>
                       <span className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                        Barres de remplissement
+                        {t('monthlyAccounting.overview.fillBars')}
                       </span>
                       <div className="flex flex-col gap-2.5">
                         <label className="flex items-start gap-2 cursor-pointer text-sm text-gray-800">
@@ -1838,7 +1818,7 @@ const MonthlyAccounting: React.FC = () => {
                             }}
                             className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
-                          <span>Moyenne des mois passés</span>
+                          <span>{t('monthlyAccounting.overview.barAverage')}</span>
                         </label>
                         <label className="flex items-start gap-2 cursor-pointer text-sm text-gray-800">
                           <input
@@ -1853,18 +1833,18 @@ const MonthlyAccounting: React.FC = () => {
                             }}
                             className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
-                          <span>Budget annuel (prévision mensuelle)</span>
+                          <span>{t('monthlyAccounting.overview.barBudget')}</span>
                         </label>
                       </div>
                       <div className="border-t border-gray-200 mt-3 pt-3" aria-hidden />
                       <p className="text-xs italic text-gray-600 leading-snug">
-                        Les prévisions mensuelles par type sont calculées sur la base des données fournies par l'utilisateur dans le budget annuel.
+                        {t('monthlyAccounting.overview.budgetNote')}
                       </p>
                     </div>
                     {overviewBarAverageEnabled && (
                       <div>
                         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                          Période
+                          {t('monthlyAccounting.overview.period')}
                         </label>
                         <select
                           value={overviewAveragePeriod}
@@ -1877,9 +1857,9 @@ const MonthlyAccounting: React.FC = () => {
                           }}
                           className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                         >
-                          {AVERAGE_PERIOD_OPTIONS.map(({ value, label }) => (
+                          {AVERAGE_PERIOD_VALUES.map((value) => (
                             <option key={value} value={value}>
-                              {label}
+                              {t(`monthlyAccounting.period.options.${value}`)}
                             </option>
                           ))}
                         </select>
@@ -1906,21 +1886,21 @@ const MonthlyAccounting: React.FC = () => {
                   const scaleMaxB = Math.max(Math.abs(overviewData.balance), Math.abs(refB), 1);
                   const c = cumulativeChartYAxisCurrency as CurrencySymbol;
                   /** Somme signée (affichage total prévision sorties, souvent négatif). */
-                  const sumMonthlyBudgetSorties = overviewData.byTypeSorties.reduce((sum, [t]) => {
-                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                  const sumMonthlyBudgetSorties = overviewData.byTypeSorties.reduce((sum, [typeName]) => {
+                    const m = monthlyForecastForTypeDisplay(typeName, budgetSnapshot, c);
                     return sum + (m ?? 0);
                   }, 0);
-                  const sumMonthlyBudgetEntrees = overviewData.byTypeEntrées.reduce((sum, [t]) => {
-                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                  const sumMonthlyBudgetEntrees = overviewData.byTypeEntrées.reduce((sum, [typeName]) => {
+                    const m = monthlyForecastForTypeDisplay(typeName, budgetSnapshot, c);
                     return sum + (m ?? 0);
                   }, 0);
                   /** Magnitudes pour comparer réel vs prévision et la balance budgétée (écarts, barres). */
-                  const sumMonthlyBudgetSortiesMag = overviewData.byTypeSorties.reduce((sum, [t]) => {
-                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                  const sumMonthlyBudgetSortiesMag = overviewData.byTypeSorties.reduce((sum, [typeName]) => {
+                    const m = monthlyForecastForTypeDisplay(typeName, budgetSnapshot, c);
                     return sum + (m != null ? Math.abs(m) : 0);
                   }, 0);
-                  const sumMonthlyBudgetEntreesMag = overviewData.byTypeEntrées.reduce((sum, [t]) => {
-                    const m = monthlyForecastForTypeDisplay(t, budgetSnapshot, c);
+                  const sumMonthlyBudgetEntreesMag = overviewData.byTypeEntrées.reduce((sum, [typeName]) => {
+                    const m = monthlyForecastForTypeDisplay(typeName, budgetSnapshot, c);
                     return sum + (m != null ? Math.abs(m) : 0);
                   }, 0);
                   const refNetBudget = sumMonthlyBudgetEntreesMag - sumMonthlyBudgetSortiesMag;
@@ -1928,7 +1908,7 @@ const MonthlyAccounting: React.FC = () => {
                   const scaleMaxBudgetE = Math.max(overviewData.totalEntrées, sumMonthlyBudgetEntreesMag, 1);
                   const scaleMaxBudgetB = Math.max(Math.abs(overviewData.balance), Math.abs(refNetBudget), 1);
                   const viewYear = selectedMonth ? parseInt(selectedMonth.split('-')[0], 10) : NaN;
-                  const periodeMoyennePhrase = phraseMoyenneSurPeriode(overviewAveragePeriod);
+                  const periodeMoyennePhrase = phraseMoyenneSurPeriode(overviewAveragePeriod, t);
                   type Row = {
                     id: string;
                     leftLabel: string;
@@ -1953,7 +1933,7 @@ const MonthlyAccounting: React.FC = () => {
                     budgetDiff?: number | null;
                   };
                   const rows: Row[] = [
-                    { id: 'h-sorties', leftLabel: 'Sorties', leftValue: '', isTitle: true },
+                    { id: 'h-sorties', leftLabel: t('dashboard.series.exits'), leftValue: '', isTitle: true },
                     ...overviewData.byTypeSorties.map(([type, amount]) => {
                       const avg = byTypeSortiesAvg?.[type] ?? 0;
                       const barMax = Math.max(amount, avg, 1);
@@ -2000,7 +1980,7 @@ const MonthlyAccounting: React.FC = () => {
                     }),
                     {
                       id: 'total-sorties',
-                      leftLabel: 'Total sorties',
+                      leftLabel: t('dashboard.totalExits'),
                       leftValue: `−${formatCurrency(overviewData.totalSorties, cumulativeChartYAxisCurrency)}`,
                       leftValueClass: 'text-red-700 font-medium',
                       isTotal: true,
@@ -2022,7 +2002,7 @@ const MonthlyAccounting: React.FC = () => {
                       budgetTargetValue: sumMonthlyBudgetSorties,
                       budgetDiff: overviewData.totalSorties - sumMonthlyBudgetSortiesMag,
                     },
-                    { id: 'h-entrees', leftLabel: 'Entrées', leftValue: '', isTitle: true },
+                    { id: 'h-entrees', leftLabel: t('dashboard.series.entries'), leftValue: '', isTitle: true },
                     ...overviewData.byTypeEntrées.map(([type, amount]) => {
                       const avg = byTypeEntréesAvg?.[type] ?? 0;
                       const barMax = Math.max(amount, avg, 1);
@@ -2069,7 +2049,7 @@ const MonthlyAccounting: React.FC = () => {
                     }),
                     {
                       id: 'total-entrees',
-                      leftLabel: 'Total entrées',
+                      leftLabel: t('dashboard.totalEntries'),
                       leftValue: `+${formatCurrency(overviewData.totalEntrées, cumulativeChartYAxisCurrency)}`,
                       leftValueClass: 'text-green-700 font-medium',
                       isTotal: true,
@@ -2093,7 +2073,7 @@ const MonthlyAccounting: React.FC = () => {
                     },
                     {
                       id: 'balance',
-                      leftLabel: 'Balance',
+                      leftLabel: t('dashboard.series.balance'),
                       leftValue: `${overviewData.balance >= 0 ? '+' : ''}${formatCurrency(overviewData.balance, cumulativeChartYAxisCurrency)}`,
                       leftValueClass: `font-semibold ${overviewData.balance >= 0 ? 'text-green-700' : 'text-red-700'}`,
                       isTotal: true,
@@ -2144,8 +2124,8 @@ const MonthlyAccounting: React.FC = () => {
                                         aria-hidden
                                       />
                                       <div className="flex items-center gap-3 flex-shrink-0 self-center text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                                        <span className="whitespace-nowrap w-20 text-right">Moyenne</span>
-                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                        <span className="whitespace-nowrap w-20 text-right">{t('monthlyAccounting.overview.average')}</span>
+                                        <span className="whitespace-nowrap w-24 text-right">{t('dashboard.charts.diff')}</span>
                                       </div>
                                     </>
                                   )}
@@ -2155,8 +2135,8 @@ const MonthlyAccounting: React.FC = () => {
                                     >
                                       <div className="flex-shrink-0" style={{ width: BAR_FIXED_WIDTH_PX }} aria-hidden />
                                       <div className="flex items-center gap-3 flex-shrink-0 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                                        <span className="whitespace-nowrap w-20 text-right">Prév. mens.</span>
-                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                        <span className="whitespace-nowrap w-20 text-right">{t('monthlyAccounting.overview.monthlyForecast')}</span>
+                                        <span className="whitespace-nowrap w-24 text-right">{t('dashboard.charts.diff')}</span>
                                       </div>
                                     </div>
                                   )}
@@ -2174,8 +2154,8 @@ const MonthlyAccounting: React.FC = () => {
                                         className="flex items-center gap-3 flex-shrink-0 self-center text-xs font-semibold uppercase tracking-wide invisible pointer-events-none select-none"
                                         aria-hidden
                                       >
-                                        <span className="whitespace-nowrap w-20 text-right">Moyenne</span>
-                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                        <span className="whitespace-nowrap w-20 text-right">{t('monthlyAccounting.overview.average')}</span>
+                                        <span className="whitespace-nowrap w-24 text-right">{t('dashboard.charts.diff')}</span>
                                       </div>
                                     </>
                                   )}
@@ -2188,8 +2168,8 @@ const MonthlyAccounting: React.FC = () => {
                                         className="flex items-center gap-3 flex-shrink-0 text-xs font-semibold uppercase tracking-wide invisible pointer-events-none select-none"
                                         aria-hidden
                                       >
-                                        <span className="whitespace-nowrap w-20 text-right">Prév. mens.</span>
-                                        <span className="whitespace-nowrap w-24 text-right">Écart</span>
+                                        <span className="whitespace-nowrap w-20 text-right">{t('monthlyAccounting.overview.monthlyForecast')}</span>
+                                        <span className="whitespace-nowrap w-24 text-right">{t('dashboard.charts.diff')}</span>
                                       </div>
                                     </div>
                                   )}
@@ -2434,10 +2414,10 @@ const MonthlyAccounting: React.FC = () => {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                    Tableau des transactions
+                    {t('transactions.title')}
                   </span>
                   <span className="block text-sm text-gray-500 mt-1.5">
-                    Édition, anomalies et tri sur le mois affiché
+                    {t('monthlyAccounting.table.subtitle')}
                   </span>
                 </span>
               </button>
@@ -2446,14 +2426,17 @@ const MonthlyAccounting: React.FC = () => {
               <div className="flex flex-col flex-1 min-h-0 overflow-hidden border-t border-gray-100">
             {selectableMonths.length === 0 ? (
               <div className="p-6 text-gray-600">
-                Aucune donnée de transaction avec date trouvée.
+                {t('monthlyAccounting.table.noData')}
               </div>
             ) : (
               <>
                 {selectableMonths.length > 0 && selectedMonth && (
                   <div className="shrink-0 px-4 py-3 border-b border-gray-200 bg-gray-50">
                     <p className="text-sm text-gray-600 mb-2">
-                      Détection d&apos;anomalies sur les {rowsForMonth.length} ligne(s) du mois ({selectedMonthLabel}). Le rapport écrase monthly_anomaly_report.csv à chaque exécution.
+                      {t('monthlyAccounting.anomaly.description', {
+                        count: rowsForMonth.length,
+                        month: selectedMonthLabel,
+                      })}
                     </p>
                     <div className="flex flex-wrap items-center gap-2">
                       <button
@@ -2462,12 +2445,12 @@ const MonthlyAccounting: React.FC = () => {
                         disabled={reorderChronoLoading || !data || saveLoading}
                         title={
                           editMode
-                            ? 'Quittez le mode édition pour rafraîchir src_transaction_data.csv.'
-                            : 'Trie le fichier par date, réattribue les index et recalcule AMOUNT GBP.'
+                            ? t('transactions.refresh.exitEditFirst')
+                            : t('transactions.refresh.hint')
                         }
                         className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                       >
-                        {reorderChronoLoading ? 'Rafraîchissement…' : 'Rafraîchir src_transaction_data.csv'}
+                        {reorderChronoLoading ? t('transactions.refresh.loading') : t('transactions.refresh.button')}
                       </button>
                       <button
                         type="button"
@@ -2475,14 +2458,14 @@ const MonthlyAccounting: React.FC = () => {
                         disabled={anomalyLoading || rowsForMonth.length === 0}
                         className="rounded border border-amber-600 bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
                       >
-                        {anomalyLoading ? 'Analyse…' : 'Détecter des anomalies'}
+                        {anomalyLoading ? t('transactions.anomaly.analyzing') : t('transactions.anomaly.detect')}
                       </button>
                       <button
                         type="button"
                         onClick={handleOpenMonthlyAnomalyReport}
                         className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                       >
-                        Ouvrir le rapport mensuel
+                        {t('monthlyAccounting.anomaly.openMonthlyReport')}
                       </button>
                       <button
                         type="button"
@@ -2493,7 +2476,7 @@ const MonthlyAccounting: React.FC = () => {
                             : 'border-red-600 bg-red-600 hover:bg-red-700'
                         }`}
                       >
-                        {editMode ? 'Quitter le mode édition' : 'Mode édition'}
+                        {editMode ? t('transactions.edit.exit') : t('transactions.edit.enter')}
                       </button>
                       {editMode && (
                         <button
@@ -2502,7 +2485,7 @@ const MonthlyAccounting: React.FC = () => {
                           disabled={saveLoading || !data}
                           className="rounded border border-green-600 bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                         >
-                          {saveLoading ? 'Enregistrement…' : 'Sauvegarder src_transaction_data.csv'}
+                          {saveLoading ? t('common.saving') : t('transactions.edit.save')}
                         </button>
                       )}
                     </div>
@@ -2526,11 +2509,11 @@ const MonthlyAccounting: React.FC = () => {
                         onChange={(e) => setEditShowAnomaliesOnly(e.target.checked)}
                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
-                      Uniquement les lignes avec anomalies
+                      {t('transactions.anomaly.showOnly')}
                     </label>
                   )}
                   {editMode && (
-                    <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
+                    <span className="text-red-600 text-sm font-medium">{t('transactions.edit.banner')}</span>
                   )}
                   {editMode && hasCustomColWidths && (
                     <button
@@ -2538,7 +2521,7 @@ const MonthlyAccounting: React.FC = () => {
                       onClick={resetColWidths}
                       className="text-sm text-gray-600 hover:text-gray-900 underline"
                     >
-                      Réinitialiser les largeurs de colonnes
+                      {t('transactions.filters.resetWidths')}
                     </button>
                   )}
                 </div>
@@ -2573,7 +2556,7 @@ const MonthlyAccounting: React.FC = () => {
                               <span className="inline-flex items-center gap-1">
                                 {h}
                                 {sortColumn === h && (
-                                  <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                                  <span className="text-blue-600" aria-label={sortDirection === 'asc' ? t('transactions.table.sortAsc') : t('transactions.table.sortDesc')}>
                                     {sortDirection === 'asc' ? '↑' : '↓'}
                                   </span>
                                 )}
@@ -2596,7 +2579,7 @@ const MonthlyAccounting: React.FC = () => {
                               <span className="inline-flex items-center gap-1">
                                 {h}
                                 {sortColumn === h && (
-                                  <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                                  <span className="text-blue-600" aria-label={sortDirection === 'asc' ? t('transactions.table.sortAsc') : t('transactions.table.sortDesc')}>
                                     {sortDirection === 'asc' ? '↑' : '↓'}
                                   </span>
                                 )}
@@ -2613,7 +2596,7 @@ const MonthlyAccounting: React.FC = () => {
                             onResizeStart={handleColResizeStart}
                             className="text-left font-semibold text-gray-700 px-0.5 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                           >
-                            Dupliquer
+                            {t('monthlyAccounting.table.duplicate')}
                           </ResizableTableHeadCell>
                         )}
                         {editMode && (
@@ -2625,7 +2608,7 @@ const MonthlyAccounting: React.FC = () => {
                             onResizeStart={handleColResizeStart}
                             className="text-left font-semibold text-gray-700 px-1 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                           >
-                            Exclure Anomalie
+                            {t('transactions.anomaly.excludeColumn')}
                           </ResizableTableHeadCell>
                         )}
                         {editMode && (
@@ -2637,7 +2620,7 @@ const MonthlyAccounting: React.FC = () => {
                             onResizeStart={handleColResizeStart}
                             className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                           >
-                            Supprimer
+                            {t('transactions.table.deleteColumn')}
                           </ResizableTableHeadCell>
                         )}
                       </tr>
@@ -2663,17 +2646,31 @@ const MonthlyAccounting: React.FC = () => {
                               const isDateColumn = /date/i.test(header);
                               const isAmountColumn = /^amount$/i.test(header);
                               const isCurrencyColumn = /^currency$/i.test(header);
-                              const isAmountGbpColumn = /^amount\s*gbp$/i.test(header);
+                              const isAmountGbpColumn = isAmountIndicatorHeader(header);
                               const isDateEntryColumn = /date/i.test(header);
                               const isAccountColumn = /^account$/i.test(header) || /compte/i.test(header);
+                              const currencyHeaderForDisplay =
+                                displayHeaders.find((h) => /^currency$/i.test(h)) ?? null;
+                              const rowCurrency = currencyHeaderForDisplay
+                                ? (row[currencyHeaderForDisplay] ?? '')
+                                : '';
+                              const primarySym = currencyDisplaySymbol(
+                                getCachedWorkingCurrencies().primary || 'GBP'
+                              );
                               const display = isDateColumn
                                 ? formatDateDDMMYYYY(raw)
                                 : isAmountColumn
-                                  ? formatEur(raw)
+                                  ? formatAmountForRowCurrency(raw, rowCurrency)
                                   : isCurrencyColumn
                                     ? formatFx(raw)
                                     : isAmountGbpColumn
-                                      ? formatGbp(raw)
+                                      ? (() => {
+                                          const s = (raw ?? '').trim();
+                                          if (s === '') return '';
+                                          const num = parseFloat(s.replace(/\s/g, '').replace(',', '.'));
+                                          if (Number.isNaN(num)) return raw;
+                                          return formatCurrency(num, primarySym);
+                                        })()
                                         : isAccountColumn
                                           ? accountLabelFromSource(raw) || raw
                                           : raw;
@@ -2692,15 +2689,9 @@ const MonthlyAccounting: React.FC = () => {
                                 }
                                 const amountHeaderForRow = displayHeaders.find((h) => /^amount$/i.test(h));
                                 const currencyHeaderForRow = displayHeaders.find((h) => /^currency$/i.test(h));
-                                const effectiveCurrency = currencyHeaderForRow ? ((row[currencyHeaderForRow] ?? '').trim().toUpperCase() || 'EUR') : 'EUR';
                                 const isAmountGbpReadOnly =
                                   isAmountGbpColumn &&
-                                  amountHeaderForRow &&
-                                  currencyHeaderForRow &&
-                                  (() => {
-                                    const a = parseFloat((row[amountHeaderForRow] ?? '').toString().replace(',', '.'));
-                                    return !Number.isNaN(a) && a !== 0 && (effectiveCurrency === 'EUR' || effectiveCurrency === 'CHF');
-                                  })();
+                                  isAmountGbpIndicatorReadOnly(row, amountHeaderForRow, currencyHeaderForRow);
                                 const useSuggestions = isTextSuggestibleColumn(header);
                                 const suggestions = useSuggestions && data?.rows
                                   ? getSuggestions(data.rows, header, raw, 10)
@@ -2747,8 +2738,8 @@ const MonthlyAccounting: React.FC = () => {
                                       onKeyDown={handleKeyDown}
                                       list={useSuggestions ? listId : isDateEntryColumn && dateSuggestions.length > 0 ? dateListId : undefined}
                                       className={`w-full rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
-                                      aria-label={isAmountGbpReadOnly ? `${header} (calculé)` : `Éditer ${header}`}
-                                      title={isAmountGbpReadOnly ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
+                                      aria-label={isAmountGbpReadOnly ? t('transactions.edit.computedCell', { header }) : t('transactions.edit.editCell', { header })}
+                                      title={isAmountGbpReadOnly ? t('transactions.edit.computedTitle') : undefined}
                                     />
                                     {useSuggestions && suggestions.length > 0 && (
                                       <datalist id={listId}>
@@ -2792,9 +2783,9 @@ const MonthlyAccounting: React.FC = () => {
                                   type="button"
                                   onClick={() => handleDuplicateRow(row)}
                                   className="rounded border border-blue-600 bg-blue-600 px-1 py-1 text-xs font-medium text-white hover:bg-blue-700"
-                                  title="Dupliquer la ligne en bas du tableau"
+                                  title={t('monthlyAccounting.table.duplicateTitle')}
                                 >
-                                  Dupliquer
+                                  {t('monthlyAccounting.table.duplicate')}
                                 </button>
                               </td>
                             )}
@@ -2810,8 +2801,8 @@ const MonthlyAccounting: React.FC = () => {
                                   }`}
                                 >
                                   {rowsExcludedFromAnomaly.has(dataRowIndex)
-                                    ? 'Inclure anomalie'
-                                    : 'Exclure anomalie'}
+                                    ? t('transactions.anomaly.include')
+                                    : t('transactions.anomaly.exclude')}
                                 </button>
                               </td>
                             )}
@@ -2822,7 +2813,7 @@ const MonthlyAccounting: React.FC = () => {
                                   onClick={() => handleToggleRowDelete(dataRowIndex)}
                                   className="rounded border border-red-600 bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700"
                                 >
-                                  {isMarkedForDelete ? 'Annuler suppression' : 'Supprimer la ligne'}
+                                  {isMarkedForDelete ? t('transactions.table.undoDelete') : t('transactions.table.deleteRow')}
                                 </button>
                               </td>
                             )}
@@ -2835,7 +2826,7 @@ const MonthlyAccounting: React.FC = () => {
                             const raw = draft[header] ?? '';
                             if (/^index$/i.test(header)) {
                               return (
-                                <td key={header} className="px-3 py-2 text-gray-400 whitespace-nowrap bg-gray-100" title="Nouvelle ligne (index attribué à l’enregistrement)">
+                                <td key={header} className="px-3 py-2 text-gray-400 whitespace-nowrap bg-gray-100" title={t('monthlyAccounting.table.newRowIndexTitle')}>
                                   —
                                 </td>
                               );
@@ -2854,16 +2845,10 @@ const MonthlyAccounting: React.FC = () => {
                             }
                             const draftAmountHeader = displayHeaders.find((h) => /^amount$/i.test(h));
                             const draftCurrencyHeader = displayHeaders.find((h) => /^currency$/i.test(h));
-                            const isAmountGbpColumnDraft = /^amount\s*gbp$/i.test(header);
-                            const effectiveCurrencyDraft = draftCurrencyHeader ? ((draft[draftCurrencyHeader] ?? '').trim().toUpperCase() || 'EUR') : 'EUR';
+                            const isAmountGbpColumnDraft = isAmountIndicatorHeader(header);
                             const isAmountGbpReadOnlyDraft =
                               isAmountGbpColumnDraft &&
-                              draftAmountHeader &&
-                              draftCurrencyHeader &&
-                              (() => {
-                                const a = parseFloat((draft[draftAmountHeader] ?? '').toString().replace(',', '.'));
-                                return !Number.isNaN(a) && a !== 0 && (effectiveCurrencyDraft === 'EUR' || effectiveCurrencyDraft === 'CHF');
-                              })();
+                              isAmountGbpIndicatorReadOnly(draft, draftAmountHeader, draftCurrencyHeader);
                             const useSuggestions = isTextSuggestibleColumn(header);
                             const isDateColumn = /date/i.test(header);
                             const suggestions = useSuggestions && data?.rows
@@ -2909,11 +2894,11 @@ const MonthlyAccounting: React.FC = () => {
                                   readOnly={!!isAmountGbpReadOnlyDraft}
                                   onChange={(e) => handleNewRowDraftChange(draftIndex, header, e.target.value)}
                                   onKeyDown={handleKeyDown}
-                                  placeholder="Nouvelle ligne…"
+                                  placeholder={t('accountBalance.newRow.placeholder')}
                                   list={useSuggestions ? listId : isDateColumn && dateSuggestions.length > 0 ? dateListId : undefined}
                                   className={`w-full rounded border px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isAmountGbpReadOnlyDraft ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-dashed border-gray-400'}`}
-                                  aria-label={isAmountGbpReadOnlyDraft ? `${header} (calculé)` : `Nouvelle ligne — ${header}`}
-                                  title={isAmountGbpReadOnlyDraft ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
+                                  aria-label={isAmountGbpReadOnlyDraft ? t('transactions.edit.computedCell', { header }) : t('accountBalance.newRow.ariaCol', { column: header })}
+                                  title={isAmountGbpReadOnlyDraft ? t('transactions.edit.computedTitle') : undefined}
                                 />
                                 {useSuggestions && suggestions.length > 0 && (
                                   <datalist id={listId}>
@@ -2940,9 +2925,9 @@ const MonthlyAccounting: React.FC = () => {
                                     type="button"
                                     onClick={handleAddNewDraftRow}
                                     className="rounded border border-blue-600 bg-blue-600 px-1.5 py-1 text-xs font-medium text-white hover:bg-blue-700"
-                                    title="Ajouter une nouvelle ligne vide en dessous"
+                                    title={t('accountBalance.newRow.addTitle')}
                                   >
-                                    + Ligne
+                                    {t('dashboard.settings.addLine')}
                                   </button>
                                 ) : null}
                               </td>
@@ -2957,9 +2942,9 @@ const MonthlyAccounting: React.FC = () => {
                 </div>
                 <div className="shrink-0 px-3 py-2 border-t border-gray-200 bg-gray-50 text-gray-500 text-xs">
                   {selectedMonthLabel && `${selectedMonthLabel} — `}
-                  {displayRows.length} ligne{displayRows.length !== 1 ? 's' : ''}
+                  {t('monthlyAccounting.footer.rows', { count: displayRows.length })}
                   {editMode && editShowAnomaliesOnly
-                    ? ` (anomalies uniquement, ${sortedRows.length} après tri)`
+                    ? t('monthlyAccounting.footer.anomaliesOnly', { sorted: sortedRows.length })
                     : ''}
                 </div>
               </>
@@ -2995,10 +2980,10 @@ const MonthlyAccounting: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="monthly-edit-exit-title" className="text-lg font-semibold text-gray-900">
-              Quitter sans sauvegarder ?
+              {t('transactions.edit.exitConfirmTitle')}
             </h2>
             <p className="text-sm text-gray-600">
-              Les modifications non enregistrées seront perdues.
+              {t('transactions.edit.exitConfirmBody')}
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -3006,14 +2991,14 @@ const MonthlyAccounting: React.FC = () => {
                 onClick={() => setEditExitConfirmOpen(false)}
                 className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
-                Retour
+                {t('transactions.edit.exitConfirmBack')}
               </button>
               <button
                 type="button"
                 onClick={performExitEditMode}
                 className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
               >
-                Quitter
+                {t('transactions.edit.exitConfirmLeave')}
               </button>
             </div>
           </div>

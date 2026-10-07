@@ -20,11 +20,22 @@ export const DEFAULT_IMPORT_MAPPING_RATES: ImportMappingRates = {
   chfToGbp: DEFAULT_CHF_TO_GBP,
 };
 
-export type ImportFiatCurrency = 'EUR' | 'GBP' | 'CHF';
+/** Taux vers la devise primaire : 1 unité de clé = rate unités de primary. */
+export type PrimaryMappingRates = {
+  primary: string;
+  ratesToPrimary: Record<string, number>;
+};
+
+export type ImportFiatCurrency = string;
 
 /** Options de parseImportCsv (aligné process principal / wizard). */
 export interface ParseImportCsvOptions {
   importMappingRates?: ImportMappingRates;
+  primaryMappingRates?: PrimaryMappingRates;
+  /** Devise primaire du profil (défaut GBP) — utilisée si AMOUNT vient de l’indicateur seul. */
+  primaryCurrency?: string;
+  /** Devises de travail autorisées (primaire + secondaires). */
+  workingCurrencies?: string[];
   fiatChoiceByRowId?: Record<string, ImportFiatCurrency | '' | undefined>;
 }
 
@@ -90,17 +101,48 @@ export function amountToGbpWithRates(amount: number, currency: string, rates: Im
   return null;
 }
 
+export function importRatesAsPrimaryRates(rates: ImportMappingRates, primary = 'GBP'): PrimaryMappingRates {
+  return {
+    primary: (primary || 'GBP').toUpperCase(),
+    ratesToPrimary: {
+      EUR: rates.eurToGbp,
+      CHF: rates.chfToGbp,
+    },
+  };
+}
+
+export function amountToPrimaryWithRates(
+  amount: number,
+  currency: string,
+  rates: PrimaryMappingRates
+): number | null {
+  const c = (currency ?? '').trim().toUpperCase();
+  const primary = (rates.primary || 'GBP').toUpperCase();
+  if (c === primary) return amount;
+  const rate = rates.ratesToPrimary[c];
+  if (typeof rate === 'number' && Number.isFinite(rate) && rate > 0) {
+    return amount * rate;
+  }
+  return null;
+}
+
 /** Recalcule AMOUNT GBP à partir d’AMOUNT et de la devise (taux explicites). */
 export function applyGbpFromAmountAndFiatWithRates(amountStr: string, fiat: string, rates: ImportMappingRates): string {
+  return applyPrimaryFromAmountAndFiatWithRates(amountStr, fiat, importRatesAsPrimaryRates(rates, 'GBP'));
+}
+
+export function applyPrimaryFromAmountAndFiatWithRates(
+  amountStr: string,
+  fiat: string,
+  rates: PrimaryMappingRates
+): string {
   const amount = parseAmountNumericForImport(amountStr);
   if (amount === null || amount === 0) return '';
   const c = fiat.toUpperCase();
-  if (c === 'EUR' || c === 'CHF') {
-    const gbp = amountToGbpWithRates(amount, c, rates);
-    return gbp !== null ? formatAmountGbpForCsvImport(gbp) : '';
-  }
-  if (c === 'GBP') return formatAmountGbpForCsvImport(amount);
-  return '';
+  const primary = (rates.primary || 'GBP').toUpperCase();
+  if (c === primary) return formatAmountGbpForCsvImport(amount);
+  const converted = amountToPrimaryWithRates(amount, c, rates);
+  return converted !== null ? formatAmountGbpForCsvImport(converted) : '';
 }
 
 /** Même règle que processImportRow : INCOME prioritaire si les deux sont renseignés. */
@@ -128,13 +170,22 @@ export type ApplyValidRowPostProcessOptions = {
   incomeRaw?: string;
 };
 
-function detectFiatFromAmountText(raw: string): ImportFiatCurrency | null {
+function detectFiatFromAmountText(raw: string, allowed?: string[]): string | null {
   const s = raw ?? '';
-  if (/€/.test(s)) return 'EUR';
-  if (/£/.test(s)) return 'GBP';
-  if (/\bCHF\b/i.test(s)) return 'CHF';
-  if (/\bEUR\b/i.test(s)) return 'EUR';
-  if (/\bGBP\b/i.test(s)) return 'GBP';
+  const codes: Array<{ re: RegExp; code: string }> = [
+    { re: /€/, code: 'EUR' },
+    { re: /£/, code: 'GBP' },
+    { re: /\$/, code: 'USD' },
+    { re: /\bCHF\b/i, code: 'CHF' },
+    { re: /\bEUR\b/i, code: 'EUR' },
+    { re: /\bGBP\b/i, code: 'GBP' },
+    { re: /\bUSD\b/i, code: 'USD' },
+  ];
+  for (const { re, code } of codes) {
+    if (re.test(s)) {
+      if (!allowed || allowed.includes(code)) return code;
+    }
+  }
   return null;
 }
 
@@ -145,15 +196,17 @@ function detectFiatFromAmountText(raw: string): ImportFiatCurrency | null {
 export function resolveImportFiatEffective(
   rowId: string,
   valueMap: Record<string, string>,
-  fiatChoice: Record<string, ImportFiatCurrency | '' | undefined>
+  fiatChoice: Record<string, ImportFiatCurrency | '' | undefined>,
+  allowedCurrencies?: string[]
 ): string {
   const choice = fiatChoice[rowId];
   if (choice === '') return '';
-  if (choice === 'EUR' || choice === 'GBP' || choice === 'CHF') return choice;
-  const det = detectFiatFromAmountText(valueMap.AMOUNT ?? '');
+  const choiceUp = (choice ?? '').trim().toUpperCase();
+  if (choiceUp && (!allowedCurrencies || allowedCurrencies.includes(choiceUp))) return choiceUp;
+  const det = detectFiatFromAmountText(valueMap.AMOUNT ?? '', allowedCurrencies);
   if (det) return det;
   const m = (valueMap.CURRENCY ?? '').trim().toUpperCase();
-  if (m === 'EUR' || m === 'GBP' || m === 'CHF') return m;
+  if (m && (!allowedCurrencies || allowedCurrencies.includes(m))) return m;
   return '';
 }
 
@@ -161,9 +214,10 @@ export function resolveImportFiatEffective(
 export function applyImportFiatResolutionToValueMap(
   valueMap: Record<string, string>,
   rowId: string,
-  fiatChoice: Record<string, ImportFiatCurrency | '' | undefined>
+  fiatChoice: Record<string, ImportFiatCurrency | '' | undefined>,
+  allowedCurrencies?: string[]
 ): string {
-  const fiatEffective = resolveImportFiatEffective(rowId, valueMap, fiatChoice);
+  const fiatEffective = resolveImportFiatEffective(rowId, valueMap, fiatChoice, allowedCurrencies);
   if (fiatEffective) valueMap.CURRENCY = fiatEffective;
   return fiatEffective;
 }
@@ -189,25 +243,64 @@ export function mapRawRevolutAccountToActiveLabel(account: string, currency: str
 }
 
 /**
+ * AMOUNT + CURRENCY = source de vérité. Si seul l’indicateur (AMOUNT GBP interne) est renseigné
+ * et que la devise n’est pas une secondaire connue, copie vers AMOUNT et pose CURRENCY = primary.
+ */
+export function fillAmountCurrencyFromAmountGbpIfNeeded(
+  row: {
+    AMOUNT?: string;
+    CURRENCY?: string;
+    'AMOUNT GBP'?: string;
+  },
+  primary = 'GBP',
+  secondaryCodes: string[] = ['EUR', 'CHF']
+): boolean {
+  const amount = (row.AMOUNT ?? '').trim();
+  const amountGbp = (row['AMOUNT GBP'] ?? '').trim();
+  if (amount || !amountGbp) return false;
+  const currency = (row.CURRENCY ?? '').trim().toUpperCase();
+  const secs = secondaryCodes.map((c) => c.toUpperCase());
+  if (currency && secs.includes(currency)) return false;
+  row.AMOUNT = amountGbp;
+  row.CURRENCY = (primary || 'GBP').toUpperCase();
+  return true;
+}
+
+/**
  * Post-traitement d’une ligne déjà validée par processImportRow (même logique que le wizard).
  */
 export function applyValidRowPostProcessMappingPolicy(
   validRow: ValidRow,
   fiatEffective: string,
-  rates: ImportMappingRates,
-  opts?: ApplyValidRowPostProcessOptions
+  rates: ImportMappingRates | PrimaryMappingRates,
+  opts?: ApplyValidRowPostProcessOptions & { primaryCurrency?: string; workingCurrencies?: string[] }
 ): ValidRow {
   let vr = { ...validRow };
-  if (fiatEffective === 'EUR' || fiatEffective === 'GBP' || fiatEffective === 'CHF') {
-    vr.CURRENCY = fiatEffective;
+  const primary =
+    opts?.primaryCurrency?.toUpperCase() ||
+    ('primary' in rates ? rates.primary : 'GBP').toUpperCase() ||
+    'GBP';
+  const working = (opts?.workingCurrencies ?? [primary, 'EUR', 'CHF']).map((c) => c.toUpperCase());
+  const secondaries = working.filter((c) => c !== primary);
+  const primaryRates: PrimaryMappingRates =
+    'ratesToPrimary' in rates ? rates : importRatesAsPrimaryRates(rates, primary);
+
+  const fiat = (fiatEffective ?? '').trim().toUpperCase();
+  if (fiat && working.includes(fiat)) {
+    vr.CURRENCY = fiat;
     const sign = opts
       ? expenseIncomeSemanticSign(opts.expenseRaw ?? '', opts.incomeRaw ?? '')
       : null;
     if (sign !== null && vr.AMOUNT.trim()) {
       vr.AMOUNT = applySemanticSignToImportAmountStr(vr.AMOUNT, sign);
     }
-    const gbp = applyGbpFromAmountAndFiatWithRates(vr.AMOUNT, fiatEffective, rates);
-    if (gbp) vr['AMOUNT GBP'] = gbp;
+    if (!(vr.AMOUNT ?? '').trim() && (vr['AMOUNT GBP'] ?? '').trim()) {
+      vr.AMOUNT = vr['AMOUNT GBP'];
+    }
+    const converted = applyPrimaryFromAmountAndFiatWithRates(vr.AMOUNT, fiat, primaryRates);
+    if (converted) vr['AMOUNT GBP'] = converted;
+  } else {
+    fillAmountCurrencyFromAmountGbpIfNeeded(vr, primary, secondaries);
   }
   const revolutActive = mapRawRevolutAccountToActiveLabel(vr.ACCOUNT, vr.CURRENCY);
   if (revolutActive) vr.ACCOUNT = revolutActive;

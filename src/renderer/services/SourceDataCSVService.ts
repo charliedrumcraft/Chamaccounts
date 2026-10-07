@@ -1,21 +1,23 @@
 /**
- * Charge et parse le CSV data/TransactionsData/Processed/src_transaction_data.csv pour le tableau des transactions.
- * Tableau dynamique : colonnes et lignes dérivées du fichier.
+ * Charge les transactions (SQLite via IPC ; CSV miroir / Support via parse local).
+ * Tableau dynamique : colonnes et lignes dérivées de la source.
  * Les dates (DD/MM/YYYY ou DD.MM.YYYY) sont normalisées en DD.MM.YYYY.
- * L’ordre des lignes suit le fichier (pas de tri) pour préserver la chronologie et la détection d’anomalies.
+ * L’ordre des lignes suit la source (pas de tri) pour préserver la chronologie et la détection d’anomalies.
  */
 
-import { FileService } from './FileService';
 import { formatDateDDMMYYYY } from '../utils/format';
-import { SOURCE_DATA_PATH, SUPPORT_DATA_CSV_PATH } from '@/shared/dataPaths';
+import { SOURCE_DATA_PATH } from '@/shared/dataPaths';
 import { EXCLUDE_ANOMALY_COLUMN } from '@/shared/excludeAnomalyColumn';
 import { SOUTIEN_IGNORE_COLUMN } from '@/shared/soutienIgnoreColumn';
 import { TRANSACTION_SOURCE_COLUMN } from '@/shared/transactionRowSource';
 import { parseDateToTime } from '@/shared/transactionsImportCore';
+import type { SourceDataResult } from '@/shared/sourceDataTypes';
 import Papa from 'papaparse';
+import i18n from '../i18n';
 
-/** Chemin du fichier source pour l’édition (sauvegarde depuis le tableau). */
+/** Chemin du fichier CSV miroir (compat / export). */
 export { SOURCE_DATA_PATH };
+export type { SourceDataResult };
 
 /** Colonnes à ne pas afficher (toujours masquées, même si des lignes ont des valeurs). */
 const HIDDEN_COLUMNS = new Set<string>();
@@ -44,19 +46,9 @@ export function isSourceDataRowEmpty(row: Record<string, string>, dataColumnHead
   return cols.every((h) => !(row[h] ?? '').toString().trim());
 }
 
-export interface SourceDataResult {
-  headers: string[];
-  rows: Record<string, string>[];
-  /**
-   * Optionnel : pour chaque ligne rows[i], index de cette ligne dans le data_source complet.
-   * Utilisé par les rapports d'anomalies (ex. monthly) pour afficher l'index dans le fichier source.
-   */
-  rowIndicesInSource?: number[];
-}
-
 /**
  * Parse le contenu d’un CSV transactions (même schéma que src_transaction_data.csv).
- * Utilisé pour src_transaction_data.csv et Support_data.csv.
+ * Utilisé pour Support_data.csv et repli local.
  */
 export function parseSourceTransactionCsvContent(content: string): SourceDataResult | null {
   if (!content?.trim()) return null;
@@ -166,61 +158,249 @@ export function stripAccountColumnFromSupportData(result: SourceDataResult): Sou
   return stripColumnFromSourceData(result, (h) => /^account$/i.test(h));
 }
 
-/** Fusionne deux jeux de lignes (ex. src + support) avec union des en-têtes (ex. Source uniquement côté support). */
-function mergeSourceDataResults(
-  main: SourceDataResult | null,
-  support: SourceDataResult | null
-): SourceDataResult | null {
-  if (!main && !support?.rows?.length) return null;
-  const hMain = main?.headers ?? [];
-  const hSup = support?.headers ?? [];
-  const dataColsMain = hMain.filter((h) => !/^index$/i.test(h));
-  const dataColsSup = hSup.filter((h) => !/^index$/i.test(h));
-  const seen = new Set<string>();
-  const mergedDataCols: string[] = [];
-  for (const h of [...dataColsMain, ...dataColsSup]) {
-    if (!seen.has(h)) {
-      seen.add(h);
-      mergedDataCols.push(h);
-    }
-  }
-  const headers = ['Index', ...mergedDataCols];
-  const padRow = (row: Record<string, string>): Record<string, string> => {
-    const o: Record<string, string> = {};
-    for (const h of headers) {
-      o[h] = (row[h] ?? '').toString();
-    }
-    return o;
-  };
-  const rows = [...(main?.rows ?? []).map(padRow), ...(support?.rows ?? []).map(padRow)];
-  return normalizeOrderAndIndex({ headers, rows });
+function getTxApi(): Window['electronAPI'] | undefined {
+  return (window as unknown as { electronAPI?: Window['electronAPI'] }).electronAPI;
 }
 
 export class SourceDataCSVService {
+  /** Charge depuis SQLite (processus main). */
   static async load(): Promise<SourceDataResult | null> {
     try {
-      const content = await FileService.readFile(SOURCE_DATA_PATH);
-      if (!content?.trim()) return null;
-      return parseSourceTransactionCsvContent(content);
+      const api = getTxApi();
+      if (!api?.transactionsGetAll) return null;
+      const result = await api.transactionsGetAll();
+      if (!result.success || !result.data) return null;
+      return result.data;
     } catch {
       return null;
     }
   }
 
-  /**
-   * Fusionne src_transaction_data.csv et Support_data.csv (ordre : src puis soutien).
-   */
-  static async loadMergedWithSupport(): Promise<SourceDataResult | null> {
-    const main = await SourceDataCSVService.load();
-    let supportContent: string | null = null;
+  static async getMonthKeys(): Promise<{ monthKeys: string[]; monthStartsMs: number[] } | null> {
     try {
-      supportContent = await FileService.readFile(SUPPORT_DATA_CSV_PATH);
+      const api = getTxApi();
+      if (!api?.transactionsGetMonthKeys) return null;
+      const result = await api.transactionsGetMonthKeys();
+      if (!result.success || !result.data) return null;
+      return result.data;
     } catch {
-      supportContent = null;
+      return null;
     }
-    const supportParsed = supportContent?.trim() ? parseSourceTransactionCsvContent(supportContent) : null;
-    const support = supportParsed ? stripAccountColumnFromSupportData(supportParsed) : null;
-    return mergeSourceDataResults(main, support);
+  }
+
+  static async aggregateRange(startMs: number, endMs: number) {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsAggregateRange) return null;
+      const result = await api.transactionsAggregateRange({ startMs, endMs });
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async aggregateYearly() {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsAggregateYearly) return null;
+      const result = await api.transactionsAggregateYearly();
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async loadByMonth(monthKey: string): Promise<SourceDataResult | null> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsGetByMonth) return null;
+      const result = await api.transactionsGetByMonth(monthKey);
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async getMonthlyTotals() {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsGetMonthlyTotals) return null;
+      const result = await api.transactionsGetMonthlyTotals();
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async queryTableRows(
+    query: import('../../shared/transactionQueryTypes').TransactionsTableRowsQuery
+  ) {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsQueryTableRows) return null;
+      const result = await api.transactionsQueryTableRows(query);
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async getSuggestValues(): Promise<{
+    titles: string[];
+    types: string[];
+    accounts: string[];
+  } | null> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsGetSuggestValues) return null;
+      const result = await api.transactionsGetSuggestValues();
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async aggregateAnnualBudgetYear(year: number) {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsAggregateAnnualBudgetYear) return null;
+      const result = await api.transactionsAggregateAnnualBudgetYear(year);
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async refreshGbpRates(rates: {
+    eurToGbp: number;
+    chfToGbp: number;
+  }): Promise<{ success: boolean; error?: string; rowCount: number; updatedCount: number }> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsRefreshGbpRates) {
+        return { success: false, error: i18n.t('system.apiUnavailable', { name: 'transactionsRefreshGbpRates' }), rowCount: 0, updatedCount: 0 };
+      }
+      return await api.transactionsRefreshGbpRates(rates);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, rowCount: 0, updatedCount: 0 };
+    }
+  }
+
+  static async refreshPrimaryRates(rates: {
+    primary: string;
+    ratesToPrimary: Record<string, number>;
+  }): Promise<{ success: boolean; error?: string; rowCount: number; updatedCount: number }> {
+    try {
+      const api = getTxApi();
+      if (api?.transactionsRefreshPrimaryRates) {
+        return await api.transactionsRefreshPrimaryRates(rates);
+      }
+      if (api?.transactionsRefreshGbpRates) {
+        return await api.transactionsRefreshGbpRates({
+          eurToGbp: rates.ratesToPrimary.EUR ?? 0.86,
+          chfToGbp: rates.ratesToPrimary.CHF ?? 0.95,
+        });
+      }
+      return { success: false, error: i18n.t('system.apiUnavailable', { name: 'refresh rates' }), rowCount: 0, updatedCount: 0 };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, rowCount: 0, updatedCount: 0 };
+    }
+  }
+
+  static async detectAnomalies(payload: {
+    recognisedAccountLabels: string[];
+    recognisedEntryTypes: string[];
+    recognisedOutputTypes: string[];
+    writeReport?: boolean;
+  }): Promise<import('@/shared/transactionQueryTypes').DetectAnomaliesResultDto | null> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsDetectAnomalies) return null;
+      const result = await api.transactionsDetectAnomalies(payload);
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async mergeMonthEdit(
+    monthKey: string,
+    rows: Record<string, string>[]
+  ): Promise<{ success: boolean; error?: string; count: number }> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsMergeMonthEdit) {
+        return { success: false, error: i18n.t('system.apiUnavailable', { name: 'transactionsMergeMonthEdit' }), count: 0 };
+      }
+      return await api.transactionsMergeMonthEdit({ monthKey, rows });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, count: 0 };
+    }
+  }
+
+  static async getRowSignatures(
+    accountEntries?: Array<{ name: string; aliases?: string[] }>
+  ): Promise<string[] | null> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsGetRowSignatures) return null;
+      const result = await api.transactionsGetRowSignatures({ accountEntries });
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async getAnomalyExceptions(): Promise<SourceDataResult | null> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsGetAnomalyExceptions) return null;
+      const result = await api.transactionsGetAnomalyExceptions();
+      if (!result.success || !result.data) return null;
+      return result.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async clearAnomalyException(idx: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsClearAnomalyException) {
+        return { success: false, error: i18n.t('system.apiUnavailable', { name: 'transactionsClearAnomalyException' }) };
+      }
+      return await api.transactionsClearAnomalyException(idx);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
+  }
+
+  /** Persiste toutes les lignes dans SQLite (+ miroir CSV). */
+  static async replaceAll(rows: Record<string, string>[]): Promise<{ success: boolean; error?: string }> {
+    try {
+      const api = getTxApi();
+      if (!api?.transactionsReplaceAll) {
+        return { success: false, error: i18n.t('system.apiUnavailable', { name: 'transactionsReplaceAll' }) };
+      }
+      const result = await api.transactionsReplaceAll(rows);
+      return { success: result.success, error: result.error };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
   }
 }
 

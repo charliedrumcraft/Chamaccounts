@@ -1,3 +1,29 @@
+# Chamaccounts v1.2.0
+
+Stockage SQLite des données métier, devises de travail par profil, interface bilingue FR/EN, et profil Data Template enrichi pour la démo.
+
+### Changements par rapport à v1.1.2
+- **SQLite (sql.js)** : transactions, soldes et Support en base locale (CSV conservés comme miroirs dérivés)
+- **Devises de travail** : wizard de premier lancement + réglages par profil (devise primaire / secondaires)
+- **Internationalisation** : interface FR / EN (i18next)
+- **Data Template** : ~60 transactions fictives sur 6 mois, soldes, Support, comptes/types reconnus, bilan 2026 avec budgets et affectations de types
+- **Profil Data Template** : resynchronisation automatique des CSV démo (et listes Settings / bilan) depuis le bundle si la copie locale est obsolète ou vidée
+- **Tableau des transactions** : la période affichée (mois ou « Tout ») est mémorisée entre les navigations
+- **Performance** : virtualisation du tableau des transactions (`@tanstack/react-virtual`)
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.2.0-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.2.0-mac-x64.dmg` / `.zip` |
+| macOS Apple Silicon | `Chamaccounts-1.2.0-mac-arm64.dmg` / `.zip` |
+| Linux (AppImage) | `Chamaccounts-1.2.0-linux-x64.AppImage` |
+
+[Télécharger v1.2.0](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.2.0)
+
+---
+
 # Chamaccounts v1.1.2
 
 Conservation de « Ignorer » sur la page Soutien à l’import, et correctifs d’affichage des graphiques du tableau de bord.

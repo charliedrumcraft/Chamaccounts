@@ -3,6 +3,7 @@ import { autoUpdater } from 'electron-updater';
 import type { UpdateDownloadedEvent, UpdateInfo } from 'electron-updater';
 import { GITHUB_RELEASES_PAGE_URL } from '../shared/githubApp';
 import { installMacUpdateFromZip } from './macUnsignedUpdate';
+import { tm } from './uiI18n';
 
 export type AppUpdateStatus = 'dev' | 'up-to-date' | 'update-available' | 'error';
 
@@ -62,10 +63,10 @@ function sendDownloadProgress(percent: number): void {
 
 function formatDownloadError(raw: string): string {
   if (/ZIP file not provided/i.test(raw)) {
-    return 'Impossible d’installer automatiquement : le paquet macOS .zip est absent de la release GitHub. Ouverture de la page des releases pour installer le .dmg.';
+    return tm('update.macZipMissing');
   }
   if (/code signature for running application/i.test(raw)) {
-    return 'Impossible d’installer automatiquement depuis cette version. Installez une fois le .dmg depuis GitHub (glisser dans Applications) : les mises à jour suivantes se feront dans l’app, sans certificat Apple.';
+    return tm('update.macSignatureFirstInstall');
   }
   return raw;
 }
@@ -137,7 +138,7 @@ function checkForUpdatesOnce(options?: { silent?: boolean }): Promise<AppUpdateC
         success: false,
         currentVersion,
         status: 'error',
-        error: 'Délai dépassé lors de la vérification des mises à jour.',
+        error: tm('update.checkTimeout'),
         releaseUrl: GITHUB_RELEASES_PAGE_URL,
       });
     }, timeoutMs);
@@ -155,7 +156,7 @@ function checkForUpdatesOnce(options?: { silent?: boolean }): Promise<AppUpdateC
 
 function downloadAndInstallUpdate(): Promise<AppUpdateDownloadResult> {
   if (downloadInProgress) {
-    return Promise.resolve({ success: false, error: 'Un téléchargement est déjà en cours.' });
+    return Promise.resolve({ success: false, error: tm('update.downloadInProgress') });
   }
 
   return new Promise((resolve) => {
@@ -182,12 +183,12 @@ function downloadAndInstallUpdate(): Promise<AppUpdateDownloadResult> {
       const replaceMacApp = process.platform === 'darwin';
       const dialogOptions = {
         type: 'info' as const,
-        title: 'Mise à jour prête',
-        message: 'La nouvelle version a été téléchargée.',
+        title: tm('update.readyTitle'),
+        message: tm('update.readyMessage'),
         detail: replaceMacApp
-          ? 'Redémarrer maintenant pour remplacer Chamaccounts et relancer l’application ?'
-          : 'Redémarrer maintenant pour installer la mise à jour ?',
-        buttons: ['Redémarrer', 'Plus tard'],
+          ? tm('update.readyDetailMac')
+          : tm('update.readyDetail'),
+        buttons: [tm('update.restart'), tm('update.later')],
         defaultId: 0,
         cancelId: 1,
       };
@@ -223,7 +224,7 @@ function downloadAndInstallUpdate(): Promise<AppUpdateDownloadResult> {
 
     const timeout = setTimeout(() => {
       cleanup();
-      resolve({ success: false, error: 'Délai dépassé lors du téléchargement.' });
+      resolve({ success: false, error: tm('update.downloadTimeout') });
     }, timeoutMs);
 
     autoUpdater.on('download-progress', onProgress);
@@ -268,8 +269,7 @@ export function registerAppUpdaterIpc(): void {
         currentVersion,
         status: 'dev',
         releaseUrl: GITHUB_RELEASES_PAGE_URL,
-        error:
-          'Les mises à jour automatiques ne fonctionnent que dans l’application installée (build packagé).',
+        error: tm('update.packagedOnly'),
       };
     }
     return checkForUpdatesOnce({ silent: false });
@@ -279,7 +279,7 @@ export function registerAppUpdaterIpc(): void {
     if (!app.isPackaged) {
       return {
         success: false,
-        error: 'Téléchargement indisponible en mode développement.',
+        error: tm('update.devDownloadUnavailable'),
       };
     }
     return downloadAndInstallUpdate();

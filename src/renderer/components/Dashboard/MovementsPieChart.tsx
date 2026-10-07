@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Pie } from 'react-chartjs-2';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
+import { useTranslation } from 'react-i18next';
 import { formatCurrency } from '../../utils/format';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
@@ -38,6 +39,7 @@ const MovementsPieChart: React.FC<MovementsPieChartProps> = ({
   totalEntrées,
   yAxisCurrency,
 }) => {
+  const { t } = useTranslation();
   const total = totalSorties + totalEntrées;
 
   const { chartLabels, chartData, chartColors } = useMemo(() => {
@@ -82,7 +84,7 @@ const MovementsPieChart: React.FC<MovementsPieChartProps> = ({
                     const seg = segments[ctx.dataIndex];
                     const v = ctx.parsed as number;
                     const pct = total > 0 ? ((v / total) * 100).toFixed(1) : '0';
-                    const kind = seg?.isSortie ? 'Sortie' : 'Entrée';
+                    const kind = seg?.isSortie ? t('dashboard.series.exitKind') : t('dashboard.series.entryKind');
                     return `${ctx.label} (${kind}): ${formatCurrency(v, yAxisCurrency)} (${pct} %)`;
                   },
                 },

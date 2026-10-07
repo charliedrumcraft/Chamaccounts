@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   readDismissedUpdateVersion,
   readUpdateCheckOnStartup,
@@ -13,6 +14,7 @@ type UpdatePayload = {
 };
 
 const UpdateAvailableBanner: React.FC = () => {
+  const { t } = useTranslation();
   const [payload, setPayload] = useState<UpdatePayload | null>(null);
   const [snoozed, setSnoozed] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -65,8 +67,10 @@ const UpdateAvailableBanner: React.FC = () => {
       className="shrink-0 border-b border-indigo-200 bg-indigo-50 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3"
     >
       <p className="text-sm text-indigo-950">
-        <span className="font-medium">Mise à jour disponible</span> — v{payload.latestVersion}{' '}
-        <span className="text-indigo-800/80">(installée : v{payload.currentVersion})</span>
+        {t('updateBanner.available', {
+          latest: payload.latestVersion,
+          current: payload.currentVersion,
+        })}
       </p>
       <div className="flex flex-wrap gap-2">
         <button
@@ -75,21 +79,21 @@ const UpdateAvailableBanner: React.FC = () => {
           disabled={installing}
           className="rounded border border-indigo-700 bg-indigo-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-800 disabled:opacity-50"
         >
-          {installing ? 'Téléchargement…' : 'Installer'}
+          {installing ? t('settings.updates.downloading') : t('common.install')}
         </button>
         <button
           type="button"
           onClick={handleLater}
           className="rounded border border-indigo-300 bg-white px-3 py-1.5 text-xs font-medium text-indigo-900 hover:bg-indigo-100/50"
         >
-          Plus tard
+          {t('common.later')}
         </button>
         <button
           type="button"
           onClick={handleDismissVersion}
           className="rounded border border-transparent px-3 py-1.5 text-xs font-medium text-indigo-800/90 hover:underline"
         >
-          Ne plus proposer cette version
+          {t('updateBanner.dismissVersion')}
         </button>
       </div>
     </div>

@@ -88,6 +88,7 @@ export function mapToStandardHeader(norm: string): string | null {
   if (/^index$/i.test(norm)) return null;
   const fromMap = HEADER_MAP[norm.toLowerCase()];
   if (fromMap) return fromMap;
+  if (/^amount\s+[A-Za-z]{3}$/i.test(norm)) return 'AMOUNT GBP';
   if ((OUTPUT_HEADERS as readonly string[]).includes(norm) || IMPORT_HEADERS.includes(norm)) return norm;
   return null;
 }

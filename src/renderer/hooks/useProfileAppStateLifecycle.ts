@@ -36,8 +36,10 @@ export function useProfileAppStateLifecycle(enabled: boolean): boolean {
         const root = await api.getDataRoot();
         if (root.success) {
           const r = await syncAppStateOnProfileEnter();
-          if (!r.ok && !r.skipped) {
+          if (!r.ok) {
             console.warn('[AppState] import au démarrage:', r.error);
+          } else if (r.restoredKeys && r.restoredKeys.length > 0) {
+            console.info('[AppState] listes reconnues restaurées depuis CSV:', r.restoredKeys.join(', '));
           }
         }
       }

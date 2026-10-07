@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import AppShell from './components/Layout/AppShell';
 import DataSetup from './pages/DataSetup';
+import WorkingCurrenciesWizard from './pages/WorkingCurrenciesWizard';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
 import TransactionsTable from './pages/TransactionsTable';
@@ -10,8 +12,11 @@ import MonthlyAccounting from './pages/MonthlyAccounting';
 import AnnualBudget from './pages/AnnualBudget';
 import Support from './pages/Support';
 import { useProfileAppStateLifecycle } from './hooks/useProfileAppStateLifecycle';
+import { useWorkingCurrenciesGate } from './hooks/useWorkingCurrenciesGate';
+import { restoreRecognisedListsFromAppStateIfEmpty } from './services/localStorageSnapshotService';
 
 const App: React.FC = () => {
+  const { t } = useTranslation();
   const [setupChecked, setSetupChecked] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
 
@@ -33,6 +38,24 @@ const App: React.FC = () => {
 
   const profileReady = setupChecked && !needsSetup;
   const appStateReady = useProfileAppStateLifecycle(profileReady);
+  const {
+    ready: currenciesReady,
+    needsWizard,
+    markConfigured,
+  } = useWorkingCurrenciesGate(profileReady && appStateReady);
+
+  useEffect(() => {
+    if (!appStateReady || !profileReady) return;
+    let cancelled = false;
+    void (async () => {
+      const r = await restoreRecognisedListsFromAppStateIfEmpty();
+      if (cancelled || !r.ok || !(r.restoredKeys?.length)) return;
+      console.info('[AppState] listes reconnues restaurées:', r.restoredKeys.join(', '));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appStateReady, profileReady]);
 
   const handleSetupComplete = useCallback(async () => {
     await checkSetup();
@@ -42,16 +65,24 @@ const App: React.FC = () => {
     }
   }, [checkSetup]);
 
-  if (!setupChecked || (profileReady && !appStateReady)) {
+  if (
+    !setupChecked ||
+    (profileReady && !appStateReady) ||
+    (profileReady && appStateReady && !currenciesReady)
+  ) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-600">
-        Chargement…
+        {t('common.loading')}
       </div>
     );
   }
 
   if (needsSetup) {
     return <DataSetup onComplete={() => void handleSetupComplete()} />;
+  }
+
+  if (needsWizard) {
+    return <WorkingCurrenciesWizard onConfigured={markConfigured} />;
   }
 
   return (

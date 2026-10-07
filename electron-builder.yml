@@ -25,6 +25,7 @@ asarUnpack:
   - parametre/**/*
   - data-template/**/*
   - data-template-profile/**/*
+  - node_modules/sql.js/dist/**/*
 
 win:
   target:

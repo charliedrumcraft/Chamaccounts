@@ -1,12 +1,14 @@
 /** Lecture de fichiers via l'API Electron */
+
+import i18n from '../i18n';
 export class FileService {
   static async readFile(filePath: string): Promise<string> {
     if (!window.electronAPI?.readFile) {
-      throw new Error('electronAPI.readFile non disponible');
+      throw new Error(i18n.t('system.electronMethodUnavailable', { name: 'readFile' }));
     }
     const result = await window.electronAPI.readFile(filePath);
     if (!result.success) {
-      throw new Error(result.error || 'Erreur lecture fichier');
+      throw new Error(result.error || i18n.t('system.fileReadError'));
     }
     return result.data ?? '';
   }
@@ -18,7 +20,7 @@ export class FileService {
       if (r.success && r.path) return r.path;
     }
     if (!api?.getAppPath) {
-      throw new Error('electronAPI.getAppPath non disponible');
+      throw new Error(i18n.t('system.electronMethodUnavailable', { name: 'getAppPath' }));
     }
     return api.getAppPath();
   }

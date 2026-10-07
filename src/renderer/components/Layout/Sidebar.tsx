@@ -1,5 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { GITHUB_REPO_NAME } from '@/shared/githubApp';
 import { useSidebarAppInfo } from '../../hooks/useSidebarAppInfo';
 import { useGuidedTour } from '../../guidedTour/GuidedTourContext';
@@ -71,16 +72,6 @@ function HeartIcon({ className }: { className?: string }) {
   );
 }
 
-const navItems = [
-  { to: '/', label: 'Tableau de bord', icon: ChartIcon },
-  { to: '/transactions', label: 'Tableau des transactions', icon: TableIcon },
-  { to: '/account-balance', label: 'Soldes des comptes', icon: BankIcon },
-  { to: '/monthly-accounting', label: 'Comptabilité mensuelle', icon: CalendarIcon },
-  { to: '/annual-budget', label: 'Budget annuel', icon: BudgetIcon },
-  { to: '/soutien', label: 'Soutien', icon: HeartIcon },
-  { to: '/settings', label: 'Réglages', icon: SettingsIcon },
-];
-
 function ChevronIcon({ left }: { left: boolean }) {
   return (
     <svg
@@ -122,8 +113,9 @@ function SidebarFooter({
   tourActive: boolean;
   onExpand: () => void;
 }) {
+  const { t } = useTranslation();
   const versionLabel = appVersion ? `v${appVersion}` : null;
-  const profileLabel = activeProfileName ?? 'Profil non configuré';
+  const profileLabel = activeProfileName ?? t('nav.profileNotConfigured');
   const tooltip = [profileLabel, versionLabel].filter(Boolean).join(' · ');
 
   if (collapsed) {
@@ -134,8 +126,8 @@ function SidebarFooter({
           onClick={onStartTour}
           disabled={tourActive}
           className="flex h-8 w-8 items-center justify-center rounded-md text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-          title="Visite guidée"
-          aria-label="Visite guidée"
+          title={t('nav.guidedTour')}
+          aria-label={t('nav.guidedTour')}
         >
           <TourIcon className="w-4 h-4" />
         </button>
@@ -143,8 +135,8 @@ function SidebarFooter({
           type="button"
           onClick={onExpand}
           className="flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-          title={tooltip ? `${tooltip} — Ouvrir le menu` : 'Ouvrir le menu'}
-          aria-label="Ouvrir le menu"
+          title={tooltip ? `${tooltip} — ${t('nav.openMenu')}` : t('nav.openMenu')}
+          aria-label={t('nav.openMenu')}
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path
@@ -167,16 +159,16 @@ function SidebarFooter({
         className="w-full flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-2 py-2 text-xs font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50 transition-colors"
       >
         <TourIcon className="w-4 h-4 shrink-0" />
-        Visite guidée
+        {t('nav.guidedTour')}
       </button>
       <div className="min-w-0">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-gray-400">Profil actif</p>
+        <p className="text-[10px] font-medium uppercase tracking-wide text-gray-400">{t('nav.activeProfile')}</p>
         <p className="text-xs font-medium text-gray-700 truncate" title={profileLabel}>
           {profileLabel}
         </p>
       </div>
       {versionLabel && (
-        <p className="text-[11px] text-gray-400 tabular-nums" title={`Version ${versionLabel}`}>
+        <p className="text-[11px] text-gray-400 tabular-nums" title={t('nav.version', { version: versionLabel })}>
           {versionLabel}
         </p>
       )}
@@ -186,8 +178,19 @@ function SidebarFooter({
 
 const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggle }) => {
   const location = useLocation();
+  const { t } = useTranslation();
   const { appVersion, activeProfileName } = useSidebarAppInfo();
   const { startTour, active: tourActive } = useGuidedTour();
+
+  const navItems = [
+    { to: '/', label: t('nav.dashboard'), icon: ChartIcon },
+    { to: '/transactions', label: t('nav.transactions'), icon: TableIcon },
+    { to: '/account-balance', label: t('nav.accountBalance'), icon: BankIcon },
+    { to: '/monthly-accounting', label: t('nav.monthlyAccounting'), icon: CalendarIcon },
+    { to: '/annual-budget', label: t('nav.annualBudget'), icon: BudgetIcon },
+    { to: '/soutien', label: t('nav.support'), icon: HeartIcon },
+    { to: '/settings', label: t('nav.settings'), icon: SettingsIcon },
+  ];
 
   return (
     <aside
@@ -206,8 +209,8 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
           type="button"
           onClick={onCollapsedPreferenceToggle}
           className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
-          title={collapsed ? 'Ouvrir le menu' : 'Réduire le menu'}
-          aria-label={collapsed ? 'Ouvrir le menu' : 'Réduire le menu'}
+          title={collapsed ? t('nav.openMenu') : t('nav.collapseMenu')}
+          aria-label={collapsed ? t('nav.openMenu') : t('nav.collapseMenu')}
         >
           <ChevronIcon left={collapsed} />
         </button>

@@ -1,6 +1,7 @@
 import React, { useRef, useMemo, useEffect, useState } from 'react';
 import { Chart as ChartJS, ChartOptions, registerables } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
+import { useTranslation } from 'react-i18next';
 import { formatCurrency } from '../../utils/format';
 
 /** Régression linéaire y = ax + b sur (index, value). */
@@ -111,6 +112,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
   hiddenSeriesByLabel = {},
   onLegendVisibilityChange,
 }) => {
+  const { t } = useTranslation();
   const chartRef = useRef<ChartJS<'bar'>>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [isDarkMode, setIsDarkMode] = useState(() =>
@@ -182,7 +184,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
       });
     } else {
       barDatasets.push({
-        label: 'Sorties',
+        label: t('dashboard.series.exits'),
         data: years.map((y) => -(totalSortiesByYear[y] ?? 0)),
         backgroundColor: 'rgba(239, 68, 68, 0.8)',
         borderColor: 'rgba(185, 28, 28, 0.9)',
@@ -190,7 +192,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
         type: 'bar',
         order: 2,
         stack: 'year',
-        hidden: hiddenSeriesByLabel['Sorties'] ?? false,
+        hidden: hiddenSeriesByLabel[t('dashboard.series.exits')] ?? false,
         ...totalsForTooltip,
       });
     }
@@ -215,7 +217,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
       });
     } else {
       barDatasets.push({
-        label: 'Entrées',
+        label: t('dashboard.series.entries'),
         data: years.map((y) => totalEntréesByYear[y] ?? 0),
         backgroundColor: 'rgba(34, 197, 94, 0.8)',
         borderColor: 'rgba(22, 163, 74, 0.9)',
@@ -223,7 +225,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
         type: 'bar',
         order: 2,
         stack: 'year',
-        hidden: hiddenSeriesByLabel['Entrées'] ?? false,
+        hidden: hiddenSeriesByLabel[t('dashboard.series.entries')] ?? false,
         ...totalsForTooltip,
       });
     }
@@ -250,11 +252,11 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
     }
 
     const lineBalance: MixedDataset = {
-      label: 'Balance',
+      label: t('dashboard.series.balance'),
       data: visibleBalanceByYear,
       type: 'line',
       yAxisID: 'yLines',
-      hidden: hiddenSeriesByLabel['Balance'] ?? false,
+      hidden: hiddenSeriesByLabel[t('dashboard.series.balance')] ?? false,
       borderColor: isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.6)',
       borderWidth: 2,
       fill: false,
@@ -293,7 +295,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
       const { a, b } = reg;
       const trendData = visibleBalanceByYear.map((_, i) => a * i + b);
       extraLines.push({
-        label: 'Tendance',
+        label: t('dashboard.series.trend'),
         data: trendData,
         type: 'line',
         yAxisID: 'yLines',
@@ -315,7 +317,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
 
     if (showMoyenneEntrées && n > 0) {
       extraLines.push({
-        label: 'Moyenne entrées',
+        label: t('dashboard.series.averageEntries'),
         data: new Array(n).fill(moyEntrées),
         type: 'line',
         yAxisID: 'yLines',
@@ -331,7 +333,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
     }
     if (showMoyenneSorties && n > 0) {
       extraLines.push({
-        label: 'Moyenne sorties',
+        label: t('dashboard.series.averageExits'),
         data: new Array(n).fill(-moySorties),
         type: 'line',
         yAxisID: 'yLines',
@@ -347,7 +349,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
     }
     if (showMoyenneBalance && n > 0) {
       extraLines.push({
-        label: 'Moyenne balance',
+        label: t('dashboard.series.averageBalance'),
         data: new Array(n).fill(moyBalance),
         type: 'line',
         yAxisID: 'yLines',
@@ -392,7 +394,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
       tooltipExtraByLabel,
       summaryStats,
     };
-  }, [data, isDarkMode, showTrendLine, showMoyenneEntrées, showMoyenneSorties, showMoyenneBalance, hiddenSeriesByLabel, currency]);
+  }, [data, isDarkMode, showTrendLine, showMoyenneEntrées, showMoyenneSorties, showMoyenneBalance, hiddenSeriesByLabel, currency, t]);
 
   const options: ChartOptions<'bar'> = useMemo(
     () => ({
@@ -416,7 +418,12 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
             font: { size: 11 },
             filter(legendItem: { text?: string }) {
               const label = legendItem.text;
-              if (label === 'Tendance' || label === 'Moyenne entrées' || label === 'Moyenne sorties' || label === 'Moyenne balance') return false;
+              if (
+                label === t('dashboard.series.trend') ||
+                label === t('dashboard.series.averageEntries') ||
+                label === t('dashboard.series.averageExits') ||
+                label === t('dashboard.series.averageBalance')
+              ) return false;
               return true;
             },
           },
@@ -483,10 +490,10 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
               const balanceColor = balance >= 0 ? '#16a34a' : '#dc2626';
               el.innerHTML = [
                 `<div style="font-weight:600;margin-bottom:6px;color:${isDarkMode ? '#e2e8f0' : '#333'}">${title}</div>`,
-                `<div style="color:#16a34a">Entrées: +${formatCurrency(entrées, currency)}</div>`,
-                `<div style="color:#dc2626">Sorties: −${formatCurrency(sorties, currency)}</div>`,
+                `<div style="color:#16a34a">${t('dashboard.series.entries')}: +${formatCurrency(entrées, currency)}</div>`,
+                `<div style="color:#dc2626">${t('dashboard.series.exits')}: −${formatCurrency(sorties, currency)}</div>`,
                 `<div style="border-top:1px solid ${isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.12)'};margin:6px 0"></div>`,
-                `<div style="color:${balanceColor}">Balance: ${balanceStr}</div>`,
+                `<div style="color:${balanceColor}">${t('dashboard.series.balance')}: ${balanceStr}</div>`,
               ].join('');
             } else {
               const lines = tooltip.dataPoints.map((p) => {
@@ -511,10 +518,10 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
               if (hasEntrée || hasSortie) {
                 totalLines.push(`<div style="border-top:1px solid ${isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.12)'};margin:6px 0"></div>`);
                 if (hasEntrée) {
-                  totalLines.push(`<div style="color:#16a34a">Total entrées: +${formatCurrency(totalEntréesAnnée, currency)}</div>`);
+                  totalLines.push(`<div style="color:#16a34a">${t('dashboard.totalEntries')}: +${formatCurrency(totalEntréesAnnée, currency)}</div>`);
                 }
                 if (hasSortie) {
-                  totalLines.push(`<div style="color:#dc2626">Total sorties: −${formatCurrency(totalSortiesAnnée, currency)}</div>`);
+                  totalLines.push(`<div style="color:#dc2626">${t('dashboard.totalExits')}: −${formatCurrency(totalSortiesAnnée, currency)}</div>`);
                 }
               }
               el.innerHTML = [
@@ -586,13 +593,13 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
         },
       },
     }),
-    [initialLimits, isDarkMode, currency, hiddenSeriesByLabel, onLegendVisibilityChange, tooltipExtraByLabel, height]
+    [initialLimits, isDarkMode, currency, hiddenSeriesByLabel, onLegendVisibilityChange, tooltipExtraByLabel, height, t]
   );
 
   if (!data || data.years.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500 text-sm">
-        Aucune donnée annuelle à afficher
+        {t('dashboard.charts.noYearlyData')}
       </div>
     );
   }
@@ -632,25 +639,25 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
         <table className="w-full text-sm border-collapse min-w-0">
           <tbody>
             <tr className="border-b border-gray-200 dark:border-gray-700">
-              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300 w-1/2">Balance moyenne</td>
+              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300 w-1/2">{t('dashboard.charts.averageBalanceRow')}</td>
               <td className="px-3 py-2 text-right tabular-nums text-gray-900 dark:text-gray-100">
                 {(balanceMoyenne >= 0 ? '+' : '') + formatCurrency(balanceMoyenne, currency)}
               </td>
             </tr>
             <tr className="border-b border-gray-200 dark:border-gray-700">
-              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">Total entrées moyen</td>
+              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">{t('dashboard.charts.averageTotalEntriesRow')}</td>
               <td className="px-3 py-2 text-right tabular-nums text-green-700 dark:text-green-400">
                 +{formatCurrency(entréesMoyennes, currency)}
               </td>
             </tr>
             <tr className="border-b border-gray-200 dark:border-gray-700">
-              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">Total sorties moyen</td>
+              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">{t('dashboard.charts.averageTotalExitsRow')}</td>
               <td className="px-3 py-2 text-right tabular-nums text-red-700 dark:text-red-400">
                 −{formatCurrency(sortiesMoyennes, currency)}
               </td>
             </tr>
             <tr className="border-b border-gray-200 dark:border-gray-700">
-              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">Tendance hausse/baisse</td>
+              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">{t('dashboard.charts.trendUpDownRow')}</td>
               <td className="px-3 py-2 text-right tabular-nums">
                 {tendancePct != null ? (
                   <span className={tendancePct >= 0 ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}>
@@ -662,7 +669,7 @@ const YearlySummaryChart: React.FC<YearlySummaryChartProps> = ({
               </td>
             </tr>
             <tr>
-              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">Courbe de tendance</td>
+              <td className="px-3 py-2 font-medium text-gray-700 dark:text-gray-300">{t('dashboard.charts.trendCurveRow')}</td>
               <td className="px-3 py-2 text-right tabular-nums text-indigo-600 dark:text-indigo-400">
                 {trendEquation ?? '—'}
               </td>

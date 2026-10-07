@@ -1,17 +1,16 @@
 import {
-  ACCOUNT_BALANCE_PROCESSED_DIR,
   ACCOUNT_BALANCE_IMPORT_DIR,
   ACCOUNT_BALANCE_MERGE_REPORT_PATH,
 } from '@/shared/dataPaths';
 import {
   AccountBalanceCSVService,
-  ACCOUNT_BALANCE_PROCESSED_FILENAMES,
   type BalanceRow,
 } from './AccountBalanceCSVService';
 import type { RecognisedAccountEntry } from '../constants/recognisedAccountsStorage';
 import Papa from 'papaparse';
 import { format, startOfDay } from 'date-fns';
 import { MERGE_REPORT_SUCCESS_REASON } from '@/shared/mergeReportConstants';
+import i18n from '../i18n';
 
 /** Ligne signalée dans le rapport de fusion (non importée ou anomalie). */
 export interface AccountBalanceNotImportedRow {
@@ -135,7 +134,7 @@ export async function mergeAccountBalanceImports(
       totalImportDataRows: 0,
       notMergedCount: 0,
       notImportedRows: [],
-      error: 'API Electron indisponible.',
+      error: i18n.t('system.electronApiUnavailable'),
     };
   }
 
@@ -151,35 +150,8 @@ export async function mergeAccountBalanceImports(
     importNames = [];
   }
 
-  const dataDir = ACCOUNT_BALANCE_PROCESSED_DIR;
-  let processedFileName: string | null = null;
-  let existingContent: string | null = null;
-  for (const fileName of ACCOUNT_BALANCE_PROCESSED_FILENAMES) {
-    const read = await api.readFile(`${dataDir}/${fileName}`);
-    if (read.success && read.data !== undefined) {
-      processedFileName = fileName;
-      existingContent = read.data;
-      break;
-    }
-  }
-
-  if (!processedFileName || existingContent === null) {
-    return {
-      success: false,
-      mergedCount: 0,
-      anomalyCount: 0,
-      importFileCount: importNames.length,
-      importedWithoutDateHeaderCount: 0,
-      duplicateDateCount: 0,
-      replacedCount: 0,
-      totalImportDataRows: 0,
-      notMergedCount: 0,
-      notImportedRows: [],
-      error: 'src_account_balance.csv introuvable dans Processed.',
-    };
-  }
-
-  const existingRows = AccountBalanceCSVService.parseBalanceCsvContent(existingContent) ?? [];
+  AccountBalanceCSVService.invalidateCache();
+  const existingRows = (await AccountBalanceCSVService.loadAllBalanceRows()) ?? [];
   const byTime = new Map<number, BalanceRow>();
   for (const r of existingRows) {
     byTime.set(r.date.getTime(), r);
@@ -194,7 +166,9 @@ export async function mergeAccountBalanceImports(
   let totalImportDataRows = 0;
 
   if (importNames.length === 0) {
-    const reportHeader = 'fichier_source;ligne;raison;date;ligne_brute';
+    // Les `reason` ci-dessus sont écrites telles quelles (FR) dans le CSV rapport : jetons stables,
+  // traduits à l’affichage par translateKnownFrMessage (MergeReportViewer).
+  const reportHeader = 'fichier_source;ligne;raison;date;ligne_brute';
     await api.writeFile(ACCOUNT_BALANCE_MERGE_REPORT_PATH, `${reportHeader}\n`);
     return {
       success: true,
@@ -329,8 +303,7 @@ export async function mergeAccountBalanceImports(
   }
 
   const mergedRows = [...byTime.values()].sort((a, b) => a.date.getTime() - b.date.getTime());
-  const csvOut = AccountBalanceCSVService.balanceRowsToCsv(mergedRows, accounts);
-  const writeResult = await api.writeFile(`${dataDir}/${processedFileName}`, csvOut);
+  const writeResult = await AccountBalanceCSVService.saveBalanceRowsToProcessed(mergedRows, accounts);
   const mergedNewCount = byTime.size - initialSize;
   if (!writeResult.success) {
     const integrated = mergedNewCount + (replaceDuplicateDates ? replacedCount : 0);
@@ -345,11 +318,9 @@ export async function mergeAccountBalanceImports(
       totalImportDataRows,
       notMergedCount: Math.max(0, totalImportDataRows - integrated),
       notImportedRows: mapAnomaliesToNotImportedRows(anomalies),
-      error: writeResult.error ?? 'Écriture src_account_balance.csv refusée.',
+      error: writeResult.error ?? i18n.t('system.balanceMerge.writeRefused'),
     };
   }
-
-  AccountBalanceCSVService.invalidateCache();
 
   const reportHeader = 'fichier_source;ligne;raison;date;ligne_brute';
   const reportLines = [

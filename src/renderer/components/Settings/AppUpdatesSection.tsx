@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { GITHUB_RELEASES_PAGE_URL, GITHUB_REPO_URL } from '@/shared/githubApp';
 import {
   clearDismissedUpdateVersion,
@@ -20,6 +21,7 @@ type AppUpdateCheckResult = {
 };
 
 const AppUpdatesSection: React.FC = () => {
+  const { t } = useTranslation();
   const [currentVersion, setCurrentVersion] = useState<string>('…');
   const [checking, setChecking] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -52,15 +54,15 @@ const AppUpdatesSection: React.FC = () => {
       setLatestVersion(p.latestVersion);
       setCurrentVersion(p.currentVersion);
       setMessage(
-        `Une mise à jour est disponible : v${p.latestVersion} (vous : v${p.currentVersion}).`
+        t('settings.updates.available', { latest: p.latestVersion, current: p.currentVersion })
       );
     });
-  }, []);
+  }, [t]);
 
   const handleCheck = useCallback(async () => {
     const api = window.electronAPI;
     if (!api?.checkForAppUpdate) {
-      setMessage('API Electron indisponible.');
+      setMessage(t('settings.updates.apiUnavailable'));
       return;
     }
     setChecking(true);
@@ -71,50 +73,47 @@ const AppUpdatesSection: React.FC = () => {
       const result: AppUpdateCheckResult = await api.checkForAppUpdate();
       setCurrentVersion(result.currentVersion);
       if (result.status === 'dev') {
-        setMessage(
-          result.error ??
-            'Mode développement : ouvrez les releases GitHub pour installer une version packagée.'
-        );
+        setMessage(result.error ?? t('settings.updates.devMode'));
         return;
       }
       if (result.status === 'error') {
-        setMessage(
-          result.error ??
-            'Impossible de vérifier les mises à jour. Consultez les releases sur GitHub.'
-        );
+        setMessage(result.error ?? t('settings.updates.checkFailed'));
         return;
       }
       if (result.status === 'update-available') {
         setUpdateAvailable(true);
         setLatestVersion(result.latestVersion ?? null);
         setMessage(
-          `Une mise à jour est disponible : v${result.latestVersion ?? '?'} (vous : v${result.currentVersion}).`
+          t('settings.updates.available', {
+            latest: result.latestVersion ?? '?',
+            current: result.currentVersion,
+          })
         );
         return;
       }
-      setMessage(`Vous utilisez la dernière version publiée (v${result.currentVersion}).`);
+      setMessage(t('settings.updates.upToDate', { version: result.currentVersion }));
     } finally {
       setChecking(false);
     }
-  }, []);
+  }, [t]);
 
   const handleDownload = useCallback(async () => {
     const api = window.electronAPI;
     if (!api?.downloadAppUpdate) return;
     setDownloading(true);
     setDownloadPercent(0);
-    setMessage('Téléchargement en cours…');
+    setMessage(t('settings.updates.downloadInProgress'));
     try {
       const result = await api.downloadAppUpdate();
       if (!result.success) {
-        setMessage(result.error ?? 'Échec du téléchargement.');
+        setMessage(result.error ?? t('settings.updates.downloadFailed'));
         return;
       }
-      setMessage('Téléchargement terminé. Confirmez le redémarrage dans la boîte de dialogue système.');
+      setMessage(t('settings.updates.downloadDone'));
     } finally {
       setDownloading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleOpenReleases = useCallback(() => {
     void window.electronAPI?.openGithubReleases?.();
@@ -124,21 +123,25 @@ const AppUpdatesSection: React.FC = () => {
 
   return (
     <div className="w-full bg-white rounded-lg shadow border border-gray-200 p-5">
-      <h2 className="text-lg font-semibold text-gray-800 mb-1">Application &amp; GitHub</h2>
+      <h2 className="text-lg font-semibold text-gray-800 mb-1">{t('settings.updates.title')}</h2>
       <p className="text-sm text-gray-600 mb-4 max-w-3xl">
-        Version installée : <strong>v{currentVersion}</strong>. Les mises à jour sont publiées sur{' '}
-        <a
-          href={GITHUB_REPO_URL}
-          className="text-indigo-700 hover:underline"
-          onClick={(e) => {
-            e.preventDefault();
-            handleOpenReleases();
+        <Trans
+          i18nKey="settings.updates.description"
+          values={{ version: currentVersion }}
+          components={{
+            strong: <strong />,
+            githubLink: (
+              <a
+                href={GITHUB_REPO_URL}
+                className="text-indigo-700 hover:underline"
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleOpenReleases();
+                }}
+              />
+            ),
           }}
-        >
-          GitHub
-        </a>{' '}
-        (releases). En production, l’app vérifie et télécharge la nouvelle version. Sur Mac, sans certificat
-        Apple, l’app se remplace elle-même au redémarrage.
+        />
       </p>
       <label className="flex items-center gap-2 text-sm text-gray-700 mb-4 cursor-pointer">
         <input
@@ -152,7 +155,7 @@ const AppUpdatesSection: React.FC = () => {
           }}
           className="rounded border-gray-300 text-indigo-700 focus:ring-indigo-500"
         />
-        Vérifier les mises à jour au démarrage (bandeau discret si une version est disponible)
+        {t('settings.updates.checkOnStartup')}
       </label>
       <div className="flex flex-wrap gap-2 items-center">
         <button
@@ -161,7 +164,7 @@ const AppUpdatesSection: React.FC = () => {
           disabled={checking || downloading}
           className="rounded border border-indigo-700 bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:opacity-50"
         >
-          {checking ? 'Vérification…' : 'Vérifier les mises à jour'}
+          {checking ? t('settings.updates.checking') : t('settings.updates.check')}
         </button>
         {updateAvailable && (
           <button
@@ -172,9 +175,9 @@ const AppUpdatesSection: React.FC = () => {
           >
             {downloading
               ? downloadPercent != null
-                ? `Téléchargement… ${downloadPercent} %`
-                : 'Téléchargement…'
-              : `Installer v${latestVersion ?? ''}`}
+                ? t('settings.updates.downloadingPercent', { percent: downloadPercent })
+                : t('settings.updates.downloading')
+              : t('settings.updates.installVersion', { version: latestVersion ?? '' })}
           </button>
         )}
         <button
@@ -182,15 +185,14 @@ const AppUpdatesSection: React.FC = () => {
           onClick={handleOpenReleases}
           className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
         >
-          Ouvrir les releases
+          {t('settings.updates.openReleases')}
         </button>
       </div>
       {message && tone && (
         <p className={`mt-3 text-sm rounded-lg border px-3 py-2 ${uiMessageClass(tone)}`}>{message}</p>
       )}
       <p className="mt-3 text-xs text-gray-500 max-w-3xl">
-        Publication : créez un tag <code className="bg-slate-100 px-1 rounded">v{currentVersion}</code> sur GitHub
-        pour déclencher le build automatique (voir workflow CI). Première release :{' '}
+        {t('settings.updates.publishHint', { version: currentVersion })}{' '}
         <a href={GITHUB_RELEASES_PAGE_URL} className="text-indigo-700 hover:underline">
           {GITHUB_RELEASES_PAGE_URL}
         </a>

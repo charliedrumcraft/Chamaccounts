@@ -1,6 +1,10 @@
 import React, { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getDefaultLineAssignedTypes } from '../constants/annualBudgetTypeMapping';
 import type { BudgetCategory } from '../services/annualBudgetStorage';
+
+/** Clé de type produite par l’agrégation quand le type est vide : identifiant de donnée, non traduit. */
+const NO_TYPE_KEY = 'Sans type';
 
 type CoverageLineRef = {
   lineId: string;
@@ -107,6 +111,9 @@ const AnnualBudgetTypeCoverageSection: React.FC<AnnualBudgetTypeCoverageSectionP
   expanded,
   onToggleExpanded,
 }) => {
+  const { t } = useTranslation();
+  const displayTypeName = (type: string): string =>
+    type === NO_TYPE_KEY ? t('annualBudget.noType') : type;
   const coverage = useMemo(() => {
     const defaultMap = getDefaultLineAssignedTypes();
     const lineRefs = collectLineRefs(
@@ -175,10 +182,10 @@ const AnnualBudgetTypeCoverageSection: React.FC<AnnualBudgetTypeCoverageSectionP
 
   const statusLabel =
     coverage.totalWithAmount === 0
-      ? 'Aucun type avec un montant'
+      ? t('annualBudget.coverage.status.none')
       : coverage.unassignedCount === 0
-        ? 'Tous les types sont affectés'
-        : `${coverage.unassignedCount} type${coverage.unassignedCount > 1 ? 's' : ''} non affecté${coverage.unassignedCount > 1 ? 's' : ''}`;
+        ? t('annualBudget.coverage.status.allAssigned')
+        : t('annualBudget.coverage.status.unassigned', { count: coverage.unassignedCount });
 
   return (
     <section
@@ -211,12 +218,14 @@ const AnnualBudgetTypeCoverageSection: React.FC<AnnualBudgetTypeCoverageSectionP
                 id="annual-budget-bloc-coverage-title"
                 className="block text-xl font-bold tracking-tight text-gray-900 sm:text-2xl"
               >
-                Affectation des types
+                {t('annualBudget.coverage.title')}
               </span>
               <span className="mt-1.5 block text-sm text-gray-500">
-                <strong className="font-semibold text-gray-600">Année {selectedYear}</strong>
+                <strong className="font-semibold text-gray-600">
+                  {t('annualBudget.yearLabel', { year: selectedYear })}
+                </strong>
                 {' — '}
-                types d’entrées et de sorties avec un montant réel, rattachés aux lignes du bilan
+                {t('annualBudget.coverage.subtitle')}
               </span>
             </span>
           </button>
@@ -245,13 +254,11 @@ const AnnualBudgetTypeCoverageSection: React.FC<AnnualBudgetTypeCoverageSectionP
           id="annual-budget-panel-coverage"
           className="flex min-h-0 flex-col gap-4 px-4 pb-4 pt-3"
           role="region"
-          aria-label="Affectation des types"
+          aria-label={t('annualBudget.coverage.title')}
         >
           {coverage.totalWithAmount === 0 ? (
             <p className="rounded-lg border border-gray-200 bg-slate-50 px-4 py-3 text-sm text-gray-600">
-              Aucun type d’entrée ou de sortie avec un montant non nul pour {selectedYear}. Dès
-              qu’il y a des mouvements, ils devront être rattachés à une ligne du bilan (mode
-              édition → Affecter).
+              {t('annualBudget.coverage.empty', { year: selectedYear })}
             </p>
           ) : (
             <>
@@ -261,58 +268,58 @@ const AnnualBudgetTypeCoverageSection: React.FC<AnnualBudgetTypeCoverageSectionP
                   role="alert"
                 >
                   <p className="text-sm font-semibold text-amber-950">
-                    {coverage.unassignedCount === 1
-                      ? '1 type avec un montant n’est rattaché à aucune ligne du bilan.'
-                      : `${coverage.unassignedCount} types avec un montant ne sont rattachés à aucune ligne du bilan.`}
+                    {t('annualBudget.coverage.alert', { count: coverage.unassignedCount })}
                   </p>
                   <p className="mt-1 text-xs text-amber-800">
-                    Affectez-les depuis la feuille de bilan (Mode édition → Affecter), sur une
-                    ligne encore présente.
+                    {t('annualBudget.coverage.alertHint')}
                   </p>
                   <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                     <UnassignedList
-                      title="Entrées non affectées"
-                      emptyLabel="Toutes les entrées sont affectées"
+                      title={t('annualBudget.coverage.unassignedIncome')}
+                      emptyLabel={t('annualBudget.coverage.unassignedIncomeEmpty')}
                       rows={coverage.unassignedIncome}
                       fmtMoney={fmtMoney}
+                      displayTypeName={displayTypeName}
                       tone="income"
                     />
                     <UnassignedList
-                      title="Sorties non affectées"
-                      emptyLabel="Toutes les sorties sont affectées"
+                      title={t('annualBudget.coverage.unassignedExpense')}
+                      emptyLabel={t('annualBudget.coverage.unassignedExpenseEmpty')}
                       rows={coverage.unassignedExpense}
                       fmtMoney={fmtMoney}
+                      displayTypeName={displayTypeName}
                       tone="expense"
                     />
                   </div>
                 </div>
               ) : (
                 <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-                  Tous les types avec un montant non nul sont rattachés à au moins une ligne
-                  présente dans la feuille de bilan.
+                  {t('annualBudget.coverage.allAssignedMessage')}
                 </p>
               )}
 
               <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-inner">
                 <div className="grid grid-cols-1 md:grid-cols-2 border-b border-gray-200">
                   <div className="bg-emerald-100 py-1.5 px-4 text-sm font-semibold text-emerald-900">
-                    Actifs — types affectés
+                    {t('annualBudget.coverage.assetsHeader')}
                   </div>
                   <div className="bg-red-100 py-1.5 px-4 text-sm font-semibold text-red-900 md:border-l border-gray-200">
-                    Passifs — types affectés
+                    {t('annualBudget.coverage.liabilitiesHeader')}
                   </div>
                 </div>
                 <div className="flex flex-col md:flex-row">
                   <CoverageSideColumn
                     categories={coverage.assetCategories}
-                    emptyLabel="Aucun type avec un montant n’est affecté à une ligne d’actif."
+                    emptyLabel={t('annualBudget.coverage.assetsEmpty')}
                     fmtMoney={fmtMoney}
+                    displayTypeName={displayTypeName}
                     tone="assets"
                   />
                   <CoverageSideColumn
                     categories={coverage.liabilityCategories}
-                    emptyLabel="Aucun type avec un montant n’est affecté à une ligne de passif."
+                    emptyLabel={t('annualBudget.coverage.liabilitiesEmpty')}
                     fmtMoney={fmtMoney}
+                    displayTypeName={displayTypeName}
                     tone="liabilities"
                   />
                 </div>
@@ -330,12 +337,14 @@ function UnassignedList({
   emptyLabel,
   rows,
   fmtMoney,
+  displayTypeName,
   tone,
 }: {
   title: string;
   emptyLabel: string;
   rows: CoverageTypeRow[];
   fmtMoney: (n: number) => string;
+  displayTypeName: (type: string) => string;
   tone: 'income' | 'expense';
 }) {
   const amountClass = tone === 'income' ? 'text-emerald-800' : 'text-red-800';
@@ -351,7 +360,7 @@ function UnassignedList({
               key={row.type}
               className="flex items-baseline justify-between gap-3 rounded border border-amber-200 bg-white px-2 py-1 text-sm"
             >
-              <span className="min-w-0 truncate font-medium text-gray-800">{row.type}</span>
+              <span className="min-w-0 truncate font-medium text-gray-800">{displayTypeName(row.type)}</span>
               <span className={`shrink-0 tabular-nums ${amountClass}`}>{fmtMoney(row.amount)}</span>
             </li>
           ))}
@@ -365,11 +374,13 @@ function CoverageSideColumn({
   categories,
   emptyLabel,
   fmtMoney,
+  displayTypeName,
   tone,
 }: {
   categories: CategoryGroup[];
   emptyLabel: string;
   fmtMoney: (n: number) => string;
+  displayTypeName: (type: string) => string;
   tone: 'assets' | 'liabilities';
 }) {
   const catBg = tone === 'assets' ? 'bg-emerald-50' : 'bg-red-50';
@@ -399,7 +410,7 @@ function CoverageSideColumn({
                         key={`${group.line.lineId}-${row.type}`}
                         className="flex items-baseline justify-between gap-3 text-sm"
                       >
-                        <span className="min-w-0 truncate text-gray-700">{row.type}</span>
+                        <span className="min-w-0 truncate text-gray-700">{displayTypeName(row.type)}</span>
                         <span
                           className={`shrink-0 tabular-nums ${
                             row.amount >= 0 ? 'text-emerald-800' : 'text-red-800'

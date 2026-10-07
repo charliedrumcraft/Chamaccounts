@@ -1,3 +1,6 @@
 Index;DATE;TITLE;AMOUNT;CURRENCY;AMOUNT GBP;TYPE;Source;PROJET;Exclure_anomalie;Soutien_ignorer
-1;10.01.26;Cotisation association locale;-25,00;GBP;-25,00;Donation;Support;maison-01;;
+1;05.11.25;Aide déménagement cousin;-80,00;GBP;-80,00;Donation;Support;;;
 2;22.12.25;Don familial;150,00;GBP;150,00;Support;Support;maison-01;;
+3;10.01.26;Cotisation association locale;-25,00;GBP;-25,00;Donation;Support;maison-01;;
+4;14.02.26;Participation cadeau collectif;-35,00;EUR;-30,10;Donation;Support;;;
+5;03.03.26;Remboursement prêt ami;50,00;GBP;50,00;Support;Support;;;

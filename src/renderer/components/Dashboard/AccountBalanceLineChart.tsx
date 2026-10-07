@@ -1,6 +1,7 @@
 import React, { useRef, useMemo, useEffect, useState } from 'react';
 import { Chart as ChartJS, ChartOptions, registerables } from 'chart.js';
 import { Line } from 'react-chartjs-2';
+import { useTranslation } from 'react-i18next';
 import { formatCurrency } from '../../utils/format';
 
 ChartJS.register(...registerables);
@@ -9,9 +10,12 @@ ChartJS.register(...registerables);
  * Limites de l'axe Y pour les soldes : les valeurs négatives sont incluses
  * (un compte crédit / carte peut être < 0). Si le solde passe sous zéro, l'axe
  * descend en dessous et conserve 0 comme référence visuelle.
+ *
+ * Accepte les datasets Chart.js (data peut contenir des Point) : seuls les
+ * nombres finis sont pris en compte pour min/max.
  */
 export function calculateBalanceYAxisLimits(
-  datasets: { data?: (number | null | undefined)[]; hidden?: boolean }[]
+  datasets: { data?: readonly unknown[]; hidden?: boolean }[]
 ): { min: number; max: number } {
   let minValue = Infinity;
   let maxValue = -Infinity;
@@ -90,6 +94,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
   hiddenSeriesByLabel = {},
   onLegendVisibilityChange,
 }) => {
+  const { t } = useTranslation();
   const chartRef = useRef<ChartJS<'line'>>(null);
   const [isDarkMode, setIsDarkMode] = useState(() =>
     document.documentElement.classList.contains('dark')
@@ -157,7 +162,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
       totalData.push(hasValue ? sum : null);
     }
     return {
-      label: 'Solde total',
+      label: t('dashboard.series.totalBalance'),
       data: totalData,
       borderColor: isDarkMode ? '#f59e0b' : '#b45309',
       backgroundColor: 'transparent',
@@ -170,9 +175,9 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
       pointBorderColor: isDarkMode ? '#1e293b' : '#ffffff',
       pointBorderWidth: 2,
       spanGaps: false,
-      hidden: hiddenSeriesByLabel['Solde total'] ?? false,
+      hidden: hiddenSeriesByLabel[t('dashboard.series.totalBalance')] ?? false,
     };
-  }, [periods.length, balanceData, isDarkMode, hiddenSeriesByLabel]);
+  }, [periods.length, balanceData, isDarkMode, hiddenSeriesByLabel, t]);
 
   /** Courbe de tendance du solde total (même règle que les comptes : régression sur les points à partir du premier non nul). */
   const totalTrendDataset = useMemo(() => {
@@ -188,7 +193,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
     const trendData = rawData.map((_, i) => reg.a * i + reg.b);
     const totalColor = isDarkMode ? '#f59e0b' : '#b45309';
     return {
-      label: 'Tendance – Solde total',
+      label: t('dashboard.series.trendTotalBalance'),
       data: trendData,
       trendEquation: { a: reg.a, b: reg.b },
       borderColor: totalColor,
@@ -200,9 +205,9 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
       pointRadius: 0,
       pointHoverRadius: 0,
       spanGaps: false,
-      hidden: hiddenSeriesByLabel['Solde total'] ?? false,
+      hidden: hiddenSeriesByLabel[t('dashboard.series.totalBalance')] ?? false,
     };
-  }, [trendLinesEnabled, totalBalanceDataset, isDarkMode, hiddenSeriesByLabel]);
+  }, [trendLinesEnabled, totalBalanceDataset, isDarkMode, hiddenSeriesByLabel, t]);
 
   const trendDatasets = useMemo(() => {
     return accountCodes.map((code, index) => {
@@ -218,7 +223,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
     const account = accounts[index] ?? code;
     const trendData = rawData.map((_, i) => reg.a * i + reg.b);
     return {
-      label: `Tendance – ${account}`,
+      label: t('dashboard.series.trendAccount', { account }),
       data: trendData,
       trendEquation: { a: reg.a, b: reg.b },
       borderColor: accountColors[account] ?? '#808080',
@@ -233,7 +238,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
       hidden: hiddenSeriesByLabel[account] ?? false,
     };
   });
-  }, [accountCodes, accounts, balanceData, accountColors, trendLinesEnabled, hiddenSeriesByLabel]);
+  }, [accountCodes, accounts, balanceData, accountColors, trendLinesEnabled, hiddenSeriesByLabel, t]);
 
   const allDatasets = useMemo(() => {
     const mainAndTrend = datasets.flatMap((ds, i) =>
@@ -277,7 +282,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
         max: initialLimits.max,
         title: {
           display: true,
-          text: `Solde (${yAxisCurrency})`,
+          text: t('dashboard.series.balanceAxis', { currency: yAxisCurrency }),
           font: { size: 14, weight: 'bold' },
           color: isDarkMode ? '#cbd5e1' : '#1e293b',
         },
@@ -358,7 +363,7 @@ const AccountBalanceLineChart: React.FC<AccountBalanceLineChartProps> = ({
         },
       },
     },
-  }), [initialLimits, isDarkMode, granularity, yAxisCurrency, onLegendVisibilityChange]);
+  }), [initialLimits, isDarkMode, granularity, yAxisCurrency, onLegendVisibilityChange, t]);
 
   return (
     <div style={{ width: '100%', height: '100%' }}>

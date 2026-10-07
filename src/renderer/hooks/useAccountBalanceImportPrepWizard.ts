@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type SetStateAction } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   loadAccountBalanceImportWizardModel,
   buildAbImportWizardModelFromClipboardText,
@@ -16,6 +17,8 @@ import {
 import { accountBalanceImportFile } from '@/shared/dataPaths';
 import { removeImportedRowsFromImportFolder } from '../services/importWizardRemoveFromDiskService';
 import { detectAccountBalanceAnomalies, type AccountBalanceActiveAccount } from '../services/AnomalyDetectionService';
+import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
+import type { AnomalyReason } from '@/shared/anomalyReasons';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { AccountBalanceCSVService } from '../services/AccountBalanceCSVService';
 import { format, startOfDay } from 'date-fns';
@@ -31,6 +34,7 @@ export function useAccountBalanceImportPrepWizard(options: {
   onAfterSuccessfulAppend?: () => void;
   folderReloadToken?: number;
 }) {
+  const { t, i18n } = useTranslation();
   const {
     recognisedAccountsReloadKey = '',
     existingBalanceDateKeys,
@@ -129,7 +133,10 @@ export function useAccountBalanceImportPrepWizard(options: {
 
   const anomalyResultMapped = useMemo(() => {
     if (!mappingWizardActive || !model?.rows.length) {
-      return { fileLevelReasons: [] as string[], rowReasonsByRowId: new Map<string, string[]>() };
+      return {
+        fileLevelReasons: [] as AnomalyReason[],
+        rowReasonsByRowId: new Map<string, AnomalyReason[]>(),
+      };
     }
     const stringRows: Record<string, string>[] = [];
     const rowIdAtIndex: string[] = [];
@@ -148,7 +155,7 @@ export function useAccountBalanceImportPrepWizard(options: {
       stringRows,
       activeAccounts
     );
-    const rowReasonsByRowId = new Map<string, string[]>();
+    const rowReasonsByRowId = new Map<string, AnomalyReason[]>();
     for (const a of rowAnomalies) {
       const id = rowIdAtIndex[a.rowIndex - 1];
       if (id) rowReasonsByRowId.set(id, [...a.reasons]);
@@ -163,23 +170,29 @@ export function useAccountBalanceImportPrepWizard(options: {
     if (!mappingWizardActive) {
       for (const row of model.rows) {
         const rec = buildImportRecordFromRawRow(row, model.columns, rawCellOverrides, abColumnTargetUser);
-        const msgs = rawRowQuickWarnings(rec);
+        const msgs = rawRowQuickWarnings(rec).map((m) => {
+          if (m === 'Date manquante ou colonne date non détectée.') return t('accountBalance.importPrep.warnMissingDate');
+          if (m === 'Date invalide ou illisible.') return t('accountBalance.importPrep.warnInvalidDate');
+          if (m === 'Aucun solde de compte reconnu sur cette ligne.') return t('accountBalance.importPrep.warnNoBalance');
+          return m;
+        });
         map.set(row.id, { messages: msgs, showDanger: msgs.length > 0 });
       }
       return map;
     }
 
     const { rowReasonsByRowId } = anomalyResultMapped;
-    const dupMsg = 'Date déjà présente dans src_account_balance.csv';
+    const dupMsg = t('accountBalance.importPrep.dupDate');
     for (const row of model.rows) {
-      const aside: string[] = [...(rowReasonsByRowId.get(row.id) ?? [])];
+      const structured = rowReasonsByRowId.get(row.id) ?? [];
+      const aside: string[] = structured.length ? [formatAnomalyReasons(structured, t)] : [];
       const prev = mappedPreviewByRowId.get(row.id);
       const br = prev ? balanceRowFromMappedDisplayRecord(prev.display, recognised) : null;
       if (br) {
         const k = dateKeyForExistingRow(br.date);
         if (existingBalanceDateKeys.has(k)) aside.push(dupMsg);
       } else {
-        aside.push('Ligne incomplète : date ou au moins un solde reconnu requis pour l’import.');
+        aside.push(t('accountBalance.importPrep.incompleteRow'));
       }
       map.set(row.id, { messages: aside, showDanger: aside.length > 0 });
     }
@@ -194,6 +207,8 @@ export function useAccountBalanceImportPrepWizard(options: {
     recognised,
     existingBalanceDateKeys,
     abColumnTargetUser,
+    t,
+    i18n.language,
   ]);
 
   const anomalousRowIds = useMemo(() => {
@@ -313,20 +328,16 @@ export function useAccountBalanceImportPrepWizard(options: {
 
   const handleImportLinesToSource = useCallback(async () => {
     if (!mappingWizardActive) {
-      setImportWizardMessage(
-        'Activez le mapping wizard pour préparer et importer les lignes vers src_account_balance.csv.'
-      );
+      setImportWizardMessage(t('accountBalance.importPrep.enableMappingFirst'));
       return;
     }
     if (importPreviewImportableRows.length === 0) {
-      setImportWizardMessage(
-        'Aucune ligne importable (vérifiez les anomalies, doublons de date ou lignes ignorées).'
-      );
+      setImportWizardMessage(t('accountBalance.importPrep.noImportable'));
       return;
     }
     const existing = await AccountBalanceCSVService.loadAllBalanceRows();
     if (!existing) {
-      setImportWizardMessage('Impossible de lire src_account_balance.csv.');
+      setImportWizardMessage(t('accountBalance.importPrep.cannotReadSource'));
       return;
     }
     const byTime = new Map<number, (typeof existing)[0]>();
@@ -339,14 +350,14 @@ export function useAccountBalanceImportPrepWizard(options: {
       const prev = mappedPreviewByRowId.get(row.id);
       const br = prev ? balanceRowFromMappedDisplayRecord(prev.display, recognised) : null;
       if (!br) continue;
-      const t = br.date.getTime();
-      if (byTime.has(t)) continue;
-      byTime.set(t, br);
+      const time = br.date.getTime();
+      if (byTime.has(time)) continue;
+      byTime.set(time, br);
       added++;
       importedDiskRows.push({ id: row.id, sourceFile: row.sourceFile });
     }
     if (added === 0) {
-      setImportWizardMessage('Aucune ligne nouvelle à fusionner (dates déjà présentes ou données invalides).');
+      setImportWizardMessage(t('accountBalance.importPrep.noNewRows'));
       return;
     }
     const merged = [...byTime.values()].sort((a, b) => a.date.getTime() - b.date.getTime());
@@ -372,7 +383,10 @@ export function useAccountBalanceImportPrepWizard(options: {
             });
             if (!diskResult.success) {
               setImportWizardMessage(
-                `${added} ligne(s) ajoutée(s) à src_account_balance.csv, mais retrait du dossier Import impossible : ${diskResult.error ?? 'erreur inconnue'}.`
+                t('accountBalance.importPrep.appendedWithDiskFail', {
+                  count: added,
+                  error: diskResult.error ?? t('accountBalance.importPrep.unknownError'),
+                })
               );
               onAfterSuccessfulAppend?.();
               setReloadKey((k) => k + 1);
@@ -381,20 +395,25 @@ export function useAccountBalanceImportPrepWizard(options: {
             if (diskResult.removedLineCount > 0) {
               const parts: string[] = [];
               if (diskResult.updatedFiles.length) {
-                parts.push(`${diskResult.updatedFiles.length} fichier(s) mis à jour`);
+                parts.push(t('accountBalance.importPrep.filesUpdated', { count: diskResult.updatedFiles.length }));
               }
               if (diskResult.deletedFiles.length) {
-                parts.push(`${diskResult.deletedFiles.length} fichier(s) supprimé(s) (vide)`);
+                parts.push(t('accountBalance.importPrep.filesDeleted', { count: diskResult.deletedFiles.length }));
               }
-              diskMsg = ` ${diskResult.removedLineCount} ligne(s) retirée(s) du dossier Import${parts.length ? ` (${parts.join(', ')})` : ''}.`;
+              diskMsg = t('accountBalance.importPrep.diskRemoved', {
+                count: diskResult.removedLineCount,
+                detail: parts.length ? ` (${parts.join(', ')})` : '',
+              });
             }
           }
         }
         onAfterSuccessfulAppend?.();
         setReloadKey((k) => k + 1);
-        setImportWizardMessage(`${added} ligne(s) ajoutée(s) à src_account_balance.csv.${diskMsg}`);
+        setImportWizardMessage(
+          t('accountBalance.importPrep.appended', { count: added, disk: diskMsg })
+        );
       } else {
-        setImportWizardMessage(result.error ?? 'Erreur lors de l’enregistrement.');
+        setImportWizardMessage(result.error ?? t('accountBalance.importPrep.saveFailed'));
       }
     } finally {
       setImportLinesLoading(false);
@@ -406,6 +425,7 @@ export function useAccountBalanceImportPrepWizard(options: {
     recognised,
     onAfterSuccessfulAppend,
     removeImportedFromImportFolder,
+    t,
   ]);
 
   const setMappingWizardActiveWrapped = useCallback((v: SetStateAction<boolean>) => {
@@ -432,14 +452,16 @@ export function useAccountBalanceImportPrepWizard(options: {
     (raw: string, parseOptions?: AbImportWizardParseOptions) => {
       const pasted = buildAbImportWizardModelFromClipboardText(raw, parseOptions);
       if (!pasted?.rows.length) {
-        setImportWizardMessage('Collage vide ou aucune ligne de données exploitable.');
+        setImportWizardMessage(t('accountBalance.importPrep.pasteEmpty'));
         return;
       }
       setModel((prev) => (prev ? mergeAbImportWizardModels(prev, pasted) : pasted));
-      const src = pasted.rows[0]?.sourceFile ?? 'presse-papiers';
-      setImportWizardMessage(`${pasted.rows.length} ligne(s) ajoutée(s) depuis le presse-papiers (${src}).`);
+      const src = pasted.rows[0]?.sourceFile ?? t('accountBalance.importPrep.clipboardSource');
+      setImportWizardMessage(
+        t('accountBalance.importPrep.pasteAdded', { count: pasted.rows.length, source: src })
+      );
     },
-    []
+    [t]
   );
 
   return {

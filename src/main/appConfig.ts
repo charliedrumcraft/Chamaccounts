@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import type { AppConfig, DataSetupStatus, LegacyDataLocation, Profile } from '../shared/profiles';
+import { tm } from './uiI18n';
 
 const CONFIG_FILENAME = 'profiles.json';
 
@@ -74,7 +75,7 @@ export function getActiveDataRoot(): string | null {
 export function requireActiveDataRoot(): string {
   const root = getActiveDataRoot();
   if (!root) {
-    throw new Error('Aucun profil de données actif ou dossier introuvable.');
+    throw new Error(tm('error.noActiveProfileOrFolder'));
   }
   return root;
 }
@@ -104,11 +105,11 @@ export async function addProfile(name: string, dataRoot: string, setActive = tru
 
 export async function setActiveProfile(profileId: string): Promise<{ ok: boolean; error?: string }> {
   const config = await ensureConfigLoaded();
-  if (!config) return { ok: false, error: 'Configuration absente.' };
+  if (!config) return { ok: false, error: tm('error.configMissing') };
   const profile = config.profiles.find((p) => p.id === profileId);
-  if (!profile) return { ok: false, error: 'Profil introuvable.' };
+  if (!profile) return { ok: false, error: tm('error.profileNotFound') };
   if (!existsSync(profile.dataRoot)) {
-    return { ok: false, error: `Dossier introuvable : ${profile.dataRoot}` };
+    return { ok: false, error: tm('error.profileFolderNotFound', { path: profile.dataRoot }) };
   }
   config.activeProfileId = profileId;
   await saveConfig(config);
@@ -117,9 +118,9 @@ export async function setActiveProfile(profileId: string): Promise<{ ok: boolean
 
 export async function renameProfile(profileId: string, name: string): Promise<{ ok: boolean; error?: string }> {
   const config = await ensureConfigLoaded();
-  if (!config) return { ok: false, error: 'Configuration absente.' };
+  if (!config) return { ok: false, error: tm('error.configMissing') };
   const profile = config.profiles.find((p) => p.id === profileId);
-  if (!profile) return { ok: false, error: 'Profil introuvable.' };
+  if (!profile) return { ok: false, error: tm('error.profileNotFound') };
   profile.name = name.trim() || profile.name;
   await saveConfig(config);
   return { ok: true };
@@ -127,12 +128,12 @@ export async function renameProfile(profileId: string, name: string): Promise<{ 
 
 export async function removeProfile(profileId: string): Promise<{ ok: boolean; error?: string }> {
   const config = await ensureConfigLoaded();
-  if (!config) return { ok: false, error: 'Configuration absente.' };
+  if (!config) return { ok: false, error: tm('error.configMissing') };
   if (config.profiles.length <= 1) {
-    return { ok: false, error: 'Impossible de supprimer le dernier profil.' };
+    return { ok: false, error: tm('error.cannotRemoveLastProfile') };
   }
   const idx = config.profiles.findIndex((p) => p.id === profileId);
-  if (idx < 0) return { ok: false, error: 'Profil introuvable.' };
+  if (idx < 0) return { ok: false, error: tm('error.profileNotFound') };
   config.profiles.splice(idx, 1);
   if (config.activeProfileId === profileId) {
     config.activeProfileId = config.profiles[0]!.id;

@@ -1,75 +1,29 @@
 /**
- * Fusionne les CSV du dossier Import dans Processed/src_transaction_data.csv (API héritée).
+ * Fusionne les CSV du dossier Import dans les transactions (SQLite + miroir CSV).
  * Même politique d’import que le mapping wizard : @/shared/transactionsImportMappingPolicy + parseImportCsv.
  */
 
 import * as path from 'path';
+import { tm } from './uiI18n';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
+import { TRANSACTIONS_IMPORT_DIR as IMPORT_DIR } from '../shared/dataPaths';
 import {
-  TRANSACTIONS_IMPORT_DIR as IMPORT_DIR,
-  SOURCE_DATA_PATH as PROCESSED_PATH,
-} from '../shared/dataPaths';
-import {
-  OUTPUT_HEADERS,
   type ValidRow,
   type AnomalyRow,
-  parseCsvLine,
-  normalizeHeader,
-  mapToStandardHeader,
-  formatDateDDMMYY,
-  emptyRow,
   parseImportCsv,
   rowSignature,
   buildAccountAliasLookup,
-  rowToCsvLine,
-  sortByDate,
 } from '../shared/transactionsImportCore';
 import { DEFAULT_IMPORT_MAPPING_RATES } from '../shared/transactionsImportMappingPolicy';
+import {
+  appendValidRows,
+  getAllAsValidRows,
+  replaceAllValidRows,
+} from './db/transactionStore';
 
 export type { ValidRow, AnomalyRow };
 export { MERGE_REPORT_SUCCESS_REASON } from '../shared/mergeReportConstants';
-
-async function readExistingProcessed(appPath: string): Promise<{ headerLine: string; rows: ValidRow[] }> {
-  const fullPath = path.join(appPath, PROCESSED_PATH);
-  if (!existsSync(fullPath)) {
-    return { headerLine: OUTPUT_HEADERS.join(';'), rows: [] };
-  }
-  const content = await fs.readFile(fullPath, 'utf-8');
-  const lines = content.split(/\r?\n/).filter((l) => l.trim() !== '');
-  if (lines.length === 0) {
-    return { headerLine: OUTPUT_HEADERS.join(';'), rows: [] };
-  }
-  const headerLine = lines[0];
-  const headerNames = parseCsvLine(headerLine, ';').map(normalizeHeader);
-  const dataHeaderMap = new Map<string, number>();
-  const headerList = [...OUTPUT_HEADERS] as string[];
-  headerNames.forEach((norm) => {
-    if (/^index$/i.test(norm)) return;
-    const std = mapToStandardHeader(norm) ?? (headerList.includes(norm) ? norm : null);
-    if (std) {
-      const idx = headerList.indexOf(std);
-      if (idx >= 0) dataHeaderMap.set(norm, idx);
-    }
-  });
-
-  const rows: ValidRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    const values = parseCsvLine(line, ';');
-    const row = emptyRow();
-    for (let c = 0; c < headerNames.length; c++) {
-      const stdKey = dataHeaderMap.get(headerNames[c]);
-      if (stdKey === undefined || stdKey === 0) continue;
-      const val = (values[c] ?? '').trim();
-      const key = OUTPUT_HEADERS[stdKey];
-      (row as unknown as Record<string, string>)[key] = key === 'DATE' ? (formatDateDDMMYY(val) || val) : val;
-    }
-    row.DATE = formatDateDDMMYY(row.DATE) || row.DATE;
-    rows.push(row);
-  }
-  return { headerLine: OUTPUT_HEADERS.join(';'), rows };
-}
 
 export interface MergeResult {
   success: boolean;
@@ -82,30 +36,14 @@ export interface MergeResult {
 }
 
 /**
- * Ajoute des lignes valides au fichier traité (ex. depuis l’assistant d’import).
+ * Ajoute des lignes valides (ex. depuis l’assistant d’import).
  */
 export async function appendForcedTransactionRows(
   appPath: string,
   rows: ValidRow[]
 ): Promise<{ success: boolean; error?: string; appendedCount: number }> {
   if (!rows.length) return { success: true, appendedCount: 0 };
-  try {
-    const processedFull = path.join(appPath, PROCESSED_PATH);
-    const { rows: existingRows } = await readExistingProcessed(appPath);
-    const allValid: ValidRow[] = [...existingRows, ...rows];
-    sortByDate(allValid);
-    const csvLines = [OUTPUT_HEADERS.join(';')];
-    allValid.forEach((row, i) => {
-      csvLines.push(rowToCsvLine(row, i + 1));
-    });
-    const processedDir = path.dirname(processedFull);
-    if (!existsSync(processedDir)) await fs.mkdir(processedDir, { recursive: true });
-    await fs.writeFile(processedFull, csvLines.join('\n'), 'utf-8');
-    return { success: true, appendedCount: rows.length };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { success: false, error: message, appendedCount: 0 };
-  }
+  return await appendValidRows(appPath, rows);
 }
 
 /**
@@ -113,7 +51,6 @@ export async function appendForcedTransactionRows(
  */
 export async function mergeImportTransactions(appPath: string): Promise<MergeResult> {
   const importDir = path.join(appPath, IMPORT_DIR);
-  const processedFull = path.join(appPath, PROCESSED_PATH);
 
   if (!existsSync(importDir)) {
     return { success: true, mergedCount: 0, anomalyCount: 0, totalImportDataRows: 0, notMergedCount: 0 };
@@ -125,7 +62,7 @@ export async function mergeImportTransactions(appPath: string): Promise<MergeRes
     return { success: true, mergedCount: 0, anomalyCount: 0, totalImportDataRows: 0, notMergedCount: 0 };
   }
 
-  const { rows: existingRows } = await readExistingProcessed(appPath);
+  const existingRows = await getAllAsValidRows(appPath);
   const allValid: ValidRow[] = [...existingRows];
   const allAnomalies: AnomalyRow[] = [];
   const accountAliasLookup = buildAccountAliasLookup([]);
@@ -148,6 +85,7 @@ export async function mergeImportTransactions(appPath: string): Promise<MergeRes
         allAnomalies.push({
           sourceFile: item.sourceFile,
           lineNumber: item.lineNumber,
+          // Jeton FR stable (traduit à l'affichage côté renderer via translateImportPrepMessage).
           reason: 'Doublon (ligne déjà présente dans src_transaction_data.csv)',
           row: { ...item.row },
           rawLine: item.rawLine,
@@ -159,18 +97,17 @@ export async function mergeImportTransactions(appPath: string): Promise<MergeRes
     }
   }
 
-  sortByDate(allValid);
-
-  const processedDir = path.dirname(processedFull);
-  if (!existsSync(processedDir)) {
-    await fs.mkdir(processedDir, { recursive: true });
+  const write = await replaceAllValidRows(appPath, allValid, { sortByDate: true });
+  if (!write.success) {
+    return {
+      success: false,
+      error: write.error ?? tm('error.sqliteWriteFailed'),
+      mergedCount: 0,
+      anomalyCount: allAnomalies.length,
+      totalImportDataRows,
+      notMergedCount: totalImportDataRows,
+    };
   }
-
-    const csvLines = [OUTPUT_HEADERS.join(';')];
-    allValid.forEach((row, i) => {
-      csvLines.push(rowToCsvLine(row, i + 1));
-    });
-    await fs.writeFile(processedFull, csvLines.join('\n'), 'utf-8');
 
   const mergedCount = allValid.length - existingRows.length;
   const notMergedCount = Math.max(0, totalImportDataRows - mergedCount);

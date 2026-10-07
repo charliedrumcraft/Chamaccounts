@@ -1,24 +1,35 @@
 /// <reference path="../vite-env.d.ts" />
 import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
-import { ANOMALY_REPORT_PATH, transactionsImportFile } from '@/shared/dataPaths';
+import { useTranslation } from 'react-i18next';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { transactionsImportFile } from '@/shared/dataPaths';
 import {
   SourceDataCSVService,
   type SourceDataResult,
   SOURCE_DATA_PATH,
   normalizeOrderAndIndex,
   stripSourceColumnFromSourceData,
-  sortSourceDataByDateChronology,
 } from '../services/SourceDataCSVService';
-import { detectAnomalies, EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
+import { TRANSACTION_SOURCE_HEADERS as TRANSACTION_SOURCE_HEADERS_FALLBACK } from '@/shared/sourceDataTypes';
+import {
+  buildTransactionAnomalyContextFromStorage,
+  detectAnomalies,
+  EXCLUDE_ANOMALY_COLUMN,
+} from '../services/AnomalyDetectionService';
 import { canonicalAccountFromSource, accountLabelFromSource } from '../constants/accountSourceLabels';
-import { formatDateDDMMYYYY, formatEur, formatFx, formatGbp, formatAmountGbpForCsv } from '../utils/format';
-import { amountToGbp } from '../services/EffectiveExchangeRates';
-import Papa from 'papaparse';
+import { formatDateDDMMYYYY, formatAmountForRowCurrency, formatFx, formatCurrency } from '../utils/format';
+import { getEffectiveRates, getCachedWorkingCurrencies } from '../services/EffectiveExchangeRates';
+import {
+  isAmountGbpIndicatorReadOnly,
+  syncTransactionAmountCurrencyOnEdit,
+} from '../utils/syncTransactionAmountCurrency';
+import { isAmountIndicatorHeader, currencyDisplaySymbol } from '@/shared/workingCurrencies';
+
 import { AnomalyExceptionsModal } from '../components/AnomalyExceptionsModal';
 import TransactionsImportPrepSection from '../components/TransactionsImportPrepSection';
 import { useTransactionsImportPrepWizard } from '../hooks/useTransactionsImportPrepWizard';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
-import { formatDateDDMMYY, rowSignature, buildAccountAliasLookup, type ValidRow } from '@/shared/transactionsImportCore';
+import { buildAccountAliasLookup } from '@/shared/transactionsImportCore';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
@@ -28,6 +39,7 @@ import {
   useResizableTableColumns,
   type ResizableColumnDef,
 } from '../hooks/useResizableTableColumns';
+import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
 
 const ANOMALY_STATUS_STORAGE_KEY = 'transactions-anomaly-status';
 const ANOMALY_LAST_REPORT_STORAGE_KEY = 'transactions-anomaly-last-report';
@@ -40,6 +52,11 @@ const ANOMALY_FILTER_COLUMN_KEY = '__anomaly_filter__';
 /** Persistance replier/déplier des blocs Import wizard et détection d’anomalies. */
 const TX_IMPORT_MODULE_EXPANDED_KEY = 'transactions-import-module-expanded';
 const TX_ANOMALY_MODULE_EXPANDED_KEY = 'transactions-anomaly-module-expanded';
+
+/** Valeur du sélecteur de période : tout le tableau (getAll). */
+const TX_VIEW_ALL_KEY = '__all__';
+/** Persistance de la période affichée (mois `YYYY-MM` ou {@link TX_VIEW_ALL_KEY}). */
+const TX_VIEW_PERIOD_STORAGE_KEY = 'transactions-table-view-period';
 const TX_TABLE_COL_WIDTHS_KEY = 'transactions-table-col-widths';
 
 function readModuleExpandedFromStorage(key: string): boolean {
@@ -53,19 +70,38 @@ function readModuleExpandedFromStorage(key: string): boolean {
   return true;
 }
 
-/** Formate une date ISO en "DD/MM/YYYY à HH:mm". */
-function formatReportDate(iso: string, prefix: string): string {
+function readViewPeriodFromStorage(): string {
+  try {
+    const saved = localStorage.getItem(TX_VIEW_PERIOD_STORAGE_KEY);
+    if (saved === TX_VIEW_ALL_KEY) return TX_VIEW_ALL_KEY;
+    if (saved && /^\d{4}-\d{2}$/.test(saved)) return saved;
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+function persistViewPeriod(key: string): void {
+  try {
+    if (key) localStorage.setItem(TX_VIEW_PERIOD_STORAGE_KEY, key);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Formate une date ISO en "DD/MM/YYYY HH:mm" (sans préfixe). */
+function formatReportDateParts(iso: string): { date: string; time: string } | null {
   try {
     const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
+    if (Number.isNaN(d.getTime())) return null;
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const year = d.getFullYear();
     const h = String(d.getHours()).padStart(2, '0');
     const min = String(d.getMinutes()).padStart(2, '0');
-    return `${prefix} le ${day}/${month}/${year} à ${h}:${min}`;
+    return { date: `${day}/${month}/${year}`, time: `${h}:${min}` };
   } catch {
-    return iso;
+    return null;
   }
 }
 
@@ -135,6 +171,7 @@ function isTransactionsEditSessionDirty(
 }
 
 const TransactionsTable: React.FC = () => {
+  const { t, i18n } = useTranslation();
   const projects = useProjectsFromStorage();
   const [data, setData] = useState<SourceDataResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -192,65 +229,119 @@ const TransactionsTable: React.FC = () => {
   const [editExitConfirmOpen, setEditExitConfirmOpen] = useState(false);
   /** Indices des lignes (dans data.rows) marquées pour suppression à la sauvegarde. */
   const [rowsToDelete, setRowsToDelete] = useState<Set<number>>(() => new Set());
-  const loadData = useCallback(() => {
+  /** Vue période (hors édition) : mois `YYYY-MM` ou {@link TX_VIEW_ALL_KEY}. */
+  const [availableMonthKeys, setAvailableMonthKeys] = useState<string[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => readViewPeriodFromStorage());
+  /** true = data contient le jeu complet (vue « Tout » ou mode édition). */
+  const [hasFullDataset, setHasFullDataset] = useState(false);
+  /** Carte anomalies slim (IPC) — clé = index 0-based global source. */
+  const [slimAnomalyByRowIndex, setSlimAnomalyByRowIndex] = useState<Map<number, string>>(
+    () => new Map()
+  );
+  const [existingTransactionSignatures, setExistingTransactionSignatures] = useState<Set<string>>(
+    () => new Set()
+  );
+
+  const refreshSlimAnomalies = useCallback(async (writeReport = false) => {
+    const ctx = buildTransactionAnomalyContextFromStorage();
+    const result = await SourceDataCSVService.detectAnomalies({ ...ctx, writeReport });
+    const map = new Map<number, string>();
+    if (result?.anomalies) {
+      for (const a of result.anomalies) {
+        map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
+      }
+    }
+    setSlimAnomalyByRowIndex(map);
+    return result;
+  }, [t]);
+
+  const refreshRowSignatures = useCallback(async () => {
+    const entries = loadRecognisedAccountsFromStorage();
+    const sigs = await SourceDataCSVService.getRowSignatures(entries);
+    setExistingTransactionSignatures(new Set(sigs ?? []));
+  }, []);
+
+  const loadViewScope = useCallback(async (periodKey: string) => {
     setLoading(true);
     setError(null);
-    SourceDataCSVService.load()
-      .then((result) => {
-        setData(result);
-        if (!result) {
+    try {
+      const keys = await SourceDataCSVService.getMonthKeys();
+      const monthKeys = keys?.monthKeys ?? [];
+      setAvailableMonthKeys(monthKeys);
+
+      let key = periodKey;
+      if (key !== TX_VIEW_ALL_KEY && (!key || !monthKeys.includes(key))) {
+        // Défaut : dernier mois ; si aucun mois, vue complète.
+        key = monthKeys.length ? monthKeys[monthKeys.length - 1] : TX_VIEW_ALL_KEY;
+      }
+      setSelectedMonth(key);
+      persistViewPeriod(key);
+
+      if (key === TX_VIEW_ALL_KEY) {
+        const full = await SourceDataCSVService.load();
+        setData(
+          full ?? {
+            headers: [...TRANSACTION_SOURCE_HEADERS_FALLBACK],
+            rows: [],
+          }
+        );
+        setHasFullDataset(true);
+        if (!full?.rows?.length) {
           setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
         }
-      })
-      .catch((err) => {
-        setError(err?.message ?? 'Erreur lors du chargement des données.');
-      })
-      .finally(() => setLoading(false));
+        return;
+      }
+
+      const monthData = await SourceDataCSVService.loadByMonth(key);
+      setData(
+        monthData ?? {
+          headers: [...TRANSACTION_SOURCE_HEADERS_FALLBACK],
+          rows: [],
+        }
+      );
+      setHasFullDataset(false);
+      if (!monthData?.rows?.length && !monthKeys.length) {
+        setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : t('transactions.loadFailed'));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    void loadViewScope(selectedMonth);
+    // Mount / reload vue uniquement — période changée via sélecteur appelle loadViewScope directement.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadViewScope]);
+
+  useEffect(() => {
+    void refreshSlimAnomalies(false);
+  }, [refreshSlimAnomalies]);
+
+  useEffect(() => {
+    void refreshRowSignatures();
+  }, [refreshRowSignatures]);
 
   /** Alias compte (Paramètres + défauts) pour signatures doublons à l’import. */
   const accountAliasLookup = useMemo(
     () => buildAccountAliasLookup(loadRecognisedAccountsFromStorage()),
-    [data]
+    [availableMonthKeys]
   );
 
-  /** Signatures des lignes déjà enregistrées (détection de doublons à l’import). */
-  const existingTransactionSignatures = useMemo(() => {
-    if (!data?.rows?.length) return new Set<string>();
-    const headers = data.headers;
-    const cell = (row: Record<string, string>, re: RegExp) => {
-      const h = headers.find((x) => re.test(x));
-      return h ? (row[h] ?? '').trim() : '';
-    };
-    const sigs = new Set<string>();
-    for (const row of data.rows) {
-      // Même normalisation DATE que processImportRow / prévisualisation wizard (JJ.MM.AA),
-      // alors que SourceDataCSVService affiche souvent JJ.MM.AAAA — sinon les signatures ne coïncident pas.
-      const vr: ValidRow = {
-        DATE: formatDateDDMMYY(cell(row, /^date$/i)),
-        TITLE: cell(row, /^title$/i),
-        AMOUNT: cell(row, /^amount$/i),
-        CURRENCY: cell(row, /^currency$/i),
-        ACCOUNT: cell(row, /^account$/i),
-        'AMOUNT GBP': cell(row, /^amount\s*gbp$/i),
-        TYPE: cell(row, /^type$/i),
-      };
-      sigs.add(rowSignature(vr, { accountAliasLookup }));
-    }
-    return sigs;
-  }, [data, accountAliasLookup]);
+  const reloadAfterImport = useCallback(() => {
+    void loadViewScope(selectedMonth);
+    void refreshSlimAnomalies(false);
+    void refreshRowSignatures();
+  }, [loadViewScope, selectedMonth, refreshSlimAnomalies, refreshRowSignatures]);
 
   const prepWizard = useTransactionsImportPrepWizard({
     existingTransactionSignatures,
     accountAliasLookup,
-    onAfterSuccessfulAppend: loadData,
+    onAfterSuccessfulAppend: reloadAfterImport,
     folderReloadToken: importFolderReloadToken,
   });
-
   /** Dérivé des lignes : seule source de vérité (évite toute perte au moindre setData sur une autre cellule). */
   const rowsExcludedFromAnomaly = useMemo(() => {
     if (!data?.rows) return new Set<number>();
@@ -321,16 +412,34 @@ const TransactionsTable: React.FC = () => {
     };
   }, [data?.rows, dateColumn]);
 
-  /** Aligné sur le rapport d’anomalies (index de ligne = même que dans le CSV). */
+  /**
+   * Colonne Anomalie : payload slim IPC hors édition (remap Index global → index local) ;
+   * en édition, détection locale sur le brouillon plein.
+   */
   const transactionAnomalyByDataRowIndex = useMemo(() => {
-    if (!data?.rows) return new Map<number, string>();
-    const { anomalies } = detectAnomalies(data);
-    const map = new Map<number, string>();
-    for (const a of anomalies) {
-      map.set(a.rowIndex - 1, a.reasons.join(' ; '));
+    if (editMode && data?.rows) {
+      const { anomalies } = detectAnomalies(data);
+      const map = new Map<number, string>();
+      for (const a of anomalies) {
+        map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
+      }
+      return map;
     }
+    if (!data?.rows?.length) return new Map<number, string>();
+    const map = new Map<number, string>();
+    data.rows.forEach((row, i) => {
+      const idx = parseInt(String(row.Index ?? ''), 10);
+      const global0 =
+        Number.isFinite(idx) && idx > 0
+          ? idx - 1
+          : data.rowIndicesInSource != null
+            ? data.rowIndicesInSource[i]
+            : i;
+      const text = slimAnomalyByRowIndex.get(global0);
+      if (text) map.set(i, text);
+    });
     return map;
-  }, [data]);
+  }, [editMode, data, slimAnomalyByRowIndex, t, i18n.language]);
 
   /** Valeurs figées pour filtre et tri en mode édition (pas de re-classement à chaque frappe). */
   const [editFilterRowSnapshot, setEditFilterRowSnapshot] = useState<Record<string, string>[] | null>(
@@ -358,7 +467,7 @@ const TransactionsTable: React.FC = () => {
     const { anomalies } = detectAnomalies(d);
     const anomalyMap = new Map<number, string>();
     for (const a of anomalies) {
-      anomalyMap.set(a.rowIndex - 1, a.reasons.join(' ; '));
+      anomalyMap.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
     }
     setEditFilterAnomalySnapshot(anomalyMap);
     const dc = d.headers.find((h) => /date/i.test(h)) ?? null;
@@ -380,7 +489,7 @@ const TransactionsTable: React.FC = () => {
     } else {
       setEditFilterDateBounds(null);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!editMode) {
@@ -584,10 +693,16 @@ const TransactionsTable: React.FC = () => {
     prevAnomalyMapForFilterRef.current = new Map(curr);
   }, [transactionAnomalyByDataRowIndex, editMode, editShowAnomaliesOnly]);
 
+  const dataRowIndexByRef = useMemo(() => {
+    const map = new Map<Record<string, string>, number>();
+    data?.rows.forEach((r, i) => map.set(r, i));
+    return map;
+  }, [data?.rows]);
+
   const displayRows = useMemo(() => {
     if (!editMode || !editShowAnomaliesOnly) return sortedRows;
     return sortedRows.filter((row) => {
-      const dataRowIndex = data?.rows.findIndex((r) => r === row) ?? -1;
+      const dataRowIndex = dataRowIndexByRef.get(row) ?? -1;
       if (dataRowIndex < 0) return false;
       return (
         transactionAnomalyByDataRowIndex.has(dataRowIndex) ||
@@ -598,10 +713,24 @@ const TransactionsTable: React.FC = () => {
     editMode,
     editShowAnomaliesOnly,
     sortedRows,
-    data?.rows,
+    dataRowIndexByRef,
     transactionAnomalyByDataRowIndex,
     anomalyFilterStickyIndices,
   ]);
+
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: displayRows.length,
+    getScrollElement: () => tableScrollRef.current,
+    estimateSize: () => (editMode ? 44 : 36),
+    overscan: 16,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom =
+    virtualRows.length > 0
+      ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+      : 0;
 
   const handleSort = (header: string) => {
     if (sortColumn === header) {
@@ -637,7 +766,7 @@ const TransactionsTable: React.FC = () => {
         setArchiveMessage(
           result.message ??
             (result.movedCount
-              ? `${result.movedCount} fichier(s) déplacé(s) vers la corbeille.`
+              ? t('transactions.importWizard.filesMoved', { count: result.movedCount })
               : 'Aucun fichier dans le dossier Import.')
         );
         setImportFolderReloadToken((k) => k + 1);
@@ -650,36 +779,24 @@ const TransactionsTable: React.FC = () => {
   };
 
   const handleDetectAnomalies = async () => {
-    if (!data) {
-      setAnomalyMessageState('Chargez les données d\'abord.');
-      return;
-    }
-    const api = (window as unknown as {
-      electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
-    }).electronAPI;
-    if (!api?.writeFile) {
-      setAnomalyMessageState('Fonction d\'écriture non disponible.');
-      return;
-    }
     setAnomalyLoading(true);
     try {
-      const { anomalies, csvContent } = detectAnomalies(data);
-      const reportPath = ANOMALY_REPORT_PATH;
-      const writeResult = await api.writeFile(reportPath, csvContent);
-      if (writeResult.success) {
-        const now = new Date().toISOString();
-        setAnomalyLastReportAt(now);
-        try {
-          localStorage.setItem(ANOMALY_LAST_REPORT_STORAGE_KEY, now);
-        } catch {}
-        setAnomalyMessage(
-          anomalies.length === 0
-            ? 'Aucune anomalie détectée. Rapport mis à jour dans Processed/anomaly_report.csv.'
-            : `${anomalies.length} anomalie(s) → rapport écrit dans Processed/anomaly_report.csv.`
-        );
-      } else {
-        setAnomalyMessage(writeResult.error ?? 'Erreur lors de l\'écriture du rapport.');
+      const result = await refreshSlimAnomalies(true);
+      if (!result) {
+        setAnomalyMessage(t('transactions.anomaly.unavailable'));
+        return;
       }
+      const now = new Date().toISOString();
+      setAnomalyLastReportAt(now);
+      try {
+        localStorage.setItem(ANOMALY_LAST_REPORT_STORAGE_KEY, now);
+      } catch {}
+      const count = result.anomalies?.length ?? 0;
+      setAnomalyMessage(
+        count === 0
+          ? t('transactions.anomaly.noneFound')
+          : t('transactions.anomaly.found', { count })
+      );
     } finally {
       setAnomalyLoading(false);
     }
@@ -732,8 +849,8 @@ const TransactionsTable: React.FC = () => {
       }
       setImportFileMessage(
         copied.length === 1
-          ? `Fichier copié dans Import : ${copied[0]}`
-          : `${copied.length} fichiers copiés dans Import : ${copied.join(', ')}`
+          ? t('transactions.importWizard.fileCopied', { name: copied[0] })
+          : t('transactions.importWizard.filesCopied', { count: copied.length, names: copied.join(', ') })
       );
       setImportFolderReloadToken((k) => k + 1);
     } finally {
@@ -742,21 +859,38 @@ const TransactionsTable: React.FC = () => {
   };
 
   const performExitEditMode = useCallback(() => {
-    if (editSessionBaselineRef.current) {
-      setData(cloneSourceDataResult(editSessionBaselineRef.current));
-      editSessionBaselineRef.current = null;
-    }
+    editSessionBaselineRef.current = null;
     setRowsToDelete(new Set());
     setEditMode(false);
     setSaveMessage(null);
     setEditExitConfirmOpen(false);
-  }, []);
+    void loadViewScope(selectedMonth);
+  }, [loadViewScope, selectedMonth]);
 
   const handleToggleEditMode = () => {
     if (!editMode) {
-      if (data) editSessionBaselineRef.current = cloneSourceDataResult(data);
-      setEditMode(true);
-      setSaveMessage(null);
+      void (async () => {
+        setLoading(true);
+        setSaveMessage(null);
+        try {
+          let full = data;
+          if (!hasFullDataset) {
+            full = await SourceDataCSVService.load();
+            if (!full?.rows?.length) {
+              setError(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
+              return;
+            }
+            setData(full);
+            setHasFullDataset(true);
+          }
+          if (full) editSessionBaselineRef.current = cloneSourceDataResult(full);
+          setEditMode(true);
+        } catch (err: unknown) {
+          setError(err instanceof Error ? err.message : t('transactions.edit.loadFailed'));
+        } finally {
+          setLoading(false);
+        }
+      })();
     } else {
       if (
         data &&
@@ -772,13 +906,6 @@ const TransactionsTable: React.FC = () => {
 
   const handleSaveSourceData = async () => {
     if (!data) return;
-    const api = (window as unknown as {
-      electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
-    }).electronAPI;
-    if (!api?.writeFile) {
-      setSaveMessage('Fonction d\'écriture non disponible.');
-      return;
-    }
     setSaveLoading(true);
     setSaveMessage(null);
     try {
@@ -798,13 +925,10 @@ const TransactionsTable: React.FC = () => {
           rows: rowsToKeep,
         })
       );
-      const csvContent = Papa.unparse(normalized.rows, {
-        columns: normalized.headers,
-        delimiter: ';',
-      });
-      const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
+      const result = await SourceDataCSVService.replaceAll(normalized.rows);
       if (result.success) {
         setData(normalized);
+        setHasFullDataset(true);
         dataForFilterSnapshotRef.current = normalized;
         editSessionBaselineRef.current = cloneSourceDataResult(normalized);
         setRowsToDelete(new Set());
@@ -814,7 +938,9 @@ const TransactionsTable: React.FC = () => {
         setAnomalyFilterStickyIndices(new Set());
         applyEditFilterSnapshot();
         setEditExitConfirmOpen(false);
-        setSaveMessage('Fichier src_transaction_data.csv enregistré.');
+        setSaveMessage(t('transactions.edit.saved'));
+        void refreshSlimAnomalies(false);
+        void refreshRowSignatures();
       } else {
         setSaveMessage(result.error ?? 'Erreur lors de l\'enregistrement.');
       }
@@ -826,72 +952,36 @@ const TransactionsTable: React.FC = () => {
   const handleRefreshSourceDataCsv = async () => {
     if (editMode) {
       setReorderChronoMessage(
-        'Quittez le mode édition pour rafraîchir le fichier (les modifications non enregistrées ne sont pas prises en compte).'
+        t('transactions.refresh.exitEditWarning')
       );
       return;
     }
     setReorderChronoLoading(true);
     setReorderChronoMessage(null);
     try {
-      const fresh = await SourceDataCSVService.load();
-      if (!fresh?.headers?.length || !fresh?.rows?.length) {
-        setReorderChronoMessage(`Fichier ${SOURCE_DATA_PATH} absent ou vide.`);
-        return;
-      }
-      const headers = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
-        ? fresh.headers
-        : [...fresh.headers, EXCLUDE_ANOMALY_COLUMN];
-      const rows = fresh.headers.includes(EXCLUDE_ANOMALY_COLUMN)
-        ? fresh.rows.map((r) => ({ ...r }))
-        : fresh.rows.map((r) => ({ ...r, [EXCLUDE_ANOMALY_COLUMN]: '' }));
-      const stripped = stripSourceColumnFromSourceData({ headers, rows });
-      const sorted = sortSourceDataByDateChronology(stripped);
-      const amountHeader = sorted.headers.find((h) => /^amount$/i.test(h)) ?? null;
-      const currencyHeader = sorted.headers.find((h) => /^currency$/i.test(h)) ?? null;
-      const amountGbpHeader = sorted.headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
-      if (!amountHeader || !currencyHeader || !amountGbpHeader) {
-        setReorderChronoMessage('Colonnes AMOUNT / CURRENCY / AMOUNT GBP introuvables.');
-        return;
-      }
-      let updated = 0;
-      const rowsOut = sorted.rows.map((row) => {
-        const next = { ...row };
-        const amountStr = (next[amountHeader] ?? '').trim().replace(',', '.');
-        const amount = parseFloat(amountStr);
-        const currency = (next[currencyHeader] ?? '').trim().toUpperCase();
-        if (!Number.isNaN(amount) && amount !== 0 && (currency === 'EUR' || currency === 'CHF')) {
-          const gbp = amountToGbp(amount, currency);
-          if (gbp !== null) {
-            next[amountGbpHeader] = formatAmountGbpForCsv(gbp);
-            updated++;
-          }
-        }
-        return next;
-      });
-      const refreshed: SourceDataResult = { headers: sorted.headers, rows: rowsOut };
-      const api = (window as unknown as {
-        electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
-      }).electronAPI;
-      if (!api?.writeFile) {
-        setReorderChronoMessage("Fonction d'écriture non disponible.");
-        return;
-      }
-      const csvContent = Papa.unparse(refreshed.rows, { columns: refreshed.headers, delimiter: ';' });
-      const result = await api.writeFile(SOURCE_DATA_PATH, csvContent);
+      const result = await SourceDataCSVService.refreshGbpRates(getEffectiveRates());
       if (result.success) {
-        setData(refreshed);
-        editSessionBaselineRef.current = cloneSourceDataResult(refreshed);
+        await loadViewScope(selectedMonth);
+        void refreshSlimAnomalies(false);
+        void refreshRowSignatures();
         setReorderChronoMessage(
-          `${refreshed.rows.length} ligne(s) triées par date (index 1…${refreshed.rows.length}) ; ${updated} montant(s) GBP recalculé(s).`
+          t('transactions.refresh.result', { rowCount: result.rowCount, updatedCount: result.updatedCount })
         );
       } else {
         setReorderChronoMessage(result.error ?? "Erreur lors de l'enregistrement.");
       }
     } catch (e) {
-      setReorderChronoMessage(e instanceof Error ? e.message : 'Erreur lors du rafraîchissement.');
+      setReorderChronoMessage(e instanceof Error ? e.message : t('transactions.refresh.failed'));
     } finally {
       setReorderChronoLoading(false);
     }
+  };
+
+  const handleViewPeriodChange = (periodKey: string) => {
+    if (editMode) return;
+    setSelectedMonth(periodKey);
+    persistViewPeriod(periodKey);
+    void loadViewScope(periodKey);
   };
 
   const handleCellChange = useCallback(
@@ -900,23 +990,20 @@ const TransactionsTable: React.FC = () => {
         if (!prev) return prev;
         const amountHeader = prev.headers.find((h) => /^amount$/i.test(h)) ?? null;
         const currencyHeader = prev.headers.find((h) => /^currency$/i.test(h)) ?? null;
-        const amountGbpHeader = prev.headers.find((h) => /^amount\s*gbp$/i.test(h)) ?? null;
+        const amountGbpHeader = prev.headers.find((h) => isAmountIndicatorHeader(h)) ?? null;
         return {
           ...prev,
           rows: prev.rows.map((row, i) => {
             if (i !== dataRowIndex) return row;
             const next = { ...row, [header]: value };
-            if ((header === amountHeader || header === currencyHeader) && amountHeader && currencyHeader && amountGbpHeader) {
-              const amountRaw = (next[amountHeader] ?? '').trim().replace(',', '.');
-              const amount = parseFloat(amountRaw);
-              if (!Number.isNaN(amount) && amount !== 0) {
-                if (!(next[currencyHeader] ?? '').trim()) next[currencyHeader] = 'EUR';
-                const effectiveCurrency = (next[currencyHeader] ?? '').trim().toUpperCase() || 'EUR';
-                if (effectiveCurrency === 'EUR' || effectiveCurrency === 'CHF') {
-                  const gbp = amountToGbp(amount, effectiveCurrency);
-                  if (gbp !== null) next[amountGbpHeader] = formatAmountGbpForCsv(gbp);
-                }
-              }
+            if (amountHeader && currencyHeader && amountGbpHeader) {
+              syncTransactionAmountCurrencyOnEdit(
+                next,
+                header,
+                amountHeader,
+                currencyHeader,
+                amountGbpHeader
+              );
             }
             return next;
           }),
@@ -987,7 +1074,7 @@ const TransactionsTable: React.FC = () => {
     <>
       <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4 space-y-4">
-          <h1 className="text-2xl font-bold text-gray-800">Tableau des transactions</h1>
+          <h1 className="text-2xl font-bold text-gray-800">{t('transactions.title')}</h1>
 
           <div className="bg-white rounded-lg shadow p-4 border border-gray-200">
             <div
@@ -1013,9 +1100,11 @@ const TransactionsTable: React.FC = () => {
                   ▼
                 </span>
                 <div className="min-w-0">
-                  <h2 className="text-lg font-semibold text-gray-800">Import wizard</h2>
+                  <h2 className="text-lg font-semibold text-gray-800">{t('transactions.importWizard.title')}</h2>
                   <p className="text-sm text-gray-500 mt-0.5">
-                    {importModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;importation de données
+                    {importModuleExpanded
+                      ? t('transactions.importWizard.closeModule')
+                      : t('transactions.importWizard.openModule')}
                   </p>
                 </div>
               </div>
@@ -1024,11 +1113,11 @@ const TransactionsTable: React.FC = () => {
             <div id="transactions-import-module" className="mt-3">
               <div
                 className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
-                aria-label="Zone Import wizard"
+                aria-label={t('transactions.importWizard.zoneLabel')}
               >
                   <div className="space-y-4">
                     <div>
-                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Préparation de l&apos;import</h3>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">{t('transactions.importWizard.prepTitle')}</h3>
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
@@ -1036,14 +1125,14 @@ const TransactionsTable: React.FC = () => {
                           disabled={importFileLoading}
                           className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                         >
-                          {importFileLoading ? 'Import en cours…' : 'Importer des fichiers (CSV)'}
+                          {importFileLoading ? t('transactions.importWizard.importing') : t('transactions.importWizard.importFiles')}
                         </button>
                         <button
                           type="button"
                           onClick={() => void prepWizard.handleOpenImportFolder()}
                           className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                         >
-                          Ouvrir le dossier d'importation
+                          {t('transactions.importWizard.openImportFolder')}
                         </button>
                         <button
                           type="button"
@@ -1051,7 +1140,7 @@ const TransactionsTable: React.FC = () => {
                           disabled={archiveLoading}
                           className="rounded border border-red-600 bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                         >
-                          {archiveLoading ? 'Vidage…' : 'Vider le dossier d\'import'}
+                          {archiveLoading ? t('transactions.importWizard.emptying') : t('transactions.importWizard.emptyImport')}
                         </button>
                         <button
                           type="button"
@@ -1065,19 +1154,19 @@ const TransactionsTable: React.FC = () => {
                           }
                           title={
                             !prepWizard.mappingWizardActive
-                              ? 'Activez le mapping wizard pour préparer l’import vers src_transaction_data.csv'
+                              ? t('transactions.importWizard.needMapping')
                               : prepWizard.importPreviewImportableRows.length === 0
-                                ? 'Aucune ligne importable (ignorées, invalides ou doublons) avec les réglages actuels'
+                                ? t('transactions.importWizard.noImportableRows')
                                 : undefined
                           }
                           className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                         >
-                          {prepWizard.importLinesLoading ? 'Import…' : 'Importer les lignes'}
+                          {prepWizard.importLinesLoading ? t('transactions.importWizard.importLinesShort') : t('transactions.importWizard.importLines')}
                         </button>
                         {prepWizard.mappingWizardActive && (
                           <label
                             className="inline-flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer select-none"
-                            title="Après un import réussi, retire du dossier Import les lignes qui viennent d’être ajoutées à src_transaction_data.csv (les lignes collées depuis le presse-papiers ne sont pas concernées)."
+                            title={t('transactions.importWizard.removeImportedTitle')}
                           >
                             <input
                               type="checkbox"
@@ -1088,7 +1177,7 @@ const TransactionsTable: React.FC = () => {
                               }
                               disabled={prepWizard.importLinesLoading}
                             />
-                            Retirer du dossier Import les lignes importées
+                            {t('transactions.importWizard.removeImported')}
                           </label>
                         )}
                       </div>
@@ -1133,10 +1222,12 @@ const TransactionsTable: React.FC = () => {
                 </span>
                 <div className="min-w-0">
                   <h2 className="text-lg font-semibold text-gray-800">
-                    Détection d&apos;anomalies et mode édition
+                    {t('transactions.anomaly.title')}
                   </h2>
                   <p className="text-sm text-gray-500 mt-0.5">
-                    {anomalyModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;édition des données existantes
+                    {anomalyModuleExpanded
+                      ? t('transactions.anomaly.closeModule')
+                      : t('transactions.anomaly.openModule')}
                   </p>
                 </div>
               </div>
@@ -1145,7 +1236,7 @@ const TransactionsTable: React.FC = () => {
               <div id="transactions-anomaly-module" className="mt-3">
                 <div
                   className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
-                  aria-label="Zone détection d’anomalies"
+                  aria-label={t('transactions.anomaly.zoneLabel')}
                 >
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -1155,12 +1246,12 @@ const TransactionsTable: React.FC = () => {
                           disabled={reorderChronoLoading || !data || saveLoading}
                           title={
                             editMode
-                              ? 'Quittez le mode édition pour rafraîchir src_transaction_data.csv.'
-                              : 'Trie le fichier par date, réattribue les index et recalcule AMOUNT GBP.'
+                              ? t('transactions.refresh.exitEditFirst')
+                              : t('transactions.refresh.hint')
                           }
                           className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                         >
-                          {reorderChronoLoading ? 'Rafraîchissement…' : 'Rafraîchir src_transaction_data.csv'}
+                          {reorderChronoLoading ? t('transactions.refresh.loading') : t('transactions.refresh.button')}
                         </button>
                         <button
                           type="button"
@@ -1168,21 +1259,21 @@ const TransactionsTable: React.FC = () => {
                           disabled={anomalyLoading || !data}
                           className="rounded border border-orange-600 bg-orange-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
                         >
-                          {anomalyLoading ? 'Analyse…' : 'Détecter des anomalies'}
+                          {anomalyLoading ? t('transactions.anomaly.analyzing') : t('transactions.anomaly.detect')}
                         </button>
                         <button
                           type="button"
                           onClick={handleOpenAnomalyReport}
                           className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                         >
-                          Ouvrir le rapport d'anomalies
+                          {t('transactions.anomaly.openReport')}
                         </button>
                         <button
                           type="button"
                           onClick={() => setAnomalyExceptionsModalOpen(true)}
                           className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                         >
-                          Liste des exceptions
+                          {t('transactions.anomaly.exceptions')}
                         </button>
                         <button
                           type="button"
@@ -1193,7 +1284,7 @@ const TransactionsTable: React.FC = () => {
                               : 'border-red-600 bg-red-600 hover:bg-red-700'
                           }`}
                         >
-                          {editMode ? 'Quitter le mode édition' : 'Mode édition'}
+                          {editMode ? t('transactions.edit.exit') : t('transactions.edit.enter')}
                         </button>
                         {editMode && (
                           <button
@@ -1202,7 +1293,7 @@ const TransactionsTable: React.FC = () => {
                             disabled={saveLoading || !data}
                             className="rounded border border-green-600 bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                           >
-                            {saveLoading ? 'Enregistrement…' : 'Sauvegarder src_transaction_data.csv'}
+                            {saveLoading ? t('common.saving') : t('transactions.edit.save')}
                           </button>
                         )}
                       </div>
@@ -1237,7 +1328,12 @@ const TransactionsTable: React.FC = () => {
                           )}
                           {anomalyLastReportAt && (
                             <p className="text-sm text-gray-600">
-                              {formatReportDate(anomalyLastReportAt, 'Dernier rapport d\'anomalies généré')}
+                              {(() => {
+                                const parts = formatReportDateParts(anomalyLastReportAt);
+                                return parts
+                                  ? t('transactions.anomaly.lastReport', parts)
+                                  : anomalyLastReportAt;
+                              })()}
                             </p>
                           )}
                         </div>
@@ -1272,7 +1368,7 @@ const TransactionsTable: React.FC = () => {
 
         {loading && (
           <div className="flex items-center justify-center py-12 text-gray-500">
-            Chargement…
+            {t('common.loading')}
           </div>
         )}
 
@@ -1285,9 +1381,34 @@ const TransactionsTable: React.FC = () => {
         {data && !loading && (
           <div className="flex flex-col bg-white rounded-lg shadow border border-gray-200 overflow-hidden h-[calc(100vh-6rem)] min-h-[320px]">
             <div className="shrink-0 px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center gap-3">
+              {!editMode && (availableMonthKeys.length > 0 || selectedMonth === TX_VIEW_ALL_KEY) && (
+                <div className="flex items-center gap-2">
+                  <label htmlFor="tx-view-period" className="text-gray-600 text-sm whitespace-nowrap">
+                    {t('transactions.filters.show')}
+                  </label>
+                  <select
+                    id="tx-view-period"
+                    value={selectedMonth || TX_VIEW_ALL_KEY}
+                    onChange={(e) => handleViewPeriodChange(e.target.value)}
+                    className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800"
+                  >
+                    <option value={TX_VIEW_ALL_KEY}>{t('transactions.filters.allTable')}</option>
+                    {availableMonthKeys.map((k) => (
+                      <option key={k} value={k}>
+                        {k}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {editMode && (
+                <span className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                  {t('transactions.edit.fullDataset')}
+                </span>
+              )}
               <div className="flex items-center gap-2 min-w-0">
                 <label htmlFor="tx-filter-col" className="text-gray-600 text-sm whitespace-nowrap">
-                  Colonne
+                  {t('transactions.filters.column')}
                 </label>
                 <select
                   id="tx-filter-col"
@@ -1295,9 +1416,9 @@ const TransactionsTable: React.FC = () => {
                   onChange={(e) => setFilterColumn(e.target.value)}
                   className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[120px]"
                 >
-                  <option value="__all__">Toutes</option>
+                  <option value="__all__">{t('transactions.filters.allColumns')}</option>
                   {editMode && (
-                    <option value={ANOMALY_FILTER_COLUMN_KEY}>Anomalie</option>
+                    <option value={ANOMALY_FILTER_COLUMN_KEY}>{t('transactions.anomaly.column')}</option>
                   )}
                   {displayHeaders.map((h) => (
                     <option key={h} value={h}>
@@ -1308,12 +1429,12 @@ const TransactionsTable: React.FC = () => {
               </div>
               <div className="flex items-center gap-2 flex-1 min-w-[200px]">
                 <label htmlFor="tx-filter-text" className="text-gray-600 text-sm whitespace-nowrap sr-only">
-                  Rechercher
+                  {t('transactions.filters.search')}
                 </label>
                 <input
                   id="tx-filter-text"
                   type="text"
-                  placeholder="Rechercher…"
+                  placeholder={t('transactions.filters.searchPlaceholder')}
                   value={filterText}
                   onChange={(e) => setFilterText(e.target.value)}
                   className="flex-1 rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-0"
@@ -1324,12 +1445,12 @@ const TransactionsTable: React.FC = () => {
                     onClick={() => setFilterText('')}
                     className="text-gray-500 hover:text-gray-700 text-sm whitespace-nowrap"
                   >
-                    Effacer
+                    {t('transactions.filters.clear')}
                   </button>
                 )}
               </div>
               <span className="text-gray-500 text-sm">
-                {filteredRows.length} / {data.rows.length} ligne{data.rows.length !== 1 ? 's' : ''}
+                {t('transactions.filters.rowCount', { filtered: filteredRows.length, total: data.rows.length })}
               </span>
               {editMode && (
                 <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
@@ -1339,11 +1460,11 @@ const TransactionsTable: React.FC = () => {
                     onChange={(e) => setEditShowAnomaliesOnly(e.target.checked)}
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
-                  Uniquement les lignes avec anomalies
+                  {t('transactions.anomaly.showOnly')}
                 </label>
               )}
               {editMode && (
-                <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
+                <span className="text-red-600 text-sm font-medium">{t('transactions.edit.banner')}</span>
               )}
               {editMode && hasCustomColWidths && (
                 <button
@@ -1351,11 +1472,11 @@ const TransactionsTable: React.FC = () => {
                   onClick={resetColWidths}
                   className="text-sm text-gray-600 hover:text-gray-900 underline"
                 >
-                  Réinitialiser les largeurs de colonnes
+                  {t('transactions.filters.resetWidths')}
                 </button>
               )}
             </div>
-            <div className="overflow-auto flex-1 min-h-0">
+            <div ref={tableScrollRef} className="overflow-auto flex-1 min-h-0">
               <table
                 className="w-full border-collapse text-sm"
                 style={editMode ? { tableLayout: 'fixed', minWidth: '100%' } : undefined}
@@ -1382,9 +1503,9 @@ const TransactionsTable: React.FC = () => {
                         className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-amber-50/80 align-bottom cursor-pointer select-none hover:bg-amber-100/80 transition-colors overflow-hidden"
                       >
                         <span className="inline-flex items-center gap-1">
-                          Anomalie
+                          {t('transactions.anomaly.column')}
                           {sortColumn === ANOMALY_SORT_COLUMN_KEY && (
-                            <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                            <span className="text-blue-600" aria-label={sortDirection === 'asc' ? t('transactions.table.sortAsc') : t('transactions.table.sortDesc')}>
                               {sortDirection === 'asc' ? '↑' : '↓'}
                             </span>
                           )}
@@ -1405,7 +1526,7 @@ const TransactionsTable: React.FC = () => {
                           <span className="inline-flex items-center gap-1">
                             {h}
                             {sortColumn === h && (
-                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? t('transactions.table.sortAsc') : t('transactions.table.sortDesc')}>
                                 {sortDirection === 'asc' ? '↑' : '↓'}
                               </span>
                             )}
@@ -1420,7 +1541,7 @@ const TransactionsTable: React.FC = () => {
                           <span className="inline-flex items-center gap-1">
                             {h}
                             {sortColumn === h && (
-                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? t('transactions.table.sortAsc') : t('transactions.table.sortDesc')}>
                                 {sortDirection === 'asc' ? '↑' : '↓'}
                               </span>
                             )}
@@ -1437,7 +1558,7 @@ const TransactionsTable: React.FC = () => {
                         onResizeStart={handleColResizeStart}
                         className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                       >
-                        Exclure Anomalie
+                        {t('transactions.anomaly.excludeColumn')}
                       </ResizableTableHeadCell>
                     )}
                     {editMode && (
@@ -1449,14 +1570,24 @@ const TransactionsTable: React.FC = () => {
                         onResizeStart={handleColResizeStart}
                         className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                       >
-                        Supprimer
+                        {t('transactions.table.deleteColumn')}
                       </ResizableTableHeadCell>
                     )}
                   </tr>
                 </thead>
                 <tbody>
-                  {displayRows.map((row, i) => {
-                    const dataRowIndex = data ? data.rows.findIndex((r) => r === row) : -1;
+                  {paddingTop > 0 && (
+                    <tr aria-hidden="true">
+                      <td
+                        colSpan={displayHeaders.length + (editMode ? 3 : 0)}
+                        style={{ height: paddingTop, padding: 0, border: 0 }}
+                      />
+                    </tr>
+                  )}
+                  {virtualRows.map((vRow) => {
+                    const row = displayRows[vRow.index];
+                    const i = vRow.index;
+                    const dataRowIndex = dataRowIndexByRef.get(row) ?? -1;
                     const isMarkedForDelete = dataRowIndex >= 0 && rowsToDelete.has(dataRowIndex);
                     const isExcludedFromAnomaly = dataRowIndex >= 0 && rowsExcludedFromAnomaly.has(dataRowIndex);
                     const anomalyText =
@@ -1464,6 +1595,8 @@ const TransactionsTable: React.FC = () => {
                     return (
                       <tr
                         key={i}
+                        data-index={vRow.index}
+                        ref={rowVirtualizer.measureElement}
                         className={`border-b border-gray-100 ${
                           editMode && isMarkedForDelete
                             ? 'bg-red-100/70 hover:bg-red-100/70'
@@ -1485,16 +1618,30 @@ const TransactionsTable: React.FC = () => {
                           const isDateColumn = /date/i.test(header);
                           const isAmountColumn = /^amount$/i.test(header);
                           const isCurrencyColumn = /^currency$/i.test(header);
-                          const isAmountGbpColumn = /^amount\s*gbp$/i.test(header);
+                          const isAmountGbpColumn = isAmountIndicatorHeader(header);
                           const isAccountColumn = /^account$/i.test(header) || /compte/i.test(header);
+                          const currencyHeaderForDisplay =
+                            displayHeaders.find((h) => /^currency$/i.test(h)) ?? null;
+                          const rowCurrency = currencyHeaderForDisplay
+                            ? (row[currencyHeaderForDisplay] ?? '')
+                            : '';
+                          const primarySym = currencyDisplaySymbol(
+                            getCachedWorkingCurrencies().primary || 'GBP'
+                          );
                           const display = isDateColumn
                             ? formatDateDDMMYYYY(raw)
                             : isAmountColumn
-                              ? formatEur(raw)
+                              ? formatAmountForRowCurrency(raw, rowCurrency)
                               : isCurrencyColumn
                                 ? formatFx(raw)
                                 : isAmountGbpColumn
-                                  ? formatGbp(raw)
+                                  ? (() => {
+                                      const s = (raw ?? '').trim();
+                                      if (s === '') return '';
+                                      const num = parseFloat(s.replace(/\s/g, '').replace(',', '.'));
+                                      if (Number.isNaN(num)) return raw;
+                                      return formatCurrency(num, primarySym);
+                                    })()
                                   : isAccountColumn
                                       ? accountLabelFromSource(raw) || raw
                                       : raw;
@@ -1513,15 +1660,9 @@ const TransactionsTable: React.FC = () => {
                             }
                             const amountHeaderForRow = displayHeaders.find((h) => /^amount$/i.test(h));
                             const currencyHeaderForRow = displayHeaders.find((h) => /^currency$/i.test(h));
-                            const effectiveCurrency = currencyHeaderForRow ? ((row[currencyHeaderForRow] ?? '').trim().toUpperCase() || 'EUR') : 'EUR';
                             const isAmountGbpReadOnly =
                               isAmountGbpColumn &&
-                              amountHeaderForRow &&
-                              currencyHeaderForRow &&
-                              (() => {
-                                const a = parseFloat((row[amountHeaderForRow] ?? '').toString().replace(',', '.'));
-                                return !Number.isNaN(a) && a !== 0 && (effectiveCurrency === 'EUR' || effectiveCurrency === 'CHF');
-                              })();
+                              isAmountGbpIndicatorReadOnly(row, amountHeaderForRow, currencyHeaderForRow);
                             return (
                               <td key={header} className="px-1 py-0.5 overflow-hidden">
                                 <input
@@ -1530,8 +1671,8 @@ const TransactionsTable: React.FC = () => {
                                   readOnly={!!isAmountGbpReadOnly}
                                   onChange={(e) => handleCellChange(dataRowIndex, header, e.target.value)}
                                   className={`w-full rounded border px-2 py-1 text-sm text-gray-800 focus:ring-2 focus:ring-red-500 focus:border-red-500 ${isAmountGbpReadOnly ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300'}`}
-                                  aria-label={isAmountGbpReadOnly ? `${header} (calculé)` : `Éditer ${header}`}
-                                  title={isAmountGbpReadOnly ? 'Calculé à partir de AMOUNT et CURRENCY (taux Settings)' : undefined}
+                                  aria-label={isAmountGbpReadOnly ? t('transactions.edit.computedCell', { header }) : t('transactions.edit.editCell', { header })}
+                                  title={isAmountGbpReadOnly ? t('transactions.edit.computedTitle') : undefined}
                                 />
                               </td>
                             );
@@ -1567,8 +1708,8 @@ const TransactionsTable: React.FC = () => {
                               }`}
                             >
                               {rowsExcludedFromAnomaly.has(dataRowIndex)
-                                ? 'Inclure anomalie'
-                                : 'Exclure anomalie'}
+                                ? t('transactions.anomaly.include')
+                                : t('transactions.anomaly.exclude')}
                             </button>
                           </td>
                         )}
@@ -1579,22 +1720,30 @@ const TransactionsTable: React.FC = () => {
                               onClick={() => handleToggleRowDelete(dataRowIndex)}
                               className="rounded border border-red-600 bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700"
                             >
-                              {isMarkedForDelete ? 'Annuler suppression' : 'Supprimer la ligne'}
+                              {isMarkedForDelete ? t('transactions.table.undoDelete') : t('transactions.table.deleteRow')}
                             </button>
                           </td>
                         )}
                       </tr>
                     );
                   })}
+                  {paddingBottom > 0 && (
+                    <tr aria-hidden="true">
+                      <td
+                        colSpan={displayHeaders.length + (editMode ? 3 : 0)}
+                        style={{ height: paddingBottom, padding: 0, border: 0 }}
+                      />
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
             <div className="shrink-0 px-3 py-2 border-t border-gray-200 bg-gray-50 text-gray-500 text-xs">
-              {displayRows.length} ligne{displayRows.length !== 1 ? 's' : ''}
+              {t('transactions.table.footerRows', { count: displayRows.length })}
               {editMode && editShowAnomaliesOnly
-                ? ` (anomalies uniquement, ${sortedRows.length} après tri/filtre)`
+                ? t('transactions.table.footerAnomaliesOnly', { sorted: sortedRows.length })
                 : filterText
-                  ? ` (filtré sur ${data.rows.length} au total)`
+                  ? t('transactions.table.footerFiltered', { total: data.rows.length })
                   : ''}
             </div>
           </div>
@@ -1614,10 +1763,10 @@ const TransactionsTable: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="transactions-empty-import-title" className="text-lg font-semibold text-gray-900">
-              Vider le dossier d&apos;import ?
+              {t('transactions.importWizard.emptyConfirmTitle')}
             </h2>
             <p className="text-sm text-gray-600">
-              Tous les fichiers du dossier Import (transactions) seront déplacés vers la corbeille du système. Vous pourrez les restaurer depuis la corbeille si besoin.
+              {t('transactions.importWizard.emptyConfirmBody')}
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -1625,14 +1774,14 @@ const TransactionsTable: React.FC = () => {
                 onClick={() => setEmptyImportConfirmOpen(false)}
                 className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
-                Annuler
+                {t('transactions.cancel')}
               </button>
               <button
                 type="button"
                 onClick={() => void handleConfirmEmptyTransactionsImport()}
                 className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
               >
-                Confirmer
+                {t('transactions.confirm')}
               </button>
             </div>
           </div>
@@ -1651,10 +1800,10 @@ const TransactionsTable: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="transactions-edit-exit-title" className="text-lg font-semibold text-gray-900">
-              Quitter sans sauvegarder ?
+              {t('transactions.edit.exitConfirmTitle')}
             </h2>
             <p className="text-sm text-gray-600">
-              Les modifications non enregistrées seront perdues.
+              {t('transactions.edit.exitConfirmBody')}
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -1662,14 +1811,14 @@ const TransactionsTable: React.FC = () => {
                 onClick={() => setEditExitConfirmOpen(false)}
                 className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
-                Retour
+                {t('transactions.edit.exitConfirmBack')}
               </button>
               <button
                 type="button"
                 onClick={performExitEditMode}
                 className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
               >
-                Quitter
+                {t('transactions.edit.exitConfirmLeave')}
               </button>
             </div>
           </div>
@@ -1678,7 +1827,10 @@ const TransactionsTable: React.FC = () => {
       <AnomalyExceptionsModal
         open={anomalyExceptionsModalOpen}
         onClose={() => setAnomalyExceptionsModalOpen(false)}
-        onAfterSave={loadData}
+        onAfterSave={() => {
+          void refreshSlimAnomalies(false);
+          if (!editMode) void loadViewScope(selectedMonth);
+        }}
       />
     </>
   );

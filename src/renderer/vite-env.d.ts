@@ -49,6 +49,172 @@ interface ElectronAPI {
       TYPE: string;
     }>
   ) => Promise<{ success: boolean; error?: string; appendedCount: number }>;
+  transactionsGetAll?: () => Promise<{
+    success: boolean;
+    data?: { headers: string[]; rows: Record<string, string>[] } | null;
+    error?: string;
+  }>;
+  transactionsReplaceAll?: (
+    rows: Record<string, string>[]
+  ) => Promise<{ success: boolean; error?: string; count: number }>;
+  transactionsGetMonthKeys?: () => Promise<{
+    success: boolean;
+    data?: { monthKeys: string[]; monthStartsMs: number[] } | null;
+    error?: string;
+  }>;
+  transactionsAggregateRange?: (payload: {
+    startMs: number;
+    endMs: number;
+  }) => Promise<{ success: boolean; data?: import('../shared/transactionQueryTypes').TransactionsRangeAggregate | null; error?: string }>;
+  transactionsAggregateYearly?: () => Promise<{
+    success: boolean;
+    data?: import('../shared/transactionQueryTypes').TransactionsYearlyAggregate | null;
+    error?: string;
+  }>;
+  transactionsGetByMonth?: (
+    monthKey: string
+  ) => Promise<{ success: boolean; data?: { headers: string[]; rows: Record<string, string>[] } | null; error?: string }>;
+  transactionsGetMonthlyTotals?: () => Promise<{
+    success: boolean;
+    data?: import('../shared/transactionQueryTypes').MonthlyTotalDto[] | null;
+    error?: string;
+  }>;
+  transactionsQueryTableRows?: (
+    query: import('../shared/transactionQueryTypes').TransactionsTableRowsQuery
+  ) => Promise<{
+    success: boolean;
+    data?: import('../shared/transactionQueryTypes').DashboardTableRowDto[] | null;
+    error?: string;
+  }>;
+  transactionsGetSuggestValues?: () => Promise<{
+    success: boolean;
+    data?: { titles: string[]; types: string[]; accounts: string[] } | null;
+    error?: string;
+  }>;
+  transactionsAggregateAnnualBudgetYear?: (
+    year: number
+  ) => Promise<{
+    success: boolean;
+    data?: import('../shared/transactionQueryTypes').TransactionsAnnualBudgetYearDto | null;
+    error?: string;
+  }>;
+  transactionsRefreshGbpRates?: (rates: {
+    eurToGbp: number;
+    chfToGbp: number;
+  }) => Promise<{
+    success: boolean;
+    error?: string;
+    rowCount: number;
+    updatedCount: number;
+  }>;
+  transactionsRefreshPrimaryRates?: (rates: {
+    primary: string;
+    ratesToPrimary: Record<string, number>;
+  }) => Promise<{
+    success: boolean;
+    error?: string;
+    rowCount: number;
+    updatedCount: number;
+  }>;
+  workingCurrenciesGet?: () => Promise<{
+    success: boolean;
+    data?: {
+      config: import('../shared/workingCurrencies').WorkingCurrenciesConfig;
+      configured: boolean;
+      codes: string[];
+      transactionCount: number;
+    } | null;
+    error?: string;
+  }>;
+  workingCurrenciesSave?: (payload: {
+    primary: string;
+    secondaries?: Array<string | '' | null | undefined>;
+  }) => Promise<{
+    success: boolean;
+    data?: {
+      config: import('../shared/workingCurrencies').WorkingCurrenciesConfig;
+      configured: boolean;
+      codes: string[];
+    } | null;
+    error?: string;
+  }>;
+  workingCurrenciesUsedInData?: () => Promise<{
+    success: boolean;
+    data?: string[];
+    error?: string;
+  }>;
+  transactionsMergeMonthEdit?: (payload: {
+    monthKey: string;
+    rows: Record<string, string>[];
+  }) => Promise<{ success: boolean; error?: string; count: number }>;
+  transactionsGetRowSignatures?: (payload?: {
+    accountEntries?: Array<{ name: string; aliases?: string[] }>;
+  }) => Promise<{ success: boolean; data?: string[] | null; error?: string }>;
+  transactionsGetAnomalyExceptions?: () => Promise<{
+    success: boolean;
+    data?: import('../shared/sourceDataTypes').SourceDataResult | null;
+    error?: string;
+  }>;
+  transactionsClearAnomalyException?: (
+    idx: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  transactionsDetectAnomalies?: (payload: {
+    recognisedAccountLabels: string[];
+    recognisedEntryTypes: string[];
+    recognisedOutputTypes: string[];
+    writeReport?: boolean;
+  }) => Promise<{
+    success: boolean;
+    data?: import('../shared/transactionQueryTypes').DetectAnomaliesResultDto | null;
+    error?: string;
+  }>;
+  supportGetAll?: () => Promise<{
+    success: boolean;
+    data?: { headers: string[]; rows: Record<string, string>[] } | null;
+    error?: string;
+  }>;
+  supportReplaceAll?: (
+    rows: Record<string, string>[]
+  ) => Promise<{ success: boolean; error?: string; count: number }>;
+  accountBalanceGetAll?: () => Promise<{
+    success: boolean;
+    data?: Array<{ dateMs: number; balances: Record<string, number> }> | null;
+    error?: string;
+  }>;
+  accountBalanceGetMonthlyChart?: () => Promise<{
+    success: boolean;
+    data?: import('../shared/transactionQueryTypes').AccountBalanceMonthlyChartDto | null;
+    error?: string;
+  }>;
+  accountBalanceNearestRow?: (
+    targetMs: number
+  ) => Promise<{
+    success: boolean;
+    data?: import('../shared/transactionQueryTypes').AccountBalanceNearestRowDto | null;
+    error?: string;
+  }>;
+  accountBalanceGetMirrorHeaders?: () => Promise<{
+    success: boolean;
+    data?: string[] | null;
+    error?: string;
+  }>;
+  accountBalanceDetectAnomalies?: (payload: {
+    activeAccounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>;
+    writeReport?: boolean;
+  }) => Promise<{
+    success: boolean;
+    data?: (import('../shared/transactionQueryTypes').DetectAnomaliesResultDto & {
+      fileLevelReasons?: import('../shared/anomalyReasons').AnomalyReason[];
+    }) | null;
+    error?: string;
+  }>;
+  accountBalanceReplaceAll?: (payload: {
+    rows: Array<{ dateMs: number; balances: Record<string, number> }>;
+    accounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>;
+  }) => Promise<{ success: boolean; error?: string; count: number }>;
+  accountBalanceRewriteColumns?: (
+    accounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>
+  ) => Promise<{ success: boolean; error?: string }>;
   getLastImportReportPath?: () => Promise<{ success: boolean; path?: string | null; error?: string }>;
   openImportReport?: () => Promise<{ success: boolean; error?: string }>;
   openImportFolder?: () => Promise<{ success: boolean; error?: string }>;
@@ -74,6 +240,8 @@ interface ElectronAPI {
     appStateSnapshotFound?: boolean;
   }>;
   getAppVersion?: () => Promise<string>;
+  setUiLocale?: (locale: 'fr' | 'en') => Promise<{ success: boolean; locale?: 'fr' | 'en'; error?: string }>;
+  getUiLocale?: () => Promise<{ success: boolean; locale?: 'fr' | 'en' }>;
   checkForAppUpdate?: () => Promise<{
     success: boolean;
     currentVersion: string;

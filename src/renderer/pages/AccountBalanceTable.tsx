@@ -1,10 +1,11 @@
+import { useTranslation } from 'react-i18next';
+import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
 import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { format, startOfDay } from 'date-fns';
 import {
   ACCOUNT_BALANCE_PROCESSED_DIR,
   accountBalanceImportFile,
-  ACCOUNT_BALANCE_ANOMALY_REPORT_PATH,
 } from '@/shared/dataPaths';
 import {
   AccountBalanceCSVService,
@@ -26,6 +27,7 @@ import {
   useResizableTableColumns,
   type ResizableColumnDef,
 } from '../hooks/useResizableTableColumns';
+import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
 
 const AB_ANOMALY_STATUS_KEY = 'account-balance-anomaly-status';
 const AB_ANOMALY_LAST_REPORT_KEY = 'account-balance-anomaly-last-report';
@@ -51,63 +53,20 @@ function readModuleExpandedFromStorage(key: string): boolean {
   return true;
 }
 
-/** Formate une date ISO en "DD/MM/YYYY à HH:mm". */
-function formatReportDate(iso: string, prefix: string): string {
+/** Formate une date ISO en parties date/heure. */
+function formatReportDateParts(iso: string): { date: string; time: string } | null {
   try {
     const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
+    if (Number.isNaN(d.getTime())) return null;
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const year = d.getFullYear();
     const h = String(d.getHours()).padStart(2, '0');
     const min = String(d.getMinutes()).padStart(2, '0');
-    return `${prefix} le ${day}/${month}/${year} à ${h}:${min}`;
+    return { date: `${day}/${month}/${year}`, time: `${h}:${min}` };
   } catch {
-    return iso;
+    return null;
   }
-}
-
-type UiMessageTone = 'success' | 'warning' | 'error' | 'info';
-
-function getUiMessageTone(message: string): UiMessageTone {
-  const m = message.toLowerCase();
-  if (
-    m.includes('erreur') ||
-    m.includes('introuvable') ||
-    m.includes('refus') ||
-    m.includes('impossible')
-  ) {
-    return 'error';
-  }
-  if (
-    m.includes('anomalie') ||
-    m.includes('aucun fichier') ||
-    m.includes('aucune ligne') ||
-    m.includes('ignorée') ||
-    m.includes('non fusionnée')
-  ) {
-    return 'warning';
-  }
-  if (
-    m.includes('copié') ||
-    m.includes('fusionnée') ||
-    m.includes('intégrée') ||
-    m.includes('remplacée') ||
-    m.includes('mis à jour') ||
-    m.includes('archivé') ||
-    m.includes('corbeille') ||
-    m.includes('déplacé')
-  ) {
-    return 'success';
-  }
-  return 'info';
-}
-
-function uiMessageClass(tone: UiMessageTone): string {
-  if (tone === 'error') return 'border-red-200 bg-red-50 text-red-700';
-  if (tone === 'warning') return 'border-amber-200 bg-amber-50 text-amber-800';
-  if (tone === 'success') return 'border-green-200 bg-green-50 text-green-700';
-  return 'border-gray-200 bg-gray-50 text-gray-700';
 }
 
 function cloneBalanceRow(row: BalanceRow): BalanceRow {
@@ -193,6 +152,7 @@ function isAccountBalanceEditSessionDirty(
 }
 
 const AccountBalanceTable: React.FC = () => {
+  const { t, i18n } = useTranslation();
   const location = useLocation();
 
   const [rows, setRows] = useState<BalanceRow[] | null>(null);
@@ -262,7 +222,7 @@ const AccountBalanceTable: React.FC = () => {
         }
       })
       .catch((err) => {
-        setError(err?.message ?? 'Erreur lors du chargement des données.');
+        setError(err?.message ?? t('accountBalance.loadFailed'));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -291,6 +251,38 @@ const AccountBalanceTable: React.FC = () => {
     () => loadRecognisedAccountsFromStorage(),
     [location.pathname]
   );
+
+  /** Carte anomalies slim (IPC) — colonne Anomalie hors édition. */
+  const [slimAnomalyByRowIndex, setSlimAnomalyByRowIndex] = useState<Map<number, string>>(
+    () => new Map()
+  );
+
+  const refreshSlimAnomalies = useCallback(
+    async (writeReport = false) => {
+      const activeAccounts = recognisedAccounts
+        .map((a) => ({ name: a.name.trim(), currency: a.currency }))
+        .filter((a) => a.name && getBalanceCodeForSettingsAccountName(a.name));
+      const result = await AccountBalanceCSVService.detectAnomalies({
+        activeAccounts,
+        writeReport,
+      });
+      const map = new Map<number, string>();
+      if (result?.anomalies) {
+        for (const a of result.anomalies) {
+          if (a.rowIndex > 0) {
+            map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
+          }
+        }
+      }
+      setSlimAnomalyByRowIndex(map);
+      return result;
+    },
+    [recognisedAccounts, t]
+  );
+
+  useEffect(() => {
+    void refreshSlimAnomalies(false);
+  }, [refreshSlimAnomalies, rows?.length]);
 
   const accountNamesInOrder = useMemo(
     () => recognisedAccounts.map((e) => e.name),
@@ -399,43 +391,57 @@ const AccountBalanceTable: React.FC = () => {
     return v !== undefined ? v : '';
   };
 
-  /** Anomalies par indice de ligne (0-based) — même logique que la détection sur fichier, appliquée aux données affichées. */
+  /**
+   * Colonne Anomalie : payload slim IPC hors édition ;
+   * en édition, détection locale sur le brouillon affiché.
+   */
   const accountBalanceAnomalyByDataRowIndex = useMemo(() => {
-    if (!rows?.length) return new Map<number, string>();
-    const activeAccounts = recognisedAccounts
-      .map((a) => ({ name: a.name.trim(), currency: a.currency }))
-      .filter((a) => a.name && getBalanceCodeForSettingsAccountName(a.name));
-    const dateKey = 'DATE';
-    const csvHeaders = [
-      dateKey,
-      ...tableAccountCodes.map((code) => {
-        const e = recognisedAccounts.find(
-          (x) => getBalanceCodeForSettingsAccountName(x.name) === code
-        );
-        return e?.name ?? code;
-      }),
-    ];
-    const stringRows: Record<string, string>[] = rows.map((row) => {
-      const o: Record<string, string> = { [dateKey]: format(row.date, 'dd.MM.yy') };
-      for (const code of tableAccountCodes) {
-        const e = recognisedAccounts.find(
-          (x) => getBalanceCodeForSettingsAccountName(x.name) === code
-        );
-        const colName = e?.name ?? code;
-        const v = row.balances[code];
-        const fiat = fiatForCode(code);
-        o[colName] =
-          v !== undefined && Math.abs(v) >= 1e-9 ? formatAmountForFiat(v, fiat) : '';
+    if (editMode && rows?.length) {
+      const activeAccounts = recognisedAccounts
+        .map((a) => ({ name: a.name.trim(), currency: a.currency }))
+        .filter((a) => a.name && getBalanceCodeForSettingsAccountName(a.name));
+      const dateKey = 'DATE';
+      const csvHeaders = [
+        dateKey,
+        ...tableAccountCodes.map((code) => {
+          const e = recognisedAccounts.find(
+            (x) => getBalanceCodeForSettingsAccountName(x.name) === code
+          );
+          return e?.name ?? code;
+        }),
+      ];
+      const stringRows: Record<string, string>[] = rows.map((row) => {
+        const o: Record<string, string> = { [dateKey]: format(row.date, 'dd.MM.yy') };
+        for (const code of tableAccountCodes) {
+          const e = recognisedAccounts.find(
+            (x) => getBalanceCodeForSettingsAccountName(x.name) === code
+          );
+          const colName = e?.name ?? code;
+          const v = row.balances[code];
+          const fiat = fiatForCode(code);
+          o[colName] =
+            v !== undefined && Math.abs(v) >= 1e-9 ? formatAmountForFiat(v, fiat) : '';
+        }
+        return o;
+      });
+      const { rowAnomalies } = detectAccountBalanceAnomalies(csvHeaders, stringRows, activeAccounts);
+      const map = new Map<number, string>();
+      for (const a of rowAnomalies) {
+        map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
       }
-      return o;
-    });
-    const { rowAnomalies } = detectAccountBalanceAnomalies(csvHeaders, stringRows, activeAccounts);
-    const map = new Map<number, string>();
-    for (const a of rowAnomalies) {
-      map.set(a.rowIndex - 1, a.reasons.join(' ; '));
+      return map;
     }
-    return map;
-  }, [rows, tableAccountCodes, recognisedAccounts, fiatForCode]);
+    return slimAnomalyByRowIndex;
+  }, [
+    editMode,
+    rows,
+    tableAccountCodes,
+    recognisedAccounts,
+    fiatForCode,
+    slimAnomalyByRowIndex,
+    t,
+    i18n.language,
+  ]);
 
   const filteredRows = useMemo(() => {
     if (!rows) return [];
@@ -691,7 +697,7 @@ const AccountBalanceTable: React.FC = () => {
         setEditShowAnomaliesOnly(false);
         setAnomalyFilterStickyIndices(new Set());
         setEditExitConfirmOpen(false);
-        setSaveMessage('src_account_balance.csv enregistré.');
+        setSaveMessage(t('accountBalance.edit.saved'));
       } else {
         setSaveMessage(result.error ?? "Erreur lors de l'enregistrement.");
       }
@@ -780,8 +786,8 @@ const AccountBalanceTable: React.FC = () => {
       }
       setImportFileMessage(
         copied.length === 1
-          ? `Fichier copié dans Import : ${copied[0]}`
-          : `${copied.length} fichiers copiés dans Import : ${copied.join(', ')}`
+          ? t('accountBalance.importWizard.fileCopied', { name: copied[0] })
+          : t('accountBalance.importWizard.filesCopied', { count: copied.length, names: copied.join(', ') })
       );
       bumpImportFolderReload();
     } finally {
@@ -829,7 +835,7 @@ const AccountBalanceTable: React.FC = () => {
         setArchiveMessage(
           result.message ??
             (result.movedCount
-              ? `${result.movedCount} fichier(s) déplacé(s) vers la corbeille.`
+              ? t('accountBalance.importWizard.filesMoved', { count: result.movedCount })
               : 'Aucun fichier dans le dossier Import.')
         );
         bumpImportFolderReload();
@@ -842,50 +848,26 @@ const AccountBalanceTable: React.FC = () => {
   };
 
   const handleDetectAccountBalanceAnomalies = async () => {
-    if (!rows) {
-      setAnomalyMessageState("Chargez les données d'abord.");
-      return;
-    }
-    const api = (
-      window as unknown as {
-        electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
-      }
-    ).electronAPI;
-    if (!api?.writeFile) {
-      setAnomalyMessageState("Fonction d'écriture non disponible.");
-      return;
-    }
     setAnomalyLoading(true);
     try {
-      const raw = await AccountBalanceCSVService.loadRawCsvRows();
-      if (!raw) {
-        setAnomalyMessageState('Chargez les données ou vérifiez src_account_balance.csv.');
+      const result = await refreshSlimAnomalies(true);
+      if (!result) {
+        setAnomalyMessage(t('accountBalance.anomaly.unavailable'));
         return;
       }
-      const recognised = loadRecognisedAccountsFromStorage();
-      const { fileLevelReasons, rowAnomalies, csvContent } = detectAccountBalanceAnomalies(
-        raw.headers,
-        raw.rows,
-        recognised
+      const now = new Date().toISOString();
+      setAnomalyLastReportAt(now);
+      try {
+        localStorage.setItem(AB_ANOMALY_LAST_REPORT_KEY, now);
+      } catch {}
+      const fileLevel = result.fileLevelReasons?.length ?? 0;
+      const rowCount = (result.anomalies ?? []).filter((a) => a.rowIndex > 0).length;
+      const total = fileLevel + rowCount;
+      setAnomalyMessage(
+        total === 0
+          ? t('accountBalance.anomaly.noneFound')
+          : t('accountBalance.anomaly.found', { count: total })
       );
-      const writeResult = await api.writeFile(ACCOUNT_BALANCE_ANOMALY_REPORT_PATH, csvContent);
-      if (writeResult.success) {
-        const now = new Date().toISOString();
-        setAnomalyLastReportAt(now);
-        try {
-          localStorage.setItem(AB_ANOMALY_LAST_REPORT_KEY, now);
-        } catch {}
-        const total =
-          fileLevelReasons.length +
-          rowAnomalies.length;
-        setAnomalyMessage(
-          total === 0
-            ? 'Aucune anomalie détectée. Rapport mis à jour dans Processed/account_balance_anomaly_report.csv.'
-            : `${total} anomalie(s) → rapport écrit dans Processed/account_balance_anomaly_report.csv.`
-        );
-      } else {
-        setAnomalyMessage(writeResult.error ?? "Erreur lors de l'écriture du rapport.");
-      }
     } finally {
       setAnomalyLoading(false);
     }
@@ -935,7 +917,7 @@ const AccountBalanceTable: React.FC = () => {
     <>
       <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4 space-y-4">
-          <h1 className="text-2xl font-bold text-gray-800">Soldes des comptes</h1>
+          <h1 className="text-2xl font-bold text-gray-800">{t('accountBalance.title')}</h1>
 
           <div className="bg-white rounded-lg shadow p-4 border border-gray-200">
             <div
@@ -961,9 +943,11 @@ const AccountBalanceTable: React.FC = () => {
                   ▼
                 </span>
                 <div className="min-w-0">
-                  <h2 className="text-lg font-semibold text-gray-800">Import wizard</h2>
+                  <h2 className="text-lg font-semibold text-gray-800">{t('accountBalance.importWizard.title')}</h2>
                   <p className="text-sm text-gray-500 mt-0.5">
-                    {importModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;importation de données
+                    {importModuleExpanded
+                      ? t('accountBalance.importWizard.closeModule')
+                      : t('accountBalance.importWizard.openModule')}
                   </p>
                 </div>
               </div>
@@ -972,11 +956,11 @@ const AccountBalanceTable: React.FC = () => {
               <div id="account-balance-import-module" className="mt-3">
                 <div
                   className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
-                  aria-label="Zone Import wizard"
+                  aria-label={t('accountBalance.importWizard.zoneLabel')}
                 >
                   <div className="space-y-4">
                     <div>
-                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Préparation de l&apos;import</h3>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">{t('accountBalance.importWizard.prepTitle')}</h3>
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
@@ -984,14 +968,14 @@ const AccountBalanceTable: React.FC = () => {
                           disabled={importFileLoading}
                           className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                         >
-                          {importFileLoading ? 'Import en cours…' : 'Importer des fichiers (CSV)'}
+                          {importFileLoading ? t('accountBalance.importWizard.importing') : t('accountBalance.importWizard.importFiles')}
                         </button>
                         <button
                           type="button"
                           onClick={() => void handleOpenAccountBalanceImportFolder()}
                           className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                         >
-                          Ouvrir le dossier d'importation
+                          {t('accountBalance.importWizard.openImportFolder')}
                         </button>
                         <button
                           type="button"
@@ -999,7 +983,7 @@ const AccountBalanceTable: React.FC = () => {
                           disabled={archiveLoading}
                           className="rounded border border-red-600 bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                         >
-                          {archiveLoading ? 'Vidage…' : 'Vider le dossier d\'import'}
+                          {archiveLoading ? t('accountBalance.importWizard.emptying') : t('accountBalance.importWizard.emptyImport')}
                         </button>
                         <button
                           type="button"
@@ -1012,19 +996,19 @@ const AccountBalanceTable: React.FC = () => {
                           }
                           title={
                             !abPrepWizard.mappingWizardActive
-                              ? 'Activez le mapping wizard pour préparer l’import vers src_account_balance.csv'
+                              ? t('accountBalance.importWizard.needMapping')
                               : abPrepWizard.importPreviewImportableRows.length === 0
-                                ? 'Aucune ligne importable (dates déjà présentes, lignes ignorées ou données invalides)'
+                                ? t('accountBalance.importWizard.noImportableRows')
                                 : undefined
                           }
                           className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                         >
-                          {abPrepWizard.importLinesLoading ? 'Import…' : 'Importer les lignes'}
+                          {abPrepWizard.importLinesLoading ? t('accountBalance.importWizard.importLinesShort') : t('accountBalance.importWizard.importLines')}
                         </button>
                         {abPrepWizard.mappingWizardActive && (
                           <label
                             className="inline-flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer select-none"
-                            title="Après un import réussi, retire du dossier Import (soldes) les lignes qui viennent d’être ajoutées à src_account_balance.csv (les lignes collées depuis le presse-papiers ne sont pas concernées)."
+                            title={t('accountBalance.importWizard.removeImportedTitle')}
                           >
                             <input
                               type="checkbox"
@@ -1035,7 +1019,7 @@ const AccountBalanceTable: React.FC = () => {
                               }
                               disabled={abPrepWizard.importLinesLoading}
                             />
-                            Retirer du dossier Import les lignes importées
+                            {t('accountBalance.importWizard.removeImported')}
                           </label>
                         )}
                       </div>
@@ -1076,10 +1060,12 @@ const AccountBalanceTable: React.FC = () => {
                 </span>
                 <div className="min-w-0">
                   <h2 className="text-lg font-semibold text-gray-800">
-                    Détection d&apos;anomalies et mode édition
+                    {t('transactions.anomaly.title')}
                   </h2>
                   <p className="text-sm text-gray-500 mt-0.5">
-                    {anomalyModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;édition des données existantes
+                    {anomalyModuleExpanded
+                      ? t('transactions.anomaly.closeModule')
+                      : t('transactions.anomaly.openModule')}
                   </p>
                 </div>
               </div>
@@ -1088,7 +1074,7 @@ const AccountBalanceTable: React.FC = () => {
               <div id="account-balance-anomaly-module" className="mt-3">
                 <div
                   className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
-                  aria-label="Zone détection d’anomalies"
+                  aria-label={t('transactions.anomaly.zoneLabel')}
                 >
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -1098,14 +1084,14 @@ const AccountBalanceTable: React.FC = () => {
                         disabled={anomalyLoading || !rows}
                         className="rounded border border-orange-600 bg-orange-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
                       >
-                        {anomalyLoading ? 'Analyse…' : 'Détecter des anomalies'}
+                        {anomalyLoading ? t('transactions.anomaly.analyzing') : t('transactions.anomaly.detect')}
                       </button>
                       <button
                         type="button"
                         onClick={() => void handleOpenAccountBalanceAnomalyReport()}
                         className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                       >
-                        Ouvrir le rapport d'anomalies
+                        {t('transactions.anomaly.openReport')}
                       </button>
                       <button
                         type="button"
@@ -1116,7 +1102,7 @@ const AccountBalanceTable: React.FC = () => {
                             : 'border-red-600 bg-red-600 hover:bg-red-700'
                         }`}
                       >
-                        {editMode ? 'Quitter le mode édition' : 'Mode édition'}
+                        {editMode ? t('transactions.edit.exit') : t('transactions.edit.enter')}
                       </button>
                       {editMode && (
                         <button
@@ -1125,7 +1111,7 @@ const AccountBalanceTable: React.FC = () => {
                           disabled={saveLoading || !rows}
                           className="rounded border border-green-600 bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
                         >
-                          {saveLoading ? 'Enregistrement…' : 'Sauvegarder src_account_balance.csv'}
+                          {saveLoading ? t('common.saving') : t('accountBalance.edit.save')}
                         </button>
                       )}
                     </div>
@@ -1151,7 +1137,12 @@ const AccountBalanceTable: React.FC = () => {
                         )}
                         {anomalyLastReportAt && (
                           <p className="text-sm text-gray-600">
-                            {formatReportDate(anomalyLastReportAt, "Dernier rapport d'anomalies généré")}
+                            {(() => {
+                              const parts = formatReportDateParts(anomalyLastReportAt);
+                              return parts
+                                ? t('accountBalance.anomaly.lastReport', parts)
+                                : anomalyLastReportAt;
+                            })()}
                           </p>
                         )}
                       </div>
@@ -1186,7 +1177,7 @@ const AccountBalanceTable: React.FC = () => {
 
         {loading && (
           <div className="flex items-center justify-center py-12 text-gray-500">
-            Chargement…
+            {t('common.loading')}
           </div>
         )}
 
@@ -1201,7 +1192,7 @@ const AccountBalanceTable: React.FC = () => {
             <div className="shrink-0 px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2 min-w-0">
                 <label htmlFor="ab-filter-col" className="text-gray-600 text-sm whitespace-nowrap">
-                  Colonne
+                  {t('transactions.filters.column')}
                 </label>
                 <select
                   id="ab-filter-col"
@@ -1209,9 +1200,9 @@ const AccountBalanceTable: React.FC = () => {
                   onChange={(e) => setFilterColumn(e.target.value)}
                   className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[120px]"
                 >
-                  <option value="__all__">Toutes</option>
+                  <option value="__all__">{t('transactions.filters.allColumns')}</option>
                   {editMode && (
-                    <option value={ANOMALY_FILTER_COLUMN_KEY}>Anomalie</option>
+                    <option value={ANOMALY_FILTER_COLUMN_KEY}>{t('transactions.anomaly.column')}</option>
                   )}
                   {headers.map((h) => (
                     <option key={h} value={h}>
@@ -1222,12 +1213,12 @@ const AccountBalanceTable: React.FC = () => {
               </div>
               <div className="flex items-center gap-2 flex-1 min-w-[200px]">
                 <label htmlFor="ab-filter-text" className="text-gray-600 text-sm whitespace-nowrap sr-only">
-                  Rechercher
+                  {t('transactions.filters.search')}
                 </label>
                 <input
                   id="ab-filter-text"
                   type="text"
-                  placeholder="Rechercher…"
+                  placeholder={t('transactions.filters.searchPlaceholder')}
                   value={filterText}
                   onChange={(e) => setFilterText(e.target.value)}
                   className="flex-1 rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-0"
@@ -1238,12 +1229,12 @@ const AccountBalanceTable: React.FC = () => {
                     onClick={() => setFilterText('')}
                     className="text-gray-500 hover:text-gray-700 text-sm whitespace-nowrap"
                   >
-                    Effacer
+                    {t('transactions.filters.clear')}
                   </button>
                 )}
               </div>
               <span className="text-gray-500 text-sm">
-                {filteredRows.length} / {rows.length} ligne{rows.length !== 1 ? 's' : ''}
+                {t('transactions.filters.rowCount', { filtered: filteredRows.length, total: rows.length })}
               </span>
               {editMode && (
                 <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
@@ -1253,11 +1244,11 @@ const AccountBalanceTable: React.FC = () => {
                     onChange={(e) => setEditShowAnomaliesOnly(e.target.checked)}
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
-                  Uniquement les lignes avec anomalies
+                  {t('transactions.anomaly.showOnly')}
                 </label>
               )}
               {editMode && (
-                <span className="text-red-600 text-sm font-medium">Mode édition — les cellules sont modifiables</span>
+                <span className="text-red-600 text-sm font-medium">{t('transactions.edit.banner')}</span>
               )}
               {editMode && hasCustomColWidths && (
                 <button
@@ -1265,7 +1256,7 @@ const AccountBalanceTable: React.FC = () => {
                   onClick={resetColWidths}
                   className="text-sm text-gray-600 hover:text-gray-900 underline"
                 >
-                  Réinitialiser les largeurs de colonnes
+                  {t('transactions.filters.resetWidths')}
                 </button>
               )}
             </div>
@@ -1295,9 +1286,9 @@ const AccountBalanceTable: React.FC = () => {
                         className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-amber-50/80 align-bottom cursor-pointer select-none hover:bg-amber-100/80 transition-colors overflow-hidden"
                       >
                         <span className="inline-flex items-center gap-1">
-                          Anomalie
+                          {t('transactions.anomaly.column')}
                           {sortColumn === ANOMALY_SORT_COLUMN_KEY && (
-                            <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                            <span className="text-blue-600" aria-label={sortDirection === 'asc' ? t('transactions.table.sortAsc') : t('transactions.table.sortDesc')}>
                               {sortDirection === 'asc' ? '↑' : '↓'}
                             </span>
                           )}
@@ -1325,7 +1316,7 @@ const AccountBalanceTable: React.FC = () => {
                           <span className="inline-flex items-center gap-1">
                             {columnLabel(h)}
                             {sortColumn === h && (
-                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}>
+                              <span className="text-blue-600" aria-label={sortDirection === 'asc' ? t('transactions.table.sortAsc') : t('transactions.table.sortDesc')}>
                                 {sortDirection === 'asc' ? '↑' : '↓'}
                               </span>
                             )}
@@ -1342,7 +1333,7 @@ const AccountBalanceTable: React.FC = () => {
                         onResizeStart={handleColResizeStart}
                         className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                       >
-                        Supprimer
+                        {t('transactions.table.deleteColumn')}
                       </ResizableTableHeadCell>
                     )}
                   </tr>
@@ -1407,7 +1398,7 @@ const AccountBalanceTable: React.FC = () => {
                               onClick={() => handleToggleRowDelete(dataRowIndex)}
                               className="rounded border border-red-600 bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700"
                             >
-                              {markedForDelete ? 'Annuler suppression' : 'Supprimer la ligne'}
+                              {markedForDelete ? t('transactions.table.undoDelete') : t('transactions.table.deleteRow')}
                             </button>
                           </td>
                         )}
@@ -1427,9 +1418,9 @@ const AccountBalanceTable: React.FC = () => {
                               type="text"
                               value={draft[col] ?? ''}
                               onChange={(e) => handleNewRowDraftChange(draftIndex, col, e.target.value)}
-                              placeholder="Nouvelle ligne…"
+                              placeholder={t('accountBalance.newRow.placeholder')}
                               className="w-full rounded border border-dashed border-gray-400 px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                              aria-label={col === 'date' ? 'Nouvelle ligne — date' : `Nouvelle ligne — ${columnLabel(col)}`}
+                              aria-label={col === 'date' ? t('accountBalance.newRow.ariaDate') : t('accountBalance.newRow.ariaCol', { column: columnLabel(col) })}
                             />
                           </td>
                         ))}
@@ -1439,9 +1430,9 @@ const AccountBalanceTable: React.FC = () => {
                               type="button"
                               onClick={handleAddNewDraftRow}
                               className="rounded border border-blue-600 bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700"
-                              title="Ajouter une nouvelle ligne vide en dessous"
+                              title={t('accountBalance.newRow.addTitle')}
                             >
-                              Ajouter Nouvelle ligne
+                              {t('accountBalance.newRow.add')}
                             </button>
                           ) : null}
                         </td>
@@ -1451,15 +1442,15 @@ const AccountBalanceTable: React.FC = () => {
               </table>
             </div>
             <div className="shrink-0 px-3 py-2 border-t border-gray-200 bg-gray-50 text-gray-500 text-xs">
-              {displayRows.length} ligne{displayRows.length !== 1 ? 's' : ''}
+              {t('transactions.table.footerRows', { count: displayRows.length })}
               {editMode && editShowAnomaliesOnly
-                ? ` (anomalies uniquement, ${sortedRows.length} après tri/filtre)`
+                ? t('transactions.table.footerAnomaliesOnly', { sorted: sortedRows.length })
                 : filterText
-                  ? ` (filtré sur ${rows.length} au total)`
+                  ? t('transactions.table.footerFiltered', { total: rows.length })
                   : ''}
               {editMode && newRowDrafts.length > 0 && (
                 <span className="ml-1">
-                  — {newRowDrafts.length} ligne{newRowDrafts.length !== 1 ? 's' : ''} de saisie en bas du tableau
+                  {t('accountBalance.newRow.draftCount', { count: newRowDrafts.length })}
                 </span>
               )}
             </div>
@@ -1479,10 +1470,10 @@ const AccountBalanceTable: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="account-balance-empty-import-title" className="text-lg font-semibold text-gray-900">
-              Vider le dossier d&apos;import ?
+              {t('accountBalance.importWizard.emptyConfirmTitle')}
             </h2>
             <p className="text-sm text-gray-600">
-              Tous les fichiers du dossier Import (soldes des comptes) seront déplacés vers la corbeille du système. Vous pourrez les restaurer depuis la corbeille si besoin.
+              {t('accountBalance.importWizard.emptyConfirmBody')}
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -1490,14 +1481,14 @@ const AccountBalanceTable: React.FC = () => {
                 onClick={() => setEmptyAbImportConfirmOpen(false)}
                 className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
-                Annuler
+                {t('transactions.cancel')}
               </button>
               <button
                 type="button"
                 onClick={() => void handleConfirmEmptyAbImport()}
                 className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
               >
-                Confirmer
+                {t('transactions.confirm')}
               </button>
             </div>
           </div>
@@ -1516,10 +1507,10 @@ const AccountBalanceTable: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="account-balance-edit-exit-title" className="text-lg font-semibold text-gray-900">
-              Quitter sans sauvegarder ?
+              {t('transactions.edit.exitConfirmTitle')}
             </h2>
             <p className="text-sm text-gray-600">
-              Les modifications non enregistrées seront perdues.
+              {t('transactions.edit.exitConfirmBody')}
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -1527,14 +1518,14 @@ const AccountBalanceTable: React.FC = () => {
                 onClick={() => setEditExitConfirmOpen(false)}
                 className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
-                Retour
+                {t('transactions.edit.exitConfirmBack')}
               </button>
               <button
                 type="button"
                 onClick={performExitEditMode}
                 className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
               >
-                Quitter
+                {t('transactions.edit.exitConfirmLeave')}
               </button>
             </div>
           </div>

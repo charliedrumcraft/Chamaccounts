@@ -13,12 +13,14 @@ import {
   endOfYear,
   addYears,
 } from 'date-fns';
-import { fr } from 'date-fns/locale';
+import { enUS, fr } from 'date-fns/locale';
+import type { Locale } from 'date-fns';
+import { useTranslation } from 'react-i18next';
 
-const safeFormat = (ts: number, fmt: string): string => {
+const safeFormat = (ts: number, fmt: string, locale: Locale): string => {
   const d = new Date(ts);
   if (!isValid(d)) return '';
-  return format(d, fmt, { locale: fr });
+  return format(d, fmt, { locale });
 };
 
 interface DateRangeSliderProps {
@@ -99,8 +101,14 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
   onSyncChange,
   fullYearsMode = false,
   onFullYearsModeChange,
-  fullYearsLabel = 'Années complètes (1er janv. – 31 déc.)',
+  fullYearsLabel,
 }) => {
+  const { t, i18n } = useTranslation();
+  const dateLocale = i18n.language === 'fr' ? fr : enUS;
+  /** Ref : les handlers noUiSlider (effets) lisent toujours la locale courante sans recréer le slider. */
+  const dateLocaleRef = useRef(dateLocale);
+  dateLocaleRef.current = dateLocale;
+  const resolvedFullYearsLabel = fullYearsLabel ?? t('dashboard.dateRange.fullYears');
   const sliderRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -271,7 +279,7 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
           : fullYearsMode
             ? endOfYear(new Date(ts))
             : endOfMonth(new Date(ts));
-      const text = safeFormat(dateForLabel.getTime(), 'd MMM yyyy');
+      const text = safeFormat(dateForLabel.getTime(), 'd MMM yyyy', dateLocaleRef.current);
       if (text) setCursorLabel({ which, text });
     });
 
@@ -287,7 +295,7 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
           : fullYearsMode
             ? endOfYear(new Date(ts))
             : endOfMonth(new Date(ts));
-      const text = safeFormat(dateForLabel.getTime(), 'd MMM yyyy');
+      const text = safeFormat(dateForLabel.getTime(), 'd MMM yyyy', dateLocaleRef.current);
       if (!text) return;
       setCursorLabel((prev) => {
         if (prev?.which === which && prev?.text === text) return prev;
@@ -364,20 +372,20 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
                     onChange={(e) => onFullYearsModeChange(e.target.checked)}
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
                   />
-                  <span className="min-w-0">{fullYearsLabel}</span>
+                  <span className="min-w-0">{resolvedFullYearsLabel}</span>
                 </label>
                 {fullYearsMode && (
                   <div
                     className="flex shrink-0 items-center gap-0.5"
                     role="group"
-                    aria-label="Décaler la plage d’une année"
+                    aria-label={t('dashboard.dateRange.shiftYearGroup')}
                   >
                     <button
                       type="button"
                       onClick={() => shiftFullYearRange(-1)}
                       disabled={!canShiftFullYearBack}
                       className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 bg-gray-50 text-base font-semibold leading-none text-gray-700 shadow-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-                      aria-label="Année précédente"
+                      aria-label={t('dashboard.dateRange.previousYear')}
                     >
                       -
                     </button>
@@ -386,7 +394,7 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
                       onClick={() => shiftFullYearRange(1)}
                       disabled={!canShiftFullYearForward}
                       className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 bg-gray-50 text-base font-semibold leading-none text-gray-700 shadow-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-                      aria-label="Année suivante"
+                      aria-label={t('dashboard.dateRange.nextYear')}
                     >
                       +
                     </button>
@@ -416,14 +424,14 @@ const DateRangeSlider: React.FC<DateRangeSliderProps> = ({
           <span className="text-sm text-gray-600 dark:text-gray-400 font-medium">
             {cursorLabel?.which === 'start'
               ? cursorLabel.text
-              : safeFormat((controlledStartDate ?? minDate).getTime(), 'd MMM yyyy')}
+              : safeFormat((controlledStartDate ?? minDate).getTime(), 'd MMM yyyy', dateLocale)}
           </span>
           <span className="text-sm text-gray-600 dark:text-gray-400 font-medium">
             {cursorLabel?.which === 'end'
               ? cursorLabel.text
               : controlledEndDate
-                ? safeFormat(controlledEndDate.getTime(), 'd MMM yyyy')
-                : safeFormat(maxDate.getTime(), 'd MMM yyyy')}
+                ? safeFormat(controlledEndDate.getTime(), 'd MMM yyyy', dateLocale)
+                : safeFormat(maxDate.getTime(), 'd MMM yyyy', dateLocale)}
           </span>
         </div>
       </div>

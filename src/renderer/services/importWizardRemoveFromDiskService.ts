@@ -5,6 +5,7 @@ import {
   removeOriginalLineIndicesFromContent,
   type ImportWizardRemovableRow,
 } from '@/shared/importWizardRemoveImportedLines';
+import i18n from '../i18n';
 
 type FileApi = {
   readFile: (path: string) => Promise<{ success: boolean; data?: string; error?: string }>;
@@ -55,7 +56,7 @@ export async function removeImportedRowsFromImportFolder(params: {
     if (!read.success || read.data === undefined) {
       return {
         success: false,
-        error: read.error ?? `Impossible de lire ${safeName} dans le dossier Import.`,
+        error: read.error ?? i18n.t('system.importRemove.readFailed', { name: safeName }),
         removedLineCount,
         updatedFiles,
         deletedFiles,
@@ -73,7 +74,7 @@ export async function removeImportedRowsFromImportFolder(params: {
       if (!del.success) {
         return {
           success: false,
-          error: del.error ?? `Impossible de supprimer ${safeName}.`,
+          error: del.error ?? i18n.t('system.importRemove.deleteFailed', { name: safeName }),
           removedLineCount,
           updatedFiles,
           deletedFiles,
@@ -85,7 +86,7 @@ export async function removeImportedRowsFromImportFolder(params: {
       if (!write.success) {
         return {
           success: false,
-          error: write.error ?? `Impossible de mettre à jour ${safeName}.`,
+          error: write.error ?? i18n.t('system.importRemove.updateFailed', { name: safeName }),
           removedLineCount,
           updatedFiles,
           deletedFiles,

@@ -6,18 +6,27 @@ export function getUiMessageTone(message: string): UiMessageTone {
   const m = message.toLowerCase();
   if (
     m.includes('erreur') ||
+    m.includes('error') ||
+    m.includes('failed') ||
     m.includes('introuvable') ||
     m.includes('refus') ||
-    m.includes('impossible')
+    m.includes('impossible') ||
+    m.includes('could not') ||
+    m.includes('not found') ||
+    m.includes('unavailable')
   ) {
     return 'error';
   }
   if (
     m.includes('anomalie') ||
+    m.includes('anomal') ||
     m.includes('aucun fichier') ||
     m.includes('aucune ligne') ||
     m.includes('ignorée') ||
-    m.includes('non fusionnée')
+    m.includes('ignored') ||
+    m.includes('non fusionnée') ||
+    m.includes('no file') ||
+    m.includes('no row')
   ) {
     return 'warning';
   }
@@ -29,7 +38,12 @@ export function getUiMessageTone(message: string): UiMessageTone {
     m.includes('mis à jour') ||
     m.includes('archivé') ||
     m.includes('corbeille') ||
-    m.includes('déplacé')
+    m.includes('déplacé') ||
+    m.includes('latest') ||
+    m.includes('saved') ||
+    m.includes('enregistr') ||
+    m.includes('complete') ||
+    m.includes('terminé')
   ) {
     return 'success';
   }

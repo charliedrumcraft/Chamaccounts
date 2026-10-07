@@ -47,6 +47,76 @@ contextBridge.exposeInMainWorld('electronAPI', {
       TYPE: string;
     }>
   ) => ipcRenderer.invoke('append-forced-transaction-rows', rows),
+  transactionsGetAll: () => ipcRenderer.invoke('transactions-get-all'),
+  transactionsReplaceAll: (rows: Record<string, string>[]) =>
+    ipcRenderer.invoke('transactions-replace-all', rows),
+  transactionsGetMonthKeys: () => ipcRenderer.invoke('transactions-get-month-keys'),
+  transactionsAggregateRange: (payload: { startMs: number; endMs: number }) =>
+    ipcRenderer.invoke('transactions-aggregate-range', payload),
+  transactionsAggregateYearly: () => ipcRenderer.invoke('transactions-aggregate-yearly'),
+  transactionsGetByMonth: (monthKey: string) =>
+    ipcRenderer.invoke('transactions-get-by-month', monthKey),
+  transactionsGetMonthlyTotals: () => ipcRenderer.invoke('transactions-get-monthly-totals'),
+  transactionsQueryTableRows: (query: {
+    startMs: number;
+    endMs: number;
+    showEntrées?: boolean;
+    showSorties?: boolean;
+    titleContains?: string[];
+    typeContains?: string[];
+    accountContains?: string[];
+  }) => ipcRenderer.invoke('transactions-query-table-rows', query),
+  transactionsGetSuggestValues: () => ipcRenderer.invoke('transactions-get-suggest-values'),
+  transactionsAggregateAnnualBudgetYear: (year: number) =>
+    ipcRenderer.invoke('transactions-aggregate-annual-budget-year', year),
+  transactionsRefreshGbpRates: (rates: { eurToGbp: number; chfToGbp: number }) =>
+    ipcRenderer.invoke('transactions-refresh-gbp-rates', rates),
+  transactionsRefreshPrimaryRates: (rates: {
+    primary: string;
+    ratesToPrimary: Record<string, number>;
+  }) => ipcRenderer.invoke('transactions-refresh-primary-rates', rates),
+  workingCurrenciesGet: () => ipcRenderer.invoke('working-currencies-get'),
+  workingCurrenciesSave: (payload: {
+    primary: string;
+    secondaries?: Array<string | '' | null | undefined>;
+  }) => ipcRenderer.invoke('working-currencies-save', payload),
+  workingCurrenciesUsedInData: () => ipcRenderer.invoke('working-currencies-used-in-data'),
+  transactionsMergeMonthEdit: (payload: {
+    monthKey: string;
+    rows: Record<string, string>[];
+  }) => ipcRenderer.invoke('transactions-merge-month-edit', payload),
+  transactionsGetRowSignatures: (payload?: {
+    accountEntries?: Array<{ name: string; aliases?: string[] }>;
+  }) => ipcRenderer.invoke('transactions-get-row-signatures', payload),
+  transactionsGetAnomalyExceptions: () =>
+    ipcRenderer.invoke('transactions-get-anomaly-exceptions'),
+  transactionsClearAnomalyException: (idx: number) =>
+    ipcRenderer.invoke('transactions-clear-anomaly-exception', idx),
+  transactionsDetectAnomalies: (payload: {
+    recognisedAccountLabels: string[];
+    recognisedEntryTypes: string[];
+    recognisedOutputTypes: string[];
+    writeReport?: boolean;
+  }) => ipcRenderer.invoke('transactions-detect-anomalies', payload),
+  supportGetAll: () => ipcRenderer.invoke('support-get-all'),
+  supportReplaceAll: (rows: Record<string, string>[]) =>
+    ipcRenderer.invoke('support-replace-all', rows),
+  accountBalanceGetAll: () => ipcRenderer.invoke('account-balance-get-all'),
+  accountBalanceGetMonthlyChart: () => ipcRenderer.invoke('account-balance-get-monthly-chart'),
+  accountBalanceNearestRow: (targetMs: number) =>
+    ipcRenderer.invoke('account-balance-nearest-row', targetMs),
+  accountBalanceGetMirrorHeaders: () => ipcRenderer.invoke('account-balance-get-mirror-headers'),
+  accountBalanceDetectAnomalies: (payload: {
+    activeAccounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>;
+    writeReport?: boolean;
+  }) => ipcRenderer.invoke('account-balance-detect-anomalies', payload),
+  accountBalanceReplaceAll: (payload: {
+    rows: Array<{ dateMs: number; balances: Record<string, number> }>;
+    accounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>;
+  }) => ipcRenderer.invoke('account-balance-replace-all', payload),
+  accountBalanceRewriteColumns: (
+    accounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>
+  ) => ipcRenderer.invoke('account-balance-rewrite-columns', accounts),
   getLastImportReportPath: () =>
     ipcRenderer.invoke('get-last-import-report-path'),
   openImportReport: () =>
@@ -78,6 +148,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportDataFolderZip: () => ipcRenderer.invoke('export-data-folder-zip'),
   importDataFolderZip: () => ipcRenderer.invoke('import-data-folder-zip'),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  setUiLocale: (locale: 'fr' | 'en') => ipcRenderer.invoke('set-ui-locale', locale),
+  getUiLocale: () => ipcRenderer.invoke('get-ui-locale'),
   checkForAppUpdate: () => ipcRenderer.invoke('check-for-app-update'),
   downloadAppUpdate: () => ipcRenderer.invoke('download-app-update'),
   openGithubReleases: () => ipcRenderer.invoke('open-github-releases'),
@@ -161,6 +233,125 @@ export interface ElectronAPI {
       TYPE: string;
     }>
   ) => Promise<{ success: boolean; error?: string; appendedCount: number }>;
+  transactionsGetAll: () => Promise<{
+    success: boolean;
+    data?: { headers: string[]; rows: Record<string, string>[] } | null;
+    error?: string;
+  }>;
+  transactionsReplaceAll: (
+    rows: Record<string, string>[]
+  ) => Promise<{ success: boolean; error?: string; count: number }>;
+  transactionsGetMonthKeys: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  transactionsAggregateRange: (payload: {
+    startMs: number;
+    endMs: number;
+  }) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  transactionsAggregateYearly: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  transactionsGetByMonth: (
+    monthKey: string
+  ) => Promise<{ success: boolean; data?: { headers: string[]; rows: Record<string, string>[] } | null; error?: string }>;
+  transactionsGetMonthlyTotals: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  transactionsQueryTableRows: (query: {
+    startMs: number;
+    endMs: number;
+    showEntrées?: boolean;
+    showSorties?: boolean;
+    titleContains?: string[];
+    typeContains?: string[];
+    accountContains?: string[];
+  }) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  transactionsGetSuggestValues: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  transactionsAggregateAnnualBudgetYear: (
+    year: number
+  ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  transactionsRefreshGbpRates: (rates: {
+    eurToGbp: number;
+    chfToGbp: number;
+  }) => Promise<{ success: boolean; error?: string; rowCount: number; updatedCount: number }>;
+  transactionsRefreshPrimaryRates: (rates: {
+    primary: string;
+    ratesToPrimary: Record<string, number>;
+  }) => Promise<{ success: boolean; error?: string; rowCount: number; updatedCount: number }>;
+  workingCurrenciesGet: () => Promise<{
+    success: boolean;
+    data?: {
+      config: import('../shared/workingCurrencies').WorkingCurrenciesConfig;
+      configured: boolean;
+      codes: string[];
+      transactionCount: number;
+    } | null;
+    error?: string;
+  }>;
+  workingCurrenciesSave: (payload: {
+    primary: string;
+    secondaries?: Array<string | '' | null | undefined>;
+  }) => Promise<{
+    success: boolean;
+    data?: {
+      config: import('../shared/workingCurrencies').WorkingCurrenciesConfig;
+      configured: boolean;
+      codes: string[];
+    } | null;
+    error?: string;
+  }>;
+  workingCurrenciesUsedInData: () => Promise<{
+    success: boolean;
+    data?: string[];
+    error?: string;
+  }>;
+  transactionsMergeMonthEdit: (payload: {
+    monthKey: string;
+    rows: Record<string, string>[];
+  }) => Promise<{ success: boolean; error?: string; count: number }>;
+  transactionsGetRowSignatures: (payload?: {
+    accountEntries?: Array<{ name: string; aliases?: string[] }>;
+  }) => Promise<{ success: boolean; data?: string[] | null; error?: string }>;
+  transactionsGetAnomalyExceptions: () => Promise<{
+    success: boolean;
+    data?: { headers: string[]; rows: Record<string, string>[]; rowIndicesInSource?: number[] } | null;
+    error?: string;
+  }>;
+  transactionsClearAnomalyException: (
+    idx: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  transactionsDetectAnomalies: (payload: {
+    recognisedAccountLabels: string[];
+    recognisedEntryTypes: string[];
+    recognisedOutputTypes: string[];
+    writeReport?: boolean;
+  }) => Promise<{ success: boolean; data?: unknown; error?: string }>;  supportGetAll: () => Promise<{
+    success: boolean;
+    data?: { headers: string[]; rows: Record<string, string>[] } | null;
+    error?: string;
+  }>;
+  supportReplaceAll: (
+    rows: Record<string, string>[]
+  ) => Promise<{ success: boolean; error?: string; count: number }>;
+  accountBalanceGetAll: () => Promise<{
+    success: boolean;
+    data?: Array<{ dateMs: number; balances: Record<string, number> }> | null;
+    error?: string;
+  }>;
+  accountBalanceGetMonthlyChart: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  accountBalanceNearestRow: (
+    targetMs: number
+  ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  accountBalanceGetMirrorHeaders: () => Promise<{
+    success: boolean;
+    data?: string[] | null;
+    error?: string;
+  }>;
+  accountBalanceDetectAnomalies: (payload: {
+    activeAccounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>;
+    writeReport?: boolean;
+  }) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  accountBalanceReplaceAll: (payload: {
+    rows: Array<{ dateMs: number; balances: Record<string, number> }>;
+    accounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>;
+  }) => Promise<{ success: boolean; error?: string; count: number }>;
+  accountBalanceRewriteColumns: (
+    accounts: Array<{ name: string; currency: 'EUR' | 'GBP' | 'CHF' }>
+  ) => Promise<{ success: boolean; error?: string }>;
   getLastImportReportPath: () =>
     Promise<{ success: boolean; path?: string | null; error?: string }>;
   openImportReport: () =>
@@ -200,6 +391,8 @@ export interface ElectronAPI {
     appStateSnapshotFound?: boolean;
   }>;
   getAppVersion: () => Promise<string>;
+  setUiLocale: (locale: 'fr' | 'en') => Promise<{ success: boolean; locale?: 'fr' | 'en'; error?: string }>;
+  getUiLocale: () => Promise<{ success: boolean; locale?: 'fr' | 'en' }>;
   checkForAppUpdate: () => Promise<{
     success: boolean;
     currentVersion: string;

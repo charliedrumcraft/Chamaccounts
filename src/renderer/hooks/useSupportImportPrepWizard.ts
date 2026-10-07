@@ -1,4 +1,6 @@
 import { useState, useMemo, useCallback, type SetStateAction } from 'react';
+import { useTranslation } from 'react-i18next';
+import { translateImportPrepMessage } from '../i18n/translateImportPrepMessage';
 import {
   buildImportWizardModelFromClipboardText,
   mergeImportWizardModels,
@@ -20,6 +22,7 @@ export function useSupportImportPrepWizard(options: {
   onImportLines: (drafts: SupportImportDraft[]) => Promise<{ success: boolean; error?: string; appendedCount?: number }>;
 }) {
   const { onImportLines } = options;
+  const { t } = useTranslation();
 
   const [model, setModel] = useState<ImportWizardModel | null>(null);
   const [mappingWizardActive, setMappingWizardActive] = useState(false);
@@ -67,11 +70,11 @@ export function useSupportImportPrepWizard(options: {
 
     for (const row of model.rows) {
       const display = mappedPreviewByRowId.get(row.id)?.display ?? {};
-      const msgs = validateSupportImportDisplay(display);
+      const msgs = validateSupportImportDisplay(display).map((m) => translateImportPrepMessage(m, t));
       map.set(row.id, { messages: msgs, showDanger: msgs.length > 0 });
     }
     return map;
-  }, [model, mappingWizardActive, mappedPreviewByRowId]);
+  }, [model, mappingWizardActive, mappedPreviewByRowId, t]);
 
   const anomalousRowIds = useMemo(() => {
     if (!mappingWizardActive || !model?.rows.length) return [] as string[];
@@ -205,7 +208,7 @@ export function useSupportImportPrepWizard(options: {
     (raw: string, parseOptions?: ImportWizardParseOptions) => {
       const pasted = buildImportWizardModelFromClipboardText(raw, parseOptions);
       if (!pasted?.rows.length) {
-        setImportWizardMessage('Collage vide ou aucune ligne de données exploitable.');
+        setImportWizardMessage(t('transactions.importPrep.pasteEmpty'));
         return;
       }
       setModel((prev) => (prev ? mergeImportWizardModels(prev, pasted) : pasted));
@@ -213,10 +216,12 @@ export function useSupportImportPrepWizard(options: {
       setRawCellOverrides({});
       setMappedCellOverrides({});
       setImportRowSkip(new Set());
-      const src = pasted.rows[0]?.sourceFile ?? 'presse-papiers';
-      setImportWizardMessage(`${pasted.rows.length} ligne(s) ajoutée(s) depuis le presse-papiers (${src}).`);
+      const src = pasted.rows[0]?.sourceFile ?? t('transactions.importPrep.clipboardSource');
+      setImportWizardMessage(
+        t('transactions.importPrep.pasteAdded', { count: pasted.rows.length, source: src })
+      );
     },
-    []
+    [t]
   );
 
   const clearWizardBatch = useCallback(() => {
@@ -226,18 +231,16 @@ export function useSupportImportPrepWizard(options: {
     setMappedCellOverrides({});
     setImportRowSkip(new Set());
     setMappingWizardActive(false);
-    setImportWizardMessage('Lot d’import vidé.');
-  }, []);
+    setImportWizardMessage(t('support.importPrep.batchCleared'));
+  }, [t]);
 
   const handleImportLinesToSupport = useCallback(async () => {
     if (!mappingWizardActive) {
-      setImportWizardMessage(
-        'Activez le mapping wizard pour préparer et importer les lignes vers Support_data.csv.'
-      );
+      setImportWizardMessage(t('support.importPrep.enableMappingFirst'));
       return;
     }
     if (!model?.rows.length) {
-      setImportWizardMessage('Aucune ligne à importer.');
+      setImportWizardMessage(t('transactions.importPrep.noRowsToImport'));
       return;
     }
 
@@ -250,9 +253,7 @@ export function useSupportImportPrepWizard(options: {
     }
 
     if (drafts.length === 0) {
-      setImportWizardMessage(
-        'Aucune ligne valide à ajouter (vérifiez les alertes ou les lignes ignorées).'
-      );
+      setImportWizardMessage(t('support.importPrep.noValidRows'));
       return;
     }
 
@@ -268,15 +269,15 @@ export function useSupportImportPrepWizard(options: {
         setImportRowSkip(new Set());
         setMappingWizardActive(false);
         setImportWizardMessage(
-          `${result.appendedCount ?? drafts.length} ligne(s) ajoutée(s) à Support_data.csv.`
+          t('support.importPrep.appended', { count: result.appendedCount ?? drafts.length })
         );
       } else {
-        setImportWizardMessage(result.error ?? 'Erreur lors de l’import.');
+        setImportWizardMessage(result.error ?? t('transactions.importPrep.importFailed'));
       }
     } finally {
       setImportLinesLoading(false);
     }
-  }, [mappingWizardActive, model, importRowSkip, mappedPreviewByRowId, onImportLines]);
+  }, [mappingWizardActive, model, importRowSkip, mappedPreviewByRowId, onImportLines, t]);
 
   return {
     supportImportWizardModel: model,

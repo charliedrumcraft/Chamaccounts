@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { formatCurrency } from '../../utils/format';
 import type { MovementsMonthlyChartData } from './MovementsMonthlyChart';
 
@@ -31,6 +32,7 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
   currency = '£',
   hiddenSeriesByLabel = {},
 }) => {
+  const { t } = useTranslation();
   const [hoverBalance, setHoverBalance] = useState<boolean>(false);
   const [hoverSegment, setHoverSegment] = useState<{ label: string; value: number; isSortie: boolean } | null>(null);
 
@@ -61,10 +63,10 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
 
     let totalEntrées = Object.values(entréesByType).reduce((a, b) => a + b, 0);
     let totalSorties = Object.values(sortiesByType).reduce((a, b) => a + b, 0);
-    if (totalEntrées === 0 && entréesByMonth.length > 0 && entréeTypes.length === 0 && !hiddenSeriesByLabel['Entrées']) {
+    if (totalEntrées === 0 && entréesByMonth.length > 0 && entréeTypes.length === 0 && !hiddenSeriesByLabel[t('dashboard.series.entries')]) {
       totalEntrées = sum(entréesByMonth);
     }
-    if (totalSorties === 0 && sortiesByMonth.length > 0 && sortieTypes.length === 0 && !hiddenSeriesByLabel['Sorties']) {
+    if (totalSorties === 0 && sortiesByMonth.length > 0 && sortieTypes.length === 0 && !hiddenSeriesByLabel[t('dashboard.series.exits')]) {
       totalSorties = sum(sortiesByMonth);
     }
 
@@ -88,8 +90,8 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
         isSortie: true,
         color: getColor(i, true),
       }));
-    const leftFinal = leftSegments.length > 0 ? leftSegments : totalEntrées > 0 ? [{ label: 'Entrées', value: totalEntrées, isSortie: false as const, color: getColor(0, false) }] : [];
-    const rightFinal = rightSegments.length > 0 ? rightSegments : totalSorties > 0 ? [{ label: 'Sorties', value: totalSorties, isSortie: true as const, color: getColor(0, true) }] : [];
+    const leftFinal = leftSegments.length > 0 ? leftSegments : totalEntrées > 0 ? [{ label: t('dashboard.series.entries'), value: totalEntrées, isSortie: false as const, color: getColor(0, false) }] : [];
+    const rightFinal = rightSegments.length > 0 ? rightSegments : totalSorties > 0 ? [{ label: t('dashboard.series.exits'), value: totalSorties, isSortie: true as const, color: getColor(0, true) }] : [];
 
     return {
       totalEntrées,
@@ -98,7 +100,7 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
       leftSegments: leftFinal,
       rightSegments: rightFinal,
     };
-  }, [data, hiddenSeriesByLabel]);
+  }, [data, hiddenSeriesByLabel, t]);
 
   if (!aggregated) return null;
   const { totalEntrées, totalSorties, balance, leftSegments, rightSegments } = aggregated;
@@ -111,7 +113,7 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
   const tooltipContent = hoverSegment
     ? `${hoverSegment.label}: ${formatCurrency(hoverSegment.isSortie ? -hoverSegment.value : hoverSegment.value, currency)}`
     : hoverBalance
-      ? `Balance: ${formatCurrency(balance, currency)}`
+      ? `${t('dashboard.series.balance')}: ${formatCurrency(balance, currency)}`
       : null;
 
   return (
@@ -197,7 +199,7 @@ const MovementsBalanceHorizontalBar: React.FC<MovementsBalanceHorizontalBarProps
             borderLeftWidth: CENTER_LINE_WIDTH,
             borderLeftStyle: 'dashed',
           }}
-          title={`Balance: ${formatCurrency(balance, currency)}`}
+          title={`${t('dashboard.series.balance')}: ${formatCurrency(balance, currency)}`}
           onMouseEnter={() => setHoverBalance(true)}
           onMouseLeave={() => setHoverBalance(false)}
         />

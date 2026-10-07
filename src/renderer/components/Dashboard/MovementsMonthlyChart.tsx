@@ -1,6 +1,7 @@
 import React, { useRef, useMemo, useEffect, useState } from 'react';
 import { Chart as ChartJS, ChartOptions, registerables } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
+import { useTranslation } from 'react-i18next';
 import { formatCurrency } from '../../utils/format';
 
 type MixedDataset = {
@@ -74,6 +75,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
   hiddenSeriesByLabel = {},
   onLegendVisibilityChange,
 }) => {
+  const { t } = useTranslation();
   const chartRef = useRef<ChartJS<'bar'>>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [isDarkMode, setIsDarkMode] = useState(() =>
@@ -128,7 +130,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
       });
     } else {
       barDatasets.push({
-        label: 'Sorties',
+        label: t('dashboard.series.exits'),
         data: sortiesByMonth.map((v) => -v),
         backgroundColor: 'rgba(239, 68, 68, 0.8)',
         borderColor: 'rgba(185, 28, 28, 0.9)',
@@ -136,7 +138,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
         type: 'bar',
         order: 2,
         stack: 'month',
-        hidden: hiddenSeriesByLabel['Sorties'] ?? false,
+        hidden: hiddenSeriesByLabel[t('dashboard.series.exits')] ?? false,
       });
     }
 
@@ -159,7 +161,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
       });
     } else {
       barDatasets.push({
-        label: 'Entrées',
+        label: t('dashboard.series.entries'),
         data: entréesByMonth,
         backgroundColor: 'rgba(34, 197, 94, 0.8)',
         borderColor: 'rgba(22, 163, 74, 0.9)',
@@ -167,7 +169,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
         type: 'bar',
         order: 2,
         stack: 'month',
-        hidden: hiddenSeriesByLabel['Entrées'] ?? false,
+        hidden: hiddenSeriesByLabel[t('dashboard.series.entries')] ?? false,
       });
     }
 
@@ -193,7 +195,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
     }
 
     const lineBalance: MixedDataset = {
-      label: 'Balance',
+      label: t('dashboard.series.balance'),
       data: visibleBalanceByMonth,
       type: 'line',
       yAxisID: 'yLines',
@@ -226,7 +228,7 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
       datasets: [...barDatasets, lineBalance],
       initialLimits,
     };
-  }, [data, isDarkMode, hiddenSeriesByLabel]);
+  }, [data, isDarkMode, hiddenSeriesByLabel, t]);
 
   const options: ChartOptions<'bar'> = useMemo(
     () => ({
@@ -287,10 +289,10 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
               const balanceColor = balance >= 0 ? '#16a34a' : '#dc2626';
               el.innerHTML = [
                 `<div style="font-weight:600;margin-bottom:6px;color:${isDarkMode ? '#e2e8f0' : '#333'}">${title}</div>`,
-                `<div style="color:#16a34a">Entrées: +${formatCurrency(entrées, currency)}</div>`,
-                `<div style="color:#dc2626">Sorties: −${formatCurrency(sorties, currency)}</div>`,
+                `<div style="color:#16a34a">${t('dashboard.series.entries')}: +${formatCurrency(entrées, currency)}</div>`,
+                `<div style="color:#dc2626">${t('dashboard.series.exits')}: −${formatCurrency(sorties, currency)}</div>`,
                 `<div style="border-top:1px solid ${isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.12)'};margin:6px 0"></div>`,
-                `<div style="color:${balanceColor}">Balance: ${balanceStr}</div>`,
+                `<div style="color:${balanceColor}">${t('dashboard.series.balance')}: ${balanceStr}</div>`,
               ].join('');
             } else {
               const lines = tooltip.dataPoints.map((p) => {
@@ -369,13 +371,13 @@ const MovementsMonthlyChart: React.FC<MovementsMonthlyChartProps> = ({
         },
       },
     }),
-    [initialLimits, isDarkMode, currency, hiddenSeriesByLabel, onLegendVisibilityChange]
+    [initialLimits, isDarkMode, currency, hiddenSeriesByLabel, onLegendVisibilityChange, t]
   );
 
   if (!data || data.months.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500 text-sm">
-        Aucune donnée mensuelle à afficher
+        {t('dashboard.charts.noMonthlyData')}
       </div>
     );
   }

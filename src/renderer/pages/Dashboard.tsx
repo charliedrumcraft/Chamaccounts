@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import AccountBalanceLineChart, {
   linearRegression,
 } from '../components/Dashboard/AccountBalanceLineChart';
@@ -7,12 +8,15 @@ import AccountBalanceStockChart from '../components/Dashboard/AccountBalanceStoc
 import DateRangeSlider from '../components/Common/DateRangeSlider';
 import { ACCOUNT_BALANCE_PROCESSED_DIR } from '@/shared/dataPaths';
 import { AccountBalanceCSVService } from '../services/AccountBalanceCSVService';
-import { SourceDataCSVService, type SourceDataResult } from '../services/SourceDataCSVService';
+import { SourceDataCSVService } from '../services/SourceDataCSVService';
+import { TRANSACTION_SOURCE_HEADERS } from '@/shared/sourceDataTypes';
+import type {
+  DashboardTableRowDto,
+  TransactionsRangeAggregate,
+  TransactionsYearlyAggregate,
+} from '@/shared/transactionQueryTypes';
 import { getAccountCurrency } from '../constants/accountCurrencies';
-import {
-  canonicalAccountFromSource,
-  accountLabelFromSource,
-} from '../constants/accountSourceLabels';
+import { accountLabelFromSource } from '../constants/accountSourceLabels';
 import {
   convertToAxisCurrency,
   convertMovementsToDisplayCurrency,
@@ -25,14 +29,11 @@ import MovementsMonthlyChart, {
 import MovementsBalanceHorizontalBar from '../components/Dashboard/MovementsBalanceHorizontalBar';
 import YearlySummaryChart from '../components/Dashboard/YearlySummaryChart';
 import { formatCurrency } from '../utils/format';
-import { eachMonthOfInterval, startOfMonth, endOfMonth, startOfYear, endOfYear, format } from 'date-fns';
-import { getSuggestions } from '../services/SuggestInputService';
-
-const Y_AXIS_CURRENCIES = [
-  { value: '£', label: 'GBP (£)' },
-  { value: '€', label: 'EUR (€)' },
-  { value: 'CHF', label: 'CHF' },
-] as const;
+import {
+  coerceDisplayCurrency,
+  displayCurrencyOptionsFromWorking,
+} from '../utils/displayCurrencyOptions';
+import { startOfMonth, endOfMonth, startOfYear, endOfYear, format } from 'date-fns';
 
 /** Préfixe id `datalist` filtres Tableaux — suffixer par l’index de ligne. */
 const TABLES_FILTER_DL_TITLE_PREFIX = 'dashboard-tables-filter-dl-title-';
@@ -64,12 +65,6 @@ function tablesFilterCriteriaFromLines(lines: string[]): string[] {
     if (t) out.push(t);
   }
   return out;
-}
-
-function cellMatchesTablesFilterCriteria(cell: string, criteria: string[]): boolean {
-  if (criteria.length === 0) return true;
-  const h = cell.toLowerCase();
-  return criteria.some((c) => h.includes(c.toLowerCase()));
 }
 
 /** Texte passé à l’autocomplete (ligne entière). */
@@ -230,37 +225,30 @@ function saveDashboardPref(key: string, value: string): void {
   } catch {}
 }
 
-/** Parse une cellule date (ISO ou JJ/MM/AAAA, JJ.MM.AAAA) en Date ou null. */
-/** Timestamps (1er du mois) présents dans les transactions. */
-function collectTransactionMonthTimestamps(sourceData: SourceDataResult | null): number[] {
-  if (!sourceData?.rows?.length || !sourceData.headers?.length) return [];
-  const headers = sourceData.headers;
-  const dateCol =
-    headers.find((h) => /^date$/i.test((h ?? '').trim())) ??
-    headers.find((h) => /^date\b/i.test((h ?? '').trim())) ??
-    headers.find((h) => /date/i.test(h)) ??
-    null;
-  if (!dateCol) return [];
-  const out = new Set<number>();
-  for (const row of sourceData.rows) {
-    const d = parseDateFromCell(row[dateCol] ?? '');
-    if (d) out.add(startOfMonth(d).getTime());
-  }
-  return Array.from(out);
-}
-
 /** Union des mois couverts par les soldes et par les transactions (pour les sliders). */
-function buildDashboardMonthDates(balanceDates: Date[], sourceData: SourceDataResult | null): Date[] {
+function buildDashboardMonthDates(balanceDates: Date[], transactionMonthStartsMs: number[]): Date[] {
   const tsSet = new Set<number>();
   for (const d of balanceDates) {
     tsSet.add(startOfMonth(d).getTime());
   }
-  for (const ts of collectTransactionMonthTimestamps(sourceData)) {
-    tsSet.add(ts);
+  for (const ts of transactionMonthStartsMs) {
+    if (Number.isFinite(ts)) tsSet.add(ts);
   }
   return Array.from(tsSet)
     .sort((a, b) => a - b)
     .map((ts) => new Date(ts));
+}
+
+function suggestFromValues(
+  values: string[],
+  prefix: string,
+  limit = 10
+): { value: string; count: number }[] {
+  const p = prefix.trim().toLowerCase();
+  const items = values
+    .filter((v) => !p || v.toLowerCase().startsWith(p))
+    .map((value) => ({ value, count: 1 }));
+  return items.slice(0, limit);
 }
 
 function clampDashboardRange(range: [number, number], length: number): [number, number] {
@@ -285,42 +273,6 @@ function loadSavedDashboardRange(key: string, length: number): [number, number] 
   );
   if (!saved) return null;
   return clampDashboardRange(saved, length);
-}
-
-function parseDateFromCell(raw: string): Date | null {
-  const s = (raw ?? '').trim();
-  if (!s) return null;
-  const iso = /^(\d{4})-(\d{2})-(\d{2})/;
-  const dmy = /^(\d{1,2})[./](\d{1,2})[./](\d{4}|\d{2})/;
-  const mi = s.match(iso);
-  if (mi) {
-    const y = parseInt(mi[1], 10);
-    const m = parseInt(mi[2], 10);
-    const d = parseInt(mi[3], 10);
-    const date = new Date(y, m - 1, d);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  const md = s.match(dmy);
-  if (md) {
-    const d = parseInt(md[1], 10);
-    const m = parseInt(md[2], 10);
-    const yy =
-      md[3].length === 2
-        ? parseInt(md[3], 10) < 50
-          ? 2000 + parseInt(md[3], 10)
-          : 1900 + parseInt(md[3], 10)
-        : parseInt(md[3], 10);
-    const date = new Date(yy, m - 1, d);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  return null;
-}
-
-function parseAmountCell(raw: string): number {
-  const s = (raw ?? '').trim();
-  if (!s) return 0;
-  const n = parseFloat(s.replace(/\s/g, '').replace(',', '.'));
-  return Number.isNaN(n) ? 0 : n;
 }
 
 type DashboardTablesBlocSortDir = 'asc' | 'desc';
@@ -420,6 +372,10 @@ function buildTablesDashboardAggregatesFromRows(
 
 const Dashboard: React.FC = () => {
   const location = useLocation();
+  const { t } = useTranslation();
+  /** `t` stable pour les callbacks mémorisés (évite de relancer les chargements au changement de langue). */
+  const tRef = useRef(t);
+  tRef.current = t;
   const [accountBalanceChartData, setAccountBalanceChartData] = useState<{
     periods: string[];
     dates: Date[];
@@ -481,17 +437,22 @@ const Dashboard: React.FC = () => {
   );
   /** Devise du bloc Évolution des soldes (EffectiveExchangeRates utilisé pour la conversion). */
   const [chartYAxisCurrency, setChartYAxisCurrency] = useState<string>(() =>
-    loadDashboardPref(DASHBOARD_STORAGE_KEYS.chartYAxisCurrency, (s) => s || null, '£')
+    coerceDisplayCurrency(
+      loadDashboardPref(DASHBOARD_STORAGE_KEYS.chartYAxisCurrency, (s) => s || null, '')
+    )
   );
   /** Devise du bloc Suivi des mouvements. */
   const [movementsYAxisCurrency, setMovementsYAxisCurrency] = useState<string>(() =>
-    loadDashboardPref(DASHBOARD_STORAGE_KEYS.movementsYAxisCurrency, (s) => s || null, '£')
+    coerceDisplayCurrency(
+      loadDashboardPref(DASHBOARD_STORAGE_KEYS.movementsYAxisCurrency, (s) => s || null, '')
+    )
   );
   /** Devise du bloc Evolution comparée des mouvements. */
   const [movementsCompareYAxisCurrency, setMovementsCompareYAxisCurrency] = useState<string>(() =>
-    loadDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareYAxisCurrency, (s) => s || null, '£')
-  );
-  /** Afficher les pourcentages comparatifs dans le bloc Evolution comparée. */
+    coerceDisplayCurrency(
+      loadDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareYAxisCurrency, (s) => s || null, '')
+    )
+  );  /** Afficher les pourcentages comparatifs dans le bloc Evolution comparée. */
   const [movementsCompareShowPct, setMovementsCompareShowPct] = useState(() =>
     loadDashboardPref(DASHBOARD_STORAGE_KEYS.movementsCompareShowPct, (s) => s === 'true' || s === 'false' ? s === 'true' : null, true)
   );
@@ -537,7 +498,9 @@ const Dashboard: React.FC = () => {
     )
   );
   const [tablesYAxisCurrency, setTablesYAxisCurrency] = useState<string>(() =>
-    loadDashboardPref(DASHBOARD_STORAGE_KEYS.tablesYAxisCurrency, (s) => s || null, '£')
+    coerceDisplayCurrency(
+      loadDashboardPref(DASHBOARD_STORAGE_KEYS.tablesYAxisCurrency, (s) => s || null, '')
+    )
   );
   const [tablesTransactionsMaxHeight, setTablesTransactionsMaxHeight] = useState(() =>
     loadDashboardPref(DASHBOARD_STORAGE_KEYS.tablesTransactionsMaxHeight, (s) => {
@@ -589,7 +552,9 @@ const Dashboard: React.FC = () => {
   );
   /** Devise du bloc Suivi annuel. */
   const [vueGlobaleYAxisCurrency, setVueGlobaleYAxisCurrency] = useState<string>(() =>
-    loadDashboardPref(DASHBOARD_STORAGE_KEYS.vueGlobaleYAxisCurrency, (s) => s || null, '£')
+    coerceDisplayCurrency(
+      loadDashboardPref(DASHBOARD_STORAGE_KEYS.vueGlobaleYAxisCurrency, (s) => s || null, '')
+    )
   );
   /** Hauteur (px) du graphique dans le bloc Suivi annuel. */
   const [vueGlobaleChartHeightPx, setVueGlobaleChartHeightPx] = useState(() =>
@@ -759,6 +724,42 @@ const Dashboard: React.FC = () => {
     )
   );
 
+  /** Devises d’affichage = trio de travail du profil (Settings). */
+  const yAxisCurrencies = displayCurrencyOptionsFromWorking();
+  const yAxisCurrenciesKey = yAxisCurrencies.map((o) => o.value).join('|');
+
+  useEffect(() => {
+    const sync = (
+      current: string,
+      set: React.Dispatch<React.SetStateAction<string>>,
+      key: string
+    ) => {
+      const next = coerceDisplayCurrency(current);
+      if (next !== current) {
+        set(next);
+        saveDashboardPref(key, next);
+      }
+    };
+    sync(chartYAxisCurrency, setChartYAxisCurrency, DASHBOARD_STORAGE_KEYS.chartYAxisCurrency);
+    sync(
+      movementsYAxisCurrency,
+      setMovementsYAxisCurrency,
+      DASHBOARD_STORAGE_KEYS.movementsYAxisCurrency
+    );
+    sync(
+      movementsCompareYAxisCurrency,
+      setMovementsCompareYAxisCurrency,
+      DASHBOARD_STORAGE_KEYS.movementsCompareYAxisCurrency
+    );
+    sync(tablesYAxisCurrency, setTablesYAxisCurrency, DASHBOARD_STORAGE_KEYS.tablesYAxisCurrency);
+    sync(
+      vueGlobaleYAxisCurrency,
+      setVueGlobaleYAxisCurrency,
+      DASHBOARD_STORAGE_KEYS.vueGlobaleYAxisCurrency
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync when working currencies trio changes
+  }, [yAxisCurrenciesKey]);
+
   const loadChartData = useCallback(() => {
     let cancelled = false;
     setChartLoading(true);
@@ -772,7 +773,7 @@ const Dashboard: React.FC = () => {
       })
       .catch((err) => {
         if (!cancelled) {
-          setChartError(err?.message ?? 'Erreur chargement account_balance.csv');
+          setChartError(err?.message ?? tRef.current('dashboard.errors.loadAccountBalance'));
         }
       })
       .finally(() => {
@@ -789,26 +790,41 @@ const Dashboard: React.FC = () => {
     return loadChartData();
   }, [loadChartData, location.pathname]);
 
-  const [sourceData, setSourceData] = useState<SourceDataResult | null>(null);
+  const [txMonthStartsMs, setTxMonthStartsMs] = useState<number[]>([]);
+  const [movementsAgg, setMovementsAgg] = useState<TransactionsRangeAggregate | null>(null);
+  const [compareAggA, setCompareAggA] = useState<TransactionsRangeAggregate | null>(null);
+  const [compareAggB, setCompareAggB] = useState<TransactionsRangeAggregate | null>(null);
+  const [yearlyAgg, setYearlyAgg] = useState<TransactionsYearlyAggregate | null>(null);
+  const [tablesQueryRows, setTablesQueryRows] = useState<DashboardTableRowDto[] | null>(null);
+  const [suggestValues, setSuggestValues] = useState<{
+    titles: string[];
+    types: string[];
+    accounts: string[];
+  } | null>(null);
   const [movementsDataLoading, setMovementsDataLoading] = useState(true);
   const [movementsDataError, setMovementsDataError] = useState<string | null>(null);
 
-  const loadSourceData = useCallback(() => {
+  const loadDashboardMeta = useCallback(() => {
     let cancelled = false;
     setMovementsDataLoading(true);
     setMovementsDataError(null);
-    SourceDataCSVService.load()
-      .then((result) => {
-        if (!cancelled) {
-          setSourceData(result ?? null);
-          if (!result) {
-            setMovementsDataError('Aucune donnée dans src_transaction_data.csv.');
-          }
+    Promise.all([
+      SourceDataCSVService.getMonthKeys(),
+      SourceDataCSVService.aggregateYearly(),
+      SourceDataCSVService.getSuggestValues(),
+    ])
+      .then(([months, yearly, suggest]) => {
+        if (cancelled) return;
+        setTxMonthStartsMs(months?.monthStartsMs ?? []);
+        setYearlyAgg(yearly);
+        setSuggestValues(suggest);
+        if (!months?.monthStartsMs?.length && !yearly?.years?.length) {
+          setMovementsDataError(tRef.current('dashboard.errors.noTransactionData'));
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setMovementsDataError(err?.message ?? 'Erreur chargement src_transaction_data.csv');
+          setMovementsDataError(err?.message ?? tRef.current('dashboard.errors.loadAggregates'));
         }
       })
       .finally(() => {
@@ -820,12 +836,12 @@ const Dashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    return loadSourceData();
-  }, [loadSourceData, location.pathname]);
+    return loadDashboardMeta();
+  }, [loadDashboardMeta, location.pathname]);
 
   const dashboardDates = useMemo(
-    () => buildDashboardMonthDates(accountBalanceChartData?.dates ?? [], sourceData),
-    [accountBalanceChartData?.dates, sourceData]
+    () => buildDashboardMonthDates(accountBalanceChartData?.dates ?? [], txMonthStartsMs),
+    [accountBalanceChartData?.dates, txMonthStartsMs]
   );
 
   useEffect(() => {
@@ -1107,236 +1123,233 @@ const Dashboard: React.FC = () => {
   const sliderEndDate = dates[chartRange[1]] ?? maxDate;
   const chartSliderStartForUi = dateRangeSliderFullYears ? startOfYear(sliderStartDate) : sliderStartDate;
   const chartSliderEndForUi = dateRangeSliderFullYears ? endOfYear(sliderEndDate) : sliderEndDate;
-  const movementsStartDate = dateRangeSliderFullYears
-    ? startOfYear(dates[movementsRange[0]] ?? minDate)
-    : (dates[movementsRange[0]] ?? minDate);
-  const movementsEndDate = dateRangeSliderFullYears
-    ? endOfYear(dates[movementsRange[1]] ?? maxDate)
-    : endOfMonth(dates[movementsRange[1]] ?? maxDate);
-  const movementsCompareStartDateA = dateRangeSliderFullYears
-    ? startOfYear(dates[movementsCompareRangeA[0]] ?? minDate)
-    : (dates[movementsCompareRangeA[0]] ?? minDate);
-  const movementsCompareEndDateA = dateRangeSliderFullYears
-    ? endOfYear(dates[movementsCompareRangeA[1]] ?? maxDate)
-    : endOfMonth(dates[movementsCompareRangeA[1]] ?? maxDate);
-  const movementsCompareStartDateB = dateRangeSliderFullYears
-    ? startOfYear(dates[movementsCompareRangeB[0]] ?? minDate)
-    : (dates[movementsCompareRangeB[0]] ?? minDate);
-  const movementsCompareEndDateB = dateRangeSliderFullYears
-    ? endOfYear(dates[movementsCompareRangeB[1]] ?? maxDate)
-    : endOfMonth(dates[movementsCompareRangeB[1]] ?? maxDate);
-  const tablesStartDate = dateRangeSliderFullYears
-    ? startOfYear(dates[tablesRange[0]] ?? minDate)
-    : (dates[tablesRange[0]] ?? minDate);
-  const tablesEndDate = dateRangeSliderFullYears
-    ? endOfYear(dates[tablesRange[1]] ?? maxDate)
-    : endOfMonth(dates[tablesRange[1]] ?? maxDate);
+
+  /**
+   * Bornes de requête IPC : mémorisées en timestamps pour éviter que endOfMonth()/startOfYear()
+   * (nouveaux Date à chaque render) relancent/annulent en boucle les effets debouncés.
+   */
+  const movementsQueryRangeMs = useMemo(() => {
+    if (dates.length === 0) return null;
+    const lo = dates[0];
+    const hi = dates[dates.length - 1];
+    const start = dateRangeSliderFullYears
+      ? startOfYear(dates[movementsRange[0]] ?? lo)
+      : (dates[movementsRange[0]] ?? lo);
+    const end = dateRangeSliderFullYears
+      ? endOfYear(dates[movementsRange[1]] ?? hi)
+      : endOfMonth(dates[movementsRange[1]] ?? hi);
+    return { startMs: start.getTime(), endMs: end.getTime(), start, end };
+  }, [dates, movementsRange, dateRangeSliderFullYears]);
+
+  const movementsCompareQueryRangeMsA = useMemo(() => {
+    if (dates.length === 0) return null;
+    const lo = dates[0];
+    const hi = dates[dates.length - 1];
+    const start = dateRangeSliderFullYears
+      ? startOfYear(dates[movementsCompareRangeA[0]] ?? lo)
+      : (dates[movementsCompareRangeA[0]] ?? lo);
+    const end = dateRangeSliderFullYears
+      ? endOfYear(dates[movementsCompareRangeA[1]] ?? hi)
+      : endOfMonth(dates[movementsCompareRangeA[1]] ?? hi);
+    return { startMs: start.getTime(), endMs: end.getTime(), start, end };
+  }, [dates, movementsCompareRangeA, dateRangeSliderFullYears]);
+
+  const movementsCompareQueryRangeMsB = useMemo(() => {
+    if (dates.length === 0) return null;
+    const lo = dates[0];
+    const hi = dates[dates.length - 1];
+    const start = dateRangeSliderFullYears
+      ? startOfYear(dates[movementsCompareRangeB[0]] ?? lo)
+      : (dates[movementsCompareRangeB[0]] ?? lo);
+    const end = dateRangeSliderFullYears
+      ? endOfYear(dates[movementsCompareRangeB[1]] ?? hi)
+      : endOfMonth(dates[movementsCompareRangeB[1]] ?? hi);
+    return { startMs: start.getTime(), endMs: end.getTime(), start, end };
+  }, [dates, movementsCompareRangeB, dateRangeSliderFullYears]);
+
+  const tablesQueryRangeMs = useMemo(() => {
+    if (dates.length === 0) return null;
+    const lo = dates[0];
+    const hi = dates[dates.length - 1];
+    const start = dateRangeSliderFullYears
+      ? startOfYear(dates[tablesRange[0]] ?? lo)
+      : (dates[tablesRange[0]] ?? lo);
+    const end = dateRangeSliderFullYears
+      ? endOfYear(dates[tablesRange[1]] ?? hi)
+      : endOfMonth(dates[tablesRange[1]] ?? hi);
+    return { startMs: start.getTime(), endMs: end.getTime(), start, end };
+  }, [dates, tablesRange, dateRangeSliderFullYears]);
+
+  const movementsStartDate = movementsQueryRangeMs?.start ?? minDate;
+  const movementsEndDate = movementsQueryRangeMs?.end ?? maxDate;
+  const movementsCompareStartDateA = movementsCompareQueryRangeMsA?.start ?? minDate;
+  const movementsCompareEndDateA = movementsCompareQueryRangeMsA?.end ?? maxDate;
+  const movementsCompareStartDateB = movementsCompareQueryRangeMsB?.start ?? minDate;
+  const movementsCompareEndDateB = movementsCompareQueryRangeMsB?.end ?? maxDate;
+  const tablesStartDate = tablesQueryRangeMs?.start ?? minDate;
+  const tablesEndDate = tablesQueryRangeMs?.end ?? maxDate;
   const tablesSliderStartDate = tablesStartDate;
   const tablesSliderEndDate = tablesEndDate;
 
-  /** Colonnes source_data utilisées pour le tableau mouvements (AMOUNT GBP : négatif = dépense, positif = revenu) */
+  /** Colonnes source_data (schéma fixe) pour libellés / présence AMOUNT GBP. */
   const movementsColumns = useMemo(
-    () => getMovementsColumnsFromHeaders(sourceData?.headers),
-    [sourceData?.headers]
+    () => getMovementsColumnsFromHeaders([...TRANSACTION_SOURCE_HEADERS]),
+    []
   );
 
-  const tablesFilterSuggestionRows = useMemo(
-    () => (sourceData?.rows as Record<string, string>[]) ?? [],
-    [sourceData?.rows]
-  );
+  const movementsStartMs = movementsQueryRangeMs?.startMs;
+  const movementsEndMs = movementsQueryRangeMs?.endMs;
+  const compareStartMsA = movementsCompareQueryRangeMsA?.startMs;
+  const compareEndMsA = movementsCompareQueryRangeMsA?.endMs;
+  const compareStartMsB = movementsCompareQueryRangeMsB?.startMs;
+  const compareEndMsB = movementsCompareQueryRangeMsB?.endMs;
+  const tablesStartMs = tablesQueryRangeMs?.startMs;
+  const tablesEndMs = tablesQueryRangeMs?.endMs;
 
-  const tablesTitleFilterSuggestionsList = useMemo(() => {
-    const h = movementsColumns?.titleCol;
-    if (!h || tablesFilterSuggestionRows.length === 0) return tablesTitleExactQueries.map(() => []);
-    return tablesTitleExactQueries.map((q) =>
-      getSuggestions(tablesFilterSuggestionRows, h, tablesFilterSuggestPrefix(q), 10)
-    );
-  }, [tablesFilterSuggestionRows, movementsColumns?.titleCol, tablesTitleExactQueries]);
-
-  const tablesTypeFilterSuggestionsList = useMemo(() => {
-    const h = movementsColumns?.typeCol;
-    if (!h || tablesFilterSuggestionRows.length === 0) return tablesTypeExactQueries.map(() => []);
-    return tablesTypeExactQueries.map((q) =>
-      getSuggestions(tablesFilterSuggestionRows, h, tablesFilterSuggestPrefix(q), 10)
-    );
-  }, [tablesFilterSuggestionRows, movementsColumns?.typeCol, tablesTypeExactQueries]);
-
-  const tablesAccountFilterSuggestionsList = useMemo(() => {
-    const h = movementsColumns?.accountCol;
-    if (!h || tablesFilterSuggestionRows.length === 0) return tablesAccountExactQueries.map(() => []);
-    return tablesAccountExactQueries.map((q) =>
-      getSuggestions(tablesFilterSuggestionRows, h, tablesFilterSuggestPrefix(q), 10)
-    );
-  }, [tablesFilterSuggestionRows, movementsColumns?.accountCol, tablesAccountExactQueries]);
-
-  /** Entrées/sorties agrégées par type sur la plage du slider mouvements */
-  const movementsTableData = useMemo(() => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, typeCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const startTs = movementsStartDate.getTime();
-    const endTs = movementsEndDate.getTime();
-    const sortiesByType: Record<string, number> = {};
-    const entréesByType: Record<string, number> = {};
-    let totalSorties = 0;
-    let totalEntrées = 0;
-    if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) {
-      return {
-        sortiesByType: {},
-        entréesByType: {},
-        totalSorties: 0,
-        totalEntrées: 0,
-        types: [],
-        typesWithSorties: [],
-        typesWithEntrées: [],
-        rowCount: 0,
-      };
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      movementsStartMs == null ||
+      movementsEndMs == null ||
+      !Number.isFinite(movementsStartMs) ||
+      !Number.isFinite(movementsEndMs) ||
+      movementsStartMs > movementsEndMs
+    ) {
+      setMovementsAgg(null);
+      return;
     }
-    for (const row of sourceData.rows) {
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const t = cellDate.getTime();
-      if (!Number.isFinite(t) || t < startTs || t > endTs) continue;
-      const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v < 0) {
-        const abs = Math.abs(v);
-        sortiesByType[typeLabel] = (sortiesByType[typeLabel] ?? 0) + abs;
-        totalSorties += abs;
-      }
-      if (v > 0) {
-        entréesByType[typeLabel] = (entréesByType[typeLabel] ?? 0) + v;
-        totalEntrées += v;
-      }
-    }
-    const typesSet = new Set([...Object.keys(sortiesByType), ...Object.keys(entréesByType)]);
-    const types = Array.from(typesSet).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-    /** Types qui ont au moins une sortie, triés par montant décroissant (plus grande sortie en haut). */
-    const typesWithSorties = types
-      .filter((t) => (sortiesByType[t] ?? 0) > 0)
-      .sort((a, b) => (sortiesByType[b] ?? 0) - (sortiesByType[a] ?? 0));
-    /** Types qui ont au moins une entrée, triés par montant décroissant (plus grande entrée en haut). */
-    const typesWithEntrées = types
-      .filter((t) => (entréesByType[t] ?? 0) > 0)
-      .sort((a, b) => (entréesByType[b] ?? 0) - (entréesByType[a] ?? 0));
-    const rowCount =
-      typesWithSorties.length === 0 && typesWithEntrées.length === 0
-        ? 0
-        : Math.max(typesWithSorties.length, typesWithEntrées.length);
-    return {
-      sortiesByType,
-      entréesByType,
-      totalSorties,
-      totalEntrées,
-      types,
-      typesWithSorties,
-      typesWithEntrées,
-      rowCount,
-    };
-  }, [
-    sourceData?.rows,
-    movementsColumns,
-    movementsStartDate,
-    movementsEndDate,
-  ]);
-
-  /** Lignes du tableau transactions (bloc Tableaux et filtres), avant agrégation. */
-  const tablesDashboardRowsBase = useMemo(() => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, typeCol, accountCol, titleCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const startTs = tablesStartDate.getTime();
-    const endTs = tablesEndDate.getTime();
-    if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) return null;
-    const indexHeader = sourceData.headers.find((h) => /^index$/i.test(h)) ?? 'Index';
-
-    type RowAcc = {
-      sourceRowIndex: number;
-      txIndex: number;
-      cellDate: Date;
-      v: number;
-      title: string;
-      typeLabel: string;
-      accountKey: string;
-      rawAccount: string;
-    };
-
-    const candidates: RowAcc[] = [];
-
-    for (let ri = 0; ri < sourceData.rows.length; ri++) {
-      const row = sourceData.rows[ri];
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const tt = cellDate.getTime();
-      if (!Number.isFinite(tt) || tt < startTs || tt > endTs) continue;
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v === 0) continue;
-      const title = (titleCol ? (row[titleCol] ?? '').trim() : '') || '—';
-      const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
-      const rawAccount = (accountCol ? (row[accountCol] ?? '').trim() : '') || 'Sans compte';
-      const accountKey =
-        rawAccount === 'Sans compte' ? 'Sans compte' : (canonicalAccountFromSource(rawAccount) || rawAccount);
-      const idxParsed = parseInt(String(row[indexHeader] ?? '').trim(), 10);
-      const txIndex = Number.isFinite(idxParsed) ? idxParsed : ri + 1;
-      candidates.push({ sourceRowIndex: ri, txIndex, cellDate, v, title, typeLabel, accountKey, rawAccount });
-    }
-
-    const rowsOut: {
-      rowKey: string;
-      sourceRowIndex: number;
-      txIndex: number;
-      sortTs: number;
-      dateLabel: string;
-      title: string;
-      typeLabel: string;
-      accountKey: string;
-      accountLabel: string;
-      amountGbp: number;
-      sens: 'entrée' | 'sortie';
-    }[] = [];
-
-    const titleCriteria = tablesFilterCriteriaFromLines(tablesTitleExactQueries);
-    const typeCriteria = tablesFilterCriteriaFromLines(tablesTypeExactQueries);
-    const accountCriteria = tablesFilterCriteriaFromLines(tablesAccountExactQueries);
-
-    for (const c of candidates) {
-      if (!cellMatchesTablesFilterCriteria(c.title, titleCriteria)) continue;
-      if (!cellMatchesTablesFilterCriteria(c.typeLabel, typeCriteria)) continue;
-      if (!cellMatchesTablesFilterCriteria(c.rawAccount, accountCriteria)) continue;
-      const isEntrée = c.v > 0;
-      const isSortie = c.v < 0;
-      if (!tablesShowEntrées && isEntrée) continue;
-      if (!tablesShowSorties && isSortie) continue;
-
-      rowsOut.push({
-        rowKey: `tx-${c.sourceRowIndex}`,
-        sourceRowIndex: c.sourceRowIndex,
-        txIndex: c.txIndex,
-        sortTs: c.cellDate.getTime(),
-        dateLabel: format(c.cellDate, 'dd/MM/yyyy'),
-        title: c.title,
-        typeLabel: c.typeLabel,
-        accountKey: c.accountKey,
-        accountLabel: accountLabelFromSource(c.accountKey) || c.accountKey,
-        amountGbp: c.v,
-        sens: isEntrée ? 'entrée' : 'sortie',
+    const t = window.setTimeout(() => {
+      void SourceDataCSVService.aggregateRange(movementsStartMs, movementsEndMs).then((data) => {
+        if (!cancelled) setMovementsAgg(data);
       });
-    }
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [movementsStartMs, movementsEndMs, location.pathname]);
 
-    rowsOut.sort((a, b) => b.sortTs - a.sortTs);
-    return { rows: rowsOut };
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      compareStartMsA == null ||
+      compareEndMsA == null ||
+      !Number.isFinite(compareStartMsA) ||
+      !Number.isFinite(compareEndMsA) ||
+      compareStartMsA > compareEndMsA
+    ) {
+      setCompareAggA(null);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void SourceDataCSVService.aggregateRange(compareStartMsA, compareEndMsA).then((data) => {
+        if (!cancelled) setCompareAggA(data);
+      });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [compareStartMsA, compareEndMsA, location.pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      compareStartMsB == null ||
+      compareEndMsB == null ||
+      !Number.isFinite(compareStartMsB) ||
+      !Number.isFinite(compareEndMsB) ||
+      compareStartMsB > compareEndMsB
+    ) {
+      setCompareAggB(null);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void SourceDataCSVService.aggregateRange(compareStartMsB, compareEndMsB).then((data) => {
+        if (!cancelled) setCompareAggB(data);
+      });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [compareStartMsB, compareEndMsB, location.pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      tablesStartMs == null ||
+      tablesEndMs == null ||
+      !Number.isFinite(tablesStartMs) ||
+      !Number.isFinite(tablesEndMs) ||
+      tablesStartMs > tablesEndMs
+    ) {
+      setTablesQueryRows(null);
+      return;
+    }
+    const titleContains = tablesFilterCriteriaFromLines(tablesTitleExactQueries);
+    const typeContains = tablesFilterCriteriaFromLines(tablesTypeExactQueries);
+    const accountContains = tablesFilterCriteriaFromLines(tablesAccountExactQueries);
+    const t = window.setTimeout(() => {
+      void SourceDataCSVService.queryTableRows({
+        startMs: tablesStartMs,
+        endMs: tablesEndMs,
+        showEntrées: tablesShowEntrées,
+        showSorties: tablesShowSorties,
+        titleContains,
+        typeContains,
+        accountContains,
+      }).then((rows) => {
+        if (!cancelled) setTablesQueryRows(rows);
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
   }, [
-    sourceData?.rows,
-    sourceData?.headers,
-    movementsColumns,
-    tablesStartDate,
-    tablesEndDate,
+    tablesStartMs,
+    tablesEndMs,
     tablesTitleExactQueries,
     tablesTypeExactQueries,
     tablesAccountExactQueries,
     tablesShowEntrées,
     tablesShowSorties,
+    location.pathname,
   ]);
+
+  const tablesTitleFilterSuggestionsList = useMemo(() => {
+    const values = suggestValues?.titles ?? [];
+    if (!values.length) return tablesTitleExactQueries.map(() => []);
+    return tablesTitleExactQueries.map((q) =>
+      suggestFromValues(values, tablesFilterSuggestPrefix(q), 10)
+    );
+  }, [suggestValues?.titles, tablesTitleExactQueries]);
+
+  const tablesTypeFilterSuggestionsList = useMemo(() => {
+    const values = suggestValues?.types ?? [];
+    if (!values.length) return tablesTypeExactQueries.map(() => []);
+    return tablesTypeExactQueries.map((q) =>
+      suggestFromValues(values, tablesFilterSuggestPrefix(q), 10)
+    );
+  }, [suggestValues?.types, tablesTypeExactQueries]);
+
+  const tablesAccountFilterSuggestionsList = useMemo(() => {
+    const values = suggestValues?.accounts ?? [];
+    if (!values.length) return tablesAccountExactQueries.map(() => []);
+    return tablesAccountExactQueries.map((q) =>
+      suggestFromValues(values, tablesFilterSuggestPrefix(q), 10)
+    );
+  }, [suggestValues?.accounts, tablesAccountExactQueries]);
+
+  /** Entrées/sorties agrégées par type sur la plage du slider mouvements */
+  const movementsTableData = movementsAgg?.byType ?? null;
+
+  /** Lignes du tableau transactions (bloc Tableaux et filtres), avant agrégation. */
+  const tablesDashboardRowsBase = useMemo(() => {
+    if (!tablesQueryRows) return null;
+    return { rows: tablesQueryRows };
+  }, [tablesQueryRows]);
 
   const tablesDashboardRowsKey = useMemo(
     () => tablesDashboardRowsBase?.rows.map((r) => r.rowKey).join('\0') ?? '',
@@ -1508,108 +1521,10 @@ const Dashboard: React.FC = () => {
   }, [tablesDashboardData, tablesBlocAccountSort]);
 
   /** Données tableau par type pour la colonne gauche du bloc Evolution comparée */
-  const movementsCompareTableDataA = useMemo(() => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, typeCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const startTs = movementsCompareStartDateA.getTime();
-    const endTs = movementsCompareEndDateA.getTime();
-    const sortiesByType: Record<string, number> = {};
-    const entréesByType: Record<string, number> = {};
-    let totalSorties = 0;
-    let totalEntrées = 0;
-    for (const row of sourceData.rows) {
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const t = cellDate.getTime();
-      if (t < startTs || t > endTs) continue;
-      const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v < 0) {
-        const abs = Math.abs(v);
-        sortiesByType[typeLabel] = (sortiesByType[typeLabel] ?? 0) + abs;
-        totalSorties += abs;
-      }
-      if (v > 0) {
-        entréesByType[typeLabel] = (entréesByType[typeLabel] ?? 0) + v;
-        totalEntrées += v;
-      }
-    }
-    const typesSet = new Set([...Object.keys(sortiesByType), ...Object.keys(entréesByType)]);
-    const types = Array.from(typesSet).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-    const typesWithSorties = types
-      .filter((t) => (sortiesByType[t] ?? 0) > 0)
-      .sort((a, b) => (sortiesByType[b] ?? 0) - (sortiesByType[a] ?? 0));
-    const typesWithEntrées = types
-      .filter((t) => (entréesByType[t] ?? 0) > 0)
-      .sort((a, b) => (entréesByType[b] ?? 0) - (entréesByType[a] ?? 0));
-    const rowCount =
-      typesWithSorties.length === 0 && typesWithEntrées.length === 0
-        ? 0
-        : Math.max(typesWithSorties.length, typesWithEntrées.length);
-    return {
-      sortiesByType,
-      entréesByType,
-      totalSorties,
-      totalEntrées,
-      types,
-      typesWithSorties,
-      typesWithEntrées,
-      rowCount,
-    };
-  }, [sourceData?.rows, movementsColumns, movementsCompareStartDateA, movementsCompareEndDateA]);
+  const movementsCompareTableDataA = compareAggA?.byType ?? null;
 
   /** Données tableau par type pour la colonne droite du bloc Evolution comparée */
-  const movementsCompareTableDataB = useMemo(() => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, typeCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const startTs = movementsCompareStartDateB.getTime();
-    const endTs = movementsCompareEndDateB.getTime();
-    const sortiesByType: Record<string, number> = {};
-    const entréesByType: Record<string, number> = {};
-    let totalSorties = 0;
-    let totalEntrées = 0;
-    for (const row of sourceData.rows) {
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const t = cellDate.getTime();
-      if (t < startTs || t > endTs) continue;
-      const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v < 0) {
-        const abs = Math.abs(v);
-        sortiesByType[typeLabel] = (sortiesByType[typeLabel] ?? 0) + abs;
-        totalSorties += abs;
-      }
-      if (v > 0) {
-        entréesByType[typeLabel] = (entréesByType[typeLabel] ?? 0) + v;
-        totalEntrées += v;
-      }
-    }
-    const typesSet = new Set([...Object.keys(sortiesByType), ...Object.keys(entréesByType)]);
-    const types = Array.from(typesSet).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-    const typesWithSorties = types
-      .filter((t) => (sortiesByType[t] ?? 0) > 0)
-      .sort((a, b) => (sortiesByType[b] ?? 0) - (sortiesByType[a] ?? 0));
-    const typesWithEntrées = types
-      .filter((t) => (entréesByType[t] ?? 0) > 0)
-      .sort((a, b) => (entréesByType[b] ?? 0) - (entréesByType[a] ?? 0));
-    const rowCount =
-      typesWithSorties.length === 0 && typesWithEntrées.length === 0
-        ? 0
-        : Math.max(typesWithSorties.length, typesWithEntrées.length);
-    return {
-      sortiesByType,
-      entréesByType,
-      totalSorties,
-      totalEntrées,
-      types,
-      typesWithSorties,
-      typesWithEntrées,
-      rowCount,
-    };
-  }, [sourceData?.rows, movementsColumns, movementsCompareStartDateB, movementsCompareEndDateB]);
+  const movementsCompareTableDataB = compareAggB?.byType ?? null;
 
   /** Segments pie pour la colonne A du bloc Evolution comparée */
   const movementsComparePieSegmentsA = useMemo(() => {
@@ -1640,47 +1555,7 @@ const Dashboard: React.FC = () => {
   }, [movementsCompareTableDataB]);
 
   /** Suivi annuel : sommes entrées/sorties par type, année après année */
-  const yearlyViewData = useMemo(() => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, typeCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const yearsSet = new Set<number>();
-    const totalSortiesByYear: Record<number, number> = {};
-    const totalEntréesByYear: Record<number, number> = {};
-    const sortiesByYearByType: Record<string, Record<number, number>> = {};
-    const entréesByYearByType: Record<string, Record<number, number>> = {};
-    for (const row of sourceData.rows) {
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const year = cellDate.getFullYear();
-      yearsSet.add(year);
-      const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v < 0) {
-        const abs = Math.abs(v);
-        totalSortiesByYear[year] = (totalSortiesByYear[year] ?? 0) + abs;
-        if (!sortiesByYearByType[typeLabel]) sortiesByYearByType[typeLabel] = {};
-        sortiesByYearByType[typeLabel][year] = (sortiesByYearByType[typeLabel][year] ?? 0) + abs;
-      }
-      if (v > 0) {
-        totalEntréesByYear[year] = (totalEntréesByYear[year] ?? 0) + v;
-        if (!entréesByYearByType[typeLabel]) entréesByYearByType[typeLabel] = {};
-        entréesByYearByType[typeLabel][year] = (entréesByYearByType[typeLabel][year] ?? 0) + v;
-      }
-    }
-    const years = Array.from(yearsSet).sort((a, b) => a - b);
-    const allTypes = Array.from(
-      new Set([...Object.keys(sortiesByYearByType), ...Object.keys(entréesByYearByType)])
-    ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-    return {
-      years,
-      types: allTypes,
-      totalSortiesByYear,
-      totalEntréesByYear,
-      sortiesByYearByType,
-      entréesByYearByType,
-    };
-  }, [sourceData?.rows, movementsColumns]);
+  const yearlyViewData = yearlyAgg;
 
   /** Données Suivi annuel filtrées selon les années visibles (tableau + graphique) */
   const yearlyViewDataFiltered = useMemo(() => {
@@ -1756,10 +1631,10 @@ const Dashboard: React.FC = () => {
   const yearlySummarySeriesLabels = useMemo((): string[] => {
     const d = yearlyChartData;
     if (!d) return [];
-    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
-    const entreeLabels = d.entréeTypes && d.entréeTypes.length > 0 ? d.entréeTypes : ['Entrées'];
-    return [...sortieLabels, ...entreeLabels, 'Balance'];
-  }, [yearlyChartData]);
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : [t('dashboard.series.exits')];
+    const entreeLabels = d.entréeTypes && d.entréeTypes.length > 0 ? d.entréeTypes : [t('dashboard.series.entries')];
+    return [...sortieLabels, ...entreeLabels, t('dashboard.series.balance')];
+  }, [yearlyChartData, t]);
   const areAllYearlySummarySeriesChecked = useMemo(
     () =>
       yearlySummarySeriesLabels.length > 0 &&
@@ -1769,152 +1644,39 @@ const Dashboard: React.FC = () => {
   const yearlySummarySortieLabelSet = useMemo(() => {
     const d = yearlyChartData;
     if (!d) return new Set<string>();
-    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : [t('dashboard.series.exits')];
     return new Set(sortieLabels);
-  }, [yearlyChartData]);
+  }, [yearlyChartData, t]);
 
   /** Balance par compte pour la colonne A du bloc Evolution comparée */
   const movementsCompareBalanceByAccountA = useMemo(() => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, accountCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const startTs = movementsCompareStartDateA.getTime();
-    const endTs = movementsCompareEndDateA.getTime();
-    const sortiesByAccount: Record<string, number> = {};
-    const entréesByAccount: Record<string, number> = {};
-    for (const row of sourceData.rows) {
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const t = cellDate.getTime();
-      if (t < startTs || t > endTs) continue;
-      const rawAccount = (accountCol ? (row[accountCol] ?? '').trim() : '') || 'Sans compte';
-      const accountKey =
-        rawAccount === 'Sans compte' ? 'Sans compte' : (canonicalAccountFromSource(rawAccount) || rawAccount);
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v < 0) sortiesByAccount[accountKey] = (sortiesByAccount[accountKey] ?? 0) + Math.abs(v);
-      if (v > 0) entréesByAccount[accountKey] = (entréesByAccount[accountKey] ?? 0) + v;
-    }
-    const accounts = Array.from(
-      new Set([...Object.keys(sortiesByAccount), ...Object.keys(entréesByAccount)])
-    ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-    const rows = accounts.map((account) => {
-      const sorties = sortiesByAccount[account] ?? 0;
-      const entrées = entréesByAccount[account] ?? 0;
-      return { account: accountLabelFromSource(account) || account, balance: entrées - sorties };
-    });
-    return rows.length ? rows : null;
-  }, [sourceData?.rows, movementsColumns, movementsCompareStartDateA, movementsCompareEndDateA]);
+    const rows = compareAggA?.byAccount ?? [];
+    if (!rows.length) return null;
+    return rows.map((r) => ({ account: r.accountLabel, balance: r.balance }));
+  }, [compareAggA]);
 
   /** Balance par compte pour la colonne B du bloc Evolution comparée */
   const movementsCompareBalanceByAccountB = useMemo(() => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, accountCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const startTs = movementsCompareStartDateB.getTime();
-    const endTs = movementsCompareEndDateB.getTime();
-    const sortiesByAccount: Record<string, number> = {};
-    const entréesByAccount: Record<string, number> = {};
-    for (const row of sourceData.rows) {
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const t = cellDate.getTime();
-      if (t < startTs || t > endTs) continue;
-      const rawAccount = (accountCol ? (row[accountCol] ?? '').trim() : '') || 'Sans compte';
-      const accountKey =
-        rawAccount === 'Sans compte' ? 'Sans compte' : (canonicalAccountFromSource(rawAccount) || rawAccount);
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v < 0) sortiesByAccount[accountKey] = (sortiesByAccount[accountKey] ?? 0) + Math.abs(v);
-      if (v > 0) entréesByAccount[accountKey] = (entréesByAccount[accountKey] ?? 0) + v;
-    }
-    const accounts = Array.from(
-      new Set([...Object.keys(sortiesByAccount), ...Object.keys(entréesByAccount)])
-    ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-    const rows = accounts.map((account) => {
-      const sorties = sortiesByAccount[account] ?? 0;
-      const entrées = entréesByAccount[account] ?? 0;
-      return { account: accountLabelFromSource(account) || account, balance: entrées - sorties };
-    });
-    return rows.length ? rows : null;
-  }, [sourceData?.rows, movementsColumns, movementsCompareStartDateB, movementsCompareEndDateB]);
+    const rows = compareAggB?.byAccount ?? [];
+    if (!rows.length) return null;
+    return rows.map((r) => ({ account: r.accountLabel, balance: r.balance }));
+  }, [compareAggB]);
 
   /** Données mensuelles pour le graphique mouvements (sorties / entrées / balance par mois, avec détail par type) */
   const movementsMonthlyChartData = useMemo((): MovementsMonthlyChartData | null => {
-    if (!sourceData?.rows?.length || !movementsColumns) return null;
-    const { dateCol, amountCol, typeCol } = movementsColumns;
-    if (!dateCol || !amountCol) return null;
-    const start = startOfMonth(movementsStartDate);
-    const end = startOfMonth(movementsEndDate);
-    if (start.getTime() > end.getTime()) return null;
-    const monthDates = eachMonthOfInterval({ start, end });
-    const n = monthDates.length;
-    const startTs = movementsStartDate.getTime();
-    const endTs = movementsEndDate.getTime();
-
-    const sortiesByType: Record<string, number> = {};
-    const entréesByType: Record<string, number> = {};
-    const sortiesByTypeByMonth: Record<string, number[]> = {};
-    const entréesByTypeByMonth: Record<string, number[]> = {};
-
-    function ensureMonthArrays(typeLabel: string) {
-      if (!sortiesByTypeByMonth[typeLabel]) sortiesByTypeByMonth[typeLabel] = new Array(n).fill(0);
-      if (!entréesByTypeByMonth[typeLabel]) entréesByTypeByMonth[typeLabel] = new Array(n).fill(0);
-    }
-
-    for (const row of sourceData.rows) {
-      const cellDate = parseDateFromCell(row[dateCol] ?? '');
-      if (!cellDate) continue;
-      const t = cellDate.getTime();
-      if (t < startTs || t > endTs) continue;
-      const typeLabel = (typeCol ? (row[typeCol] ?? '').trim() : '') || 'Divers';
-      const monthStart = startOfMonth(cellDate);
-      const idx = monthDates.findIndex((d) => d.getTime() === monthStart.getTime());
-      if (idx < 0) continue;
-      ensureMonthArrays(typeLabel);
-      const v = parseAmountCell(row[amountCol] ?? '');
-      if (v < 0) {
-        const abs = Math.abs(v);
-        sortiesByType[typeLabel] = (sortiesByType[typeLabel] ?? 0) + abs;
-        sortiesByTypeByMonth[typeLabel][idx] += abs;
-      }
-      if (v > 0) {
-        entréesByType[typeLabel] = (entréesByType[typeLabel] ?? 0) + v;
-        entréesByTypeByMonth[typeLabel][idx] += v;
-      }
-    }
-
-    const sortieTypes = Object.keys(sortiesByType).sort(
-      (a, b) => (sortiesByType[b] ?? 0) - (sortiesByType[a] ?? 0)
-    );
-    const entréeTypes = Object.keys(entréesByType).sort(
-      (a, b) => (entréesByType[b] ?? 0) - (entréesByType[a] ?? 0)
-    );
-
-    const sortiesByMonth = sortieTypes.length
-      ? monthDates.map((_, i) => sortieTypes.reduce((s, t) => s + (sortiesByTypeByMonth[t]?.[i] ?? 0), 0))
-      : new Array(n).fill(0);
-    const entréesByMonth = entréeTypes.length
-      ? monthDates.map((_, i) => entréeTypes.reduce((s, t) => s + (entréesByTypeByMonth[t]?.[i] ?? 0), 0))
-      : new Array(n).fill(0);
-
-    const months = monthDates.map((d) => format(d, 'MMM yyyy'));
-    const balanceByMonth = entréesByMonth.map((e, i) => e - sortiesByMonth[i]);
-
+    const m = movementsAgg?.monthly;
+    if (!m) return null;
     return {
-      months,
-      sortiesByMonth,
-      entréesByMonth,
-      balanceByMonth,
-      sortieTypes,
-      entréeTypes,
-      sortiesByTypeByMonth,
-      entréesByTypeByMonth,
+      months: m.months,
+      sortiesByMonth: m.sortiesByMonth,
+      entréesByMonth: m.entréesByMonth,
+      balanceByMonth: m.balanceByMonth,
+      sortieTypes: m.sortieTypes,
+      entréeTypes: m.entréeTypes,
+      sortiesByTypeByMonth: m.sortiesByTypeByMonth,
+      entréesByTypeByMonth: m.entréesByTypeByMonth,
     };
-  }, [
-    sourceData?.rows,
-    movementsColumns,
-    movementsStartDate,
-    movementsEndDate,
-  ]);
+  }, [movementsAgg]);
 
   /** Convertit les données mensuelles mouvements (GBP) vers la devise d'affichage. */
   const movementsMonthlyChartDataForMovements = useMemo((): MovementsMonthlyChartData | null => {
@@ -1950,10 +1712,10 @@ const Dashboard: React.FC = () => {
   const movementsMonthlySeriesLabels = useMemo((): string[] => {
     const d = movementsMonthlyChartDataForMovements;
     if (!d) return [];
-    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
-    const entreeLabels = d.entréeTypes && d.entréeTypes.length > 0 ? d.entréeTypes : ['Entrées'];
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : [t('dashboard.series.exits')];
+    const entreeLabels = d.entréeTypes && d.entréeTypes.length > 0 ? d.entréeTypes : [t('dashboard.series.entries')];
     return [...sortieLabels, ...entreeLabels];
-  }, [movementsMonthlyChartDataForMovements]);
+  }, [movementsMonthlyChartDataForMovements, t]);
   const areAllMonthlySeriesChecked = useMemo(
     () =>
       movementsMonthlySeriesLabels.length > 0 &&
@@ -1963,9 +1725,9 @@ const Dashboard: React.FC = () => {
   const movementsMonthlySortieLabelSet = useMemo(() => {
     const d = movementsMonthlyChartDataForMovements;
     if (!d) return new Set<string>();
-    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : ['Sorties'];
+    const sortieLabels = d.sortieTypes && d.sortieTypes.length > 0 ? d.sortieTypes : [t('dashboard.series.exits')];
     return new Set(sortieLabels);
-  }, [movementsMonthlyChartDataForMovements]);
+  }, [movementsMonthlyChartDataForMovements, t]);
 
   const handleDateRangeChange = useCallback(
     (startDate: Date, endDate: Date) => {
@@ -2186,7 +1948,7 @@ const Dashboard: React.FC = () => {
   return (
     <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4">
-          <h1 className="text-2xl font-bold text-gray-800">Tableau de bord</h1>
+          <h1 className="text-2xl font-bold text-gray-800">{t('nav.dashboard')}</h1>
         </div>
 
       {/* Graphique évolution des soldes (données = début de chaque mois depuis account_balance.csv) */}
@@ -2216,7 +1978,7 @@ const Dashboard: React.FC = () => {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                  Évolution des soldes
+                  {t('dashboard.sections.balances')}
                 </span>
               </span>
             </button>
@@ -2230,7 +1992,7 @@ const Dashboard: React.FC = () => {
                     return next;
                   });
                 }}
-                title="Paramètres"
+                title={t('dashboard.settings.title')}
                 className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
                   chartFiltersOpen
                     ? 'bg-gray-200 border-gray-300 text-gray-800'
@@ -2260,7 +2022,7 @@ const Dashboard: React.FC = () => {
         <>
         {chartLoading ? (
           <div className="flex items-center justify-center h-64 text-gray-500">
-            Chargement…
+            {t('common.loading')}
           </div>
         ) : chartError ? (
           <div className="flex items-center justify-center h-64 text-amber-600">
@@ -2281,13 +2043,13 @@ const Dashboard: React.FC = () => {
                   })}
                   className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
                 >
-                  Paramètres
+                  {t('dashboard.settings.title')}
                   <span className="text-gray-500">▼</span>
                 </button>
                 <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-hidden">
                     <div className="flex-shrink-0">
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                        Devise axe vertical
+                        {t('dashboard.settings.axisCurrency')}
                       </label>
                       <select
                         value={chartYAxisCurrency}
@@ -2298,7 +2060,7 @@ const Dashboard: React.FC = () => {
                         }}
                         className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                       >
-                        {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                        {yAxisCurrencies.map(({ value, label }) => (
                           <option key={value} value={value}>
                             {label}
                           </option>
@@ -2308,7 +2070,7 @@ const Dashboard: React.FC = () => {
                     <div className="border-t border-gray-200 my-0" aria-hidden />
                     <div className="flex-shrink-0">
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                        Hauteur du graphique
+                        {t('dashboard.settings.chartHeight')}
                       </label>
                       <div className="flex items-center gap-2">
                         <input
@@ -2334,7 +2096,7 @@ const Dashboard: React.FC = () => {
                     {accountBalanceChartData && accountBalanceChartData.accountCodes.length > 0 && (
                       <div className="flex-shrink-0 flex flex-col">
                         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2 flex-shrink-0">
-                          Courbes de tendance
+                          {t('dashboard.settings.trendLines')}
                         </label>
                         <div className="space-y-1.5">
                           {accountBalanceChartData.accountCodes.map((code) => {
@@ -2376,7 +2138,7 @@ const Dashboard: React.FC = () => {
                             }
                             className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
-                          <span>Solde total</span>
+                          <span>{t('dashboard.series.totalBalance')}</span>
                         </label>
                       </div>
                     </div>
@@ -2385,7 +2147,7 @@ const Dashboard: React.FC = () => {
                     {filteredChartData && (
                       <div className="flex-shrink-0">
                         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                          Compte pour le graphique boursier
+                          {t('dashboard.settings.stockChartAccount')}
                         </label>
                         <select
                           value={
@@ -2400,7 +2162,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                         >
-                          <option value="TOTAL">Solde total</option>
+                          <option value="TOTAL">{t('dashboard.series.totalBalance')}</option>
                           {filteredChartData.accountCodes.map((code) => {
                             const name =
                               filteredChartData.accounts[
@@ -2428,7 +2190,7 @@ const Dashboard: React.FC = () => {
                   startDate={chartSyncsWithMovements ? movementsStartDate : chartSliderStartForUi}
                   endDate={chartSyncsWithMovements ? movementsEndDate : chartSliderEndForUi}
                   onChange={handleDateRangeChange}
-                  syncLabel="Synchroniser avec Suivi des mouvements"
+                  syncLabel={t('dashboard.syncWith', { section: t('dashboard.sections.movements') })}
                   syncChecked={chartSyncsWithMovements}
                   onSyncChange={handleChartSyncChange}
                   fullYearsMode={dateRangeSliderFullYears}
@@ -2453,7 +2215,7 @@ const Dashboard: React.FC = () => {
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                  Aucune donnée pour les filtres sélectionnés.
+                  {t('dashboard.empty.noDataForFilters')}
                 </div>
               )}
             </div>
@@ -2513,16 +2275,16 @@ const Dashboard: React.FC = () => {
                       {isExpanded && (
                         <div className="mt-2 space-y-1 bg-white/95 rounded px-2 py-1.5 text-xs text-gray-800">
                           <div>
-                            <span className="font-medium">Début :</span>{' '}
+                            <span className="font-medium">{t('dashboard.balanceCard.start')}</span>{' '}
                             {hasStart ? formatCurrency(balanceStart, chartYAxisCurrency) : '–'}
                           </div>
                           <div>
-                            <span className="font-medium">Fin :</span>{' '}
+                            <span className="font-medium">{t('dashboard.balanceCard.end')}</span>{' '}
                             {hasEnd ? formatCurrency(balanceEnd, chartYAxisCurrency) : '–'}
                           </div>
                           {balanceDiff !== null && (
                             <div>
-                              <span className="font-medium">Écart :</span>{' '}
+                              <span className="font-medium">{t('dashboard.balanceCard.diff')}</span>{' '}
                               <span className={balanceDiff >= 0 ? 'text-green-600' : 'text-red-600'}>
                                 {balanceDiff >= 0 ? '+' : ''}
                                 {formatCurrency(balanceDiff, chartYAxisCurrency)}
@@ -2531,7 +2293,7 @@ const Dashboard: React.FC = () => {
                           )}
                           {variationPct !== null && (
                             <div>
-                              <span className="font-medium">Variation :</span>{' '}
+                              <span className="font-medium">{t('dashboard.balanceCard.variation')}</span>{' '}
                               <span className={variationPct >= 0 ? 'text-green-600' : 'text-red-600'}>
                                 {variationPct >= 0 ? '+' : ''}
                                 {variationPct.toFixed(1)} %
@@ -2540,7 +2302,7 @@ const Dashboard: React.FC = () => {
                           )}
                           {equationStr && (
                             <div className="pt-0.5 border-t border-gray-200">
-                              <span className="font-medium">Tendance :</span> {equationStr}
+                              <span className="font-medium">{t('dashboard.balanceCard.trend')}</span> {equationStr}
                             </div>
                           )}
                         </div>
@@ -2588,8 +2350,8 @@ const Dashboard: React.FC = () => {
                       }`}
                       style={{ backgroundColor: totalColor }}
                     >
-                      <div className="text-xs font-medium text-white truncate" title="Solde total">
-                        Solde total
+                      <div className="text-xs font-medium text-white truncate" title={t('dashboard.series.totalBalance')}>
+                        {t('dashboard.series.totalBalance')}
                       </div>
                       <div className="text-sm font-semibold text-white">
                         {hasAnyEnd ? formatCurrency(totalEnd, chartYAxisCurrency) : '–'}
@@ -2609,16 +2371,16 @@ const Dashboard: React.FC = () => {
                       {isExpanded && (
                         <div className="mt-2 space-y-1 bg-white/95 rounded px-2 py-1.5 text-xs text-gray-800">
                           <div>
-                            <span className="font-medium">Début :</span>{' '}
+                            <span className="font-medium">{t('dashboard.balanceCard.start')}</span>{' '}
                             {hasAnyStart ? formatCurrency(totalStart, chartYAxisCurrency) : '–'}
                           </div>
                           <div>
-                            <span className="font-medium">Fin :</span>{' '}
+                            <span className="font-medium">{t('dashboard.balanceCard.end')}</span>{' '}
                             {hasAnyEnd ? formatCurrency(totalEnd, chartYAxisCurrency) : '–'}
                           </div>
                           {totalDiff !== null && (
                             <div>
-                              <span className="font-medium">Écart :</span>{' '}
+                              <span className="font-medium">{t('dashboard.balanceCard.diff')}</span>{' '}
                               <span className={totalDiff >= 0 ? 'text-green-600' : 'text-red-600'}>
                                 {totalDiff >= 0 ? '+' : ''}
                                 {formatCurrency(totalDiff, chartYAxisCurrency)}
@@ -2627,7 +2389,7 @@ const Dashboard: React.FC = () => {
                           )}
                           {variationPct !== null && (
                             <div>
-                              <span className="font-medium">Variation :</span>{' '}
+                              <span className="font-medium">{t('dashboard.balanceCard.variation')}</span>{' '}
                               <span className={variationPct >= 0 ? 'text-green-600' : 'text-red-600'}>
                                 {variationPct >= 0 ? '+' : ''}
                                 {variationPct.toFixed(1)} %
@@ -2636,7 +2398,7 @@ const Dashboard: React.FC = () => {
                           )}
                           {equationStr && (
                             <div className="pt-0.5 border-t border-gray-200">
-                              <span className="font-medium">Tendance :</span> {equationStr}
+                              <span className="font-medium">{t('dashboard.balanceCard.trend')}</span> {equationStr}
                             </div>
                           )}
                         </div>
@@ -2661,7 +2423,7 @@ const Dashboard: React.FC = () => {
           </div>
         ) : (
           <div className="flex items-center justify-center h-64 text-gray-500">
-            Aucune donnée (fichier {ACCOUNT_BALANCE_PROCESSED_DIR}/src_account_balance.csv ou account_balance.csv absent ou vide)
+            {t('dashboard.empty.noBalanceFile', { dir: ACCOUNT_BALANCE_PROCESSED_DIR })}
           </div>
         )}
         </>
@@ -2693,7 +2455,7 @@ const Dashboard: React.FC = () => {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                  Suivi des mouvements
+                  {t('dashboard.sections.movements')}
                 </span>
               </span>
             </button>
@@ -2707,7 +2469,7 @@ const Dashboard: React.FC = () => {
                     return next;
                   });
                 }}
-                title="Paramètres"
+                title={t('dashboard.settings.title')}
                 className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
                   movementsFiltersOpen
                     ? 'bg-gray-200 border-gray-300 text-gray-800'
@@ -2749,13 +2511,13 @@ const Dashboard: React.FC = () => {
                   })}
                   className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
                 >
-                  Paramètres
+                  {t('dashboard.settings.title')}
                   <span className="text-gray-500">▼</span>
                 </button>
                 <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-hidden">
                   <div className="flex-shrink-0">
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                      Devise d&apos;affichage
+                      {t('dashboard.settings.displayCurrency')}
                     </label>
                     <select
                       value={movementsYAxisCurrency}
@@ -2766,7 +2528,7 @@ const Dashboard: React.FC = () => {
                       }}
                       className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                     >
-                      {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                      {yAxisCurrencies.map(({ value, label }) => (
                         <option key={value} value={value}>
                           {label}
                         </option>
@@ -2775,7 +2537,7 @@ const Dashboard: React.FC = () => {
                   </div>
                   <div className="flex-shrink-0">
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                      Hauteur du graphique mensuel
+                      {t('dashboard.settings.monthlyChartHeight')}
                     </label>
                     <div className="flex items-center gap-2">
                       <input
@@ -2801,7 +2563,7 @@ const Dashboard: React.FC = () => {
                   {movementsMonthlySeriesLabels.length > 0 && (
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                        Afficher uniquement les labels cochés
+                        {t('dashboard.settings.onlyCheckedLabels')}
                       </label>
                       <label className="flex items-center gap-2 text-sm text-gray-800 cursor-pointer select-none mb-2">
                         <input
@@ -2819,7 +2581,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span>{areAllMonthlySeriesChecked ? 'Tout décocher' : 'Tout cocher'}</span>
+                        <span>{areAllMonthlySeriesChecked ? t('dashboard.settings.uncheckAll') : t('dashboard.settings.checkAll')}</span>
                       </label>
                       <div className="flex-1 min-h-0 overflow-auto rounded border border-gray-200 bg-white p-2 space-y-1.5">
                         {movementsMonthlySeriesLabels.map((label) => {
@@ -2851,7 +2613,7 @@ const Dashboard: React.FC = () => {
                                   isSortieLabel ? 'bg-red-500' : 'bg-green-500'
                                 }`}
                                 aria-hidden
-                                title={isSortieLabel ? 'Type sortie' : 'Type entrée'}
+                                title={isSortieLabel ? t('dashboard.settings.exitType') : t('dashboard.settings.entryType')}
                               />
                             </label>
                           );
@@ -2872,7 +2634,7 @@ const Dashboard: React.FC = () => {
               startDate={movementsSyncsWithChart ? chartSliderStartForUi : movementsStartDate}
               endDate={movementsSyncsWithChart ? chartSliderEndForUi : movementsEndDate}
               onChange={handleMovementsDateRangeChange}
-              syncLabel="Synchroniser avec Évolution des soldes"
+              syncLabel={t('dashboard.syncWith', { section: t('dashboard.sections.balances') })}
               syncChecked={movementsSyncsWithChart}
               onSyncChange={handleMovementsSyncChange}
               fullYearsMode={dateRangeSliderFullYears}
@@ -2881,7 +2643,7 @@ const Dashboard: React.FC = () => {
           </div>
         )}
         {movementsDataLoading && (
-          <div className="py-6 text-center text-gray-500">Chargement…</div>
+          <div className="py-6 text-center text-gray-500">{t('common.loading')}</div>
         )}
         {!movementsDataLoading && movementsDataError && (
           <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3">
@@ -2918,10 +2680,10 @@ const Dashboard: React.FC = () => {
         )}
         {!movementsDataLoading &&
           !movementsDataError &&
-          sourceData &&
+          movementsColumns?.amountCol &&
           !movementsTableData && (
             <div className="py-4 text-center text-gray-500 text-sm">
-              Données source sans colonne Date ou Expense/Income, ou plage sans données.
+              {t('dashboard.empty.noDateOrExpenseIncome')}
             </div>
           )}
           </div>
@@ -2955,7 +2717,7 @@ const Dashboard: React.FC = () => {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                  Evolution comparée des mouvements
+                  {t('dashboard.sections.compare')}
                 </span>
               </span>
             </button>
@@ -2969,7 +2731,7 @@ const Dashboard: React.FC = () => {
                     return next;
                   });
                 }}
-                title="Paramètres"
+                title={t('dashboard.settings.title')}
                 className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
                   movementsCompareFiltersOpen
                     ? 'bg-gray-200 border-gray-300 text-gray-800'
@@ -3010,13 +2772,13 @@ const Dashboard: React.FC = () => {
                   })}
                   className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
                 >
-                  Paramètres
+                  {t('dashboard.settings.title')}
                   <span className="text-gray-500">▼</span>
                 </button>
                 <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-hidden">
                   <div className="flex-shrink-0">
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                      Devise d&apos;affichage
+                      {t('dashboard.settings.displayCurrency')}
                     </label>
                     <select
                       value={movementsCompareYAxisCurrency}
@@ -3027,7 +2789,7 @@ const Dashboard: React.FC = () => {
                       }}
                       className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                     >
-                      {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                      {yAxisCurrencies.map(({ value, label }) => (
                         <option key={value} value={value}>
                           {label}
                         </option>
@@ -3046,13 +2808,13 @@ const Dashboard: React.FC = () => {
                         }}
                         className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                       />
-                      <span className="text-sm text-gray-700">Pourcentage comparatif</span>
+                      <span className="text-sm text-gray-700">{t('dashboard.settings.comparePct')}</span>
                     </label>
-                    <p className="text-xs text-gray-500 mt-0.5">Afficher les % par rapport à l&apos;autre plage</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{t('dashboard.settings.comparePctHint')}</p>
                   </div>
                   <div className="flex-shrink-0">
                     <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                      Options d&apos;affichage
+                      {t('dashboard.settings.displayOptions')}
                     </p>
                     <div className="mt-2 space-y-2">
                       <label className="flex items-center gap-2 cursor-pointer">
@@ -3066,7 +2828,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Afficher Diagrammes circulaires</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.settings.showPieCharts')}</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -3079,7 +2841,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Afficher Tableaux entrées/sorties par Type</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.settings.showTablesByType')}</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -3092,13 +2854,13 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Afficher Tableaux entrées/sorties par compte</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.settings.showTablesByAccount')}</span>
                       </label>
                     </div>
                   </div>
                   <div className="flex-shrink-0">
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                      Hauteur tableaux par Type
+                      {t('dashboard.settings.tablesByTypeHeight')}
                     </label>
                     <div className="flex items-center gap-2">
                       <input
@@ -3123,7 +2885,7 @@ const Dashboard: React.FC = () => {
           )}
           <div className="flex-1 min-w-0 flex flex-col">
         {movementsDataLoading && (
-          <div className="py-6 text-center text-gray-500">Chargement…</div>
+          <div className="py-6 text-center text-gray-500">{t('common.loading')}</div>
         )}
         {!movementsDataLoading && movementsDataError && (
           <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3">
@@ -3133,8 +2895,8 @@ const Dashboard: React.FC = () => {
         {!movementsDataLoading && !movementsDataError && (
           <>
           <div className="text-sm text-gray-700 mb-3">
-            <p>Période du {format(movementsCompareStartDateA, 'dd/MM/yyyy')} au {format(movementsCompareEndDateA, 'dd/MM/yyyy')}</p>
-            <p>Comparée à la période du {format(movementsCompareStartDateB, 'dd/MM/yyyy')} au {format(movementsCompareEndDateB, 'dd/MM/yyyy')}</p>
+            <p>{t('dashboard.compare.periodFromTo', { start: format(movementsCompareStartDateA, 'dd/MM/yyyy'), end: format(movementsCompareEndDateA, 'dd/MM/yyyy') })}</p>
+            <p>{t('dashboard.compare.comparedToPeriod', { start: format(movementsCompareStartDateB, 'dd/MM/yyyy'), end: format(movementsCompareEndDateB, 'dd/MM/yyyy') })}</p>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Colonne gauche — plage A */}
@@ -3152,9 +2914,9 @@ const Dashboard: React.FC = () => {
                   />
                 </div>
               )}
-              {!movementsCompareTableDataA && sourceData && (
+              {!movementsCompareTableDataA && movementsColumns?.amountCol && (
                 <div className="py-4 text-center text-gray-500 text-sm">
-                  Données source sans colonne Date ou Expense/Income, ou plage sans données.
+                  {t('dashboard.empty.noDateOrExpenseIncome')}
                 </div>
               )}
               {movementsCompareTableDataA && (
@@ -3186,16 +2948,16 @@ const Dashboard: React.FC = () => {
                     <table className={`border-collapse w-full ${movementsCompareShowPct ? 'text-[13px]' : 'text-sm'}`}>
                       <thead>
                         <tr>
-                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Types</th>
-                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Sorties</th>
-                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Types</th>
-                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Entrées</th>
+                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.columns.types')}</th>
+                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.series.exits')}</th>
+                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.columns.types')}</th>
+                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.series.entries')}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {movementsCompareTableDataA.rowCount === 0 ? (
                           <tr>
-                            <td colSpan={4} className="px-3 py-4 text-center text-gray-500 border-b border-gray-200">Aucun mouvement sur la plage sélectionnée</td>
+                            <td colSpan={4} className="px-3 py-4 text-center text-gray-500 border-b border-gray-200">{t('dashboard.compare.noMovements')}</td>
                           </tr>
                         ) : (
                           Array.from({ length: movementsCompareTableDataA.rowCount }, (_, i) => {
@@ -3242,7 +3004,7 @@ const Dashboard: React.FC = () => {
                       </tbody>
                       <tfoot>
                         <tr className="font-semibold bg-gray-50">
-                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-red-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">Total</td>
+                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-red-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">{t('dashboard.columns.total')}</td>
                           <td className="sticky bottom-8 z-10 px-3 py-2 text-right border-t border-r border-gray-200 bg-red-100 tabular-nums shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">
                             −{formatCurrency(convertMovementsToDisplayCurrency(movementsCompareTableDataA.totalSorties, movementsCompareYAxisCurrency as CurrencySymbol), movementsCompareYAxisCurrency)}
                             {movementsCompareShowPct && movementsCompareTableDataB && movementsCompareTableDataB.totalSorties !== 0 && (
@@ -3251,7 +3013,7 @@ const Dashboard: React.FC = () => {
                               </span>
                             )}
                           </td>
-                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-green-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">Total</td>
+                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-green-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">{t('dashboard.columns.total')}</td>
                           <td className="sticky bottom-8 z-10 px-3 py-2 text-right border-t border-gray-200 bg-green-100 tabular-nums shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">
                             +{formatCurrency(convertMovementsToDisplayCurrency(movementsCompareTableDataA.totalEntrées, movementsCompareYAxisCurrency as CurrencySymbol), movementsCompareYAxisCurrency)}
                             {movementsCompareShowPct && movementsCompareTableDataB && movementsCompareTableDataB.totalEntrées !== 0 && (
@@ -3262,7 +3024,7 @@ const Dashboard: React.FC = () => {
                           </td>
                         </tr>
                         <tr className="font-semibold bg-gray-100">
-                          <td className="sticky bottom-0 z-10 px-3 py-2 border-t border-gray-200 bg-gray-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]" colSpan={3}>Balance</td>
+                          <td className="sticky bottom-0 z-10 px-3 py-2 border-t border-gray-200 bg-gray-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]" colSpan={3}>{t('dashboard.series.balance')}</td>
                           <td className={`sticky bottom-0 z-10 px-3 py-2 text-right border-t border-gray-200 tabular-nums bg-gray-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)] ${movementsCompareTableDataA.totalEntrées - movementsCompareTableDataA.totalSorties >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                             {(() => {
                               const balance = movementsCompareTableDataA.totalEntrées - movementsCompareTableDataA.totalSorties;
@@ -3291,8 +3053,8 @@ const Dashboard: React.FC = () => {
                       <table className={`border-collapse w-full ${movementsCompareShowPct ? 'text-[13px]' : 'text-sm'}`}>
                         <thead>
                           <tr>
-                            <th className="text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-gray-100" scope="col">Compte</th>
-                            <th className="text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-gray-100" scope="col">Balance</th>
+                            <th className="text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-gray-100" scope="col">{t('dashboard.columns.account')}</th>
+                            <th className="text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-gray-100" scope="col">{t('dashboard.series.balance')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3316,7 +3078,7 @@ const Dashboard: React.FC = () => {
                         </tbody>
                         <tfoot>
                           <tr className="font-semibold bg-gray-100">
-                            <td className="px-3 py-2 border-t border-r border-gray-200">Balance</td>
+                            <td className="px-3 py-2 border-t border-r border-gray-200">{t('dashboard.series.balance')}</td>
                             <td className={`px-3 py-2 text-right border-t border-gray-200 tabular-nums ${movementsCompareTableDataA.totalEntrées - movementsCompareTableDataA.totalSorties >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                               {(() => {
                                 const total = movementsCompareTableDataA.totalEntrées - movementsCompareTableDataA.totalSorties;
@@ -3359,9 +3121,9 @@ const Dashboard: React.FC = () => {
                   />
                 </div>
               )}
-              {!movementsCompareTableDataB && sourceData && (
+              {!movementsCompareTableDataB && movementsColumns?.amountCol && (
                 <div className="py-4 text-center text-gray-500 text-sm">
-                  Données source sans colonne Date ou Expense/Income, ou plage sans données.
+                  {t('dashboard.empty.noDateOrExpenseIncome')}
                 </div>
               )}
               {movementsCompareTableDataB && (
@@ -3393,16 +3155,16 @@ const Dashboard: React.FC = () => {
                     <table className={`border-collapse w-full ${movementsCompareShowPct ? 'text-[13px]' : 'text-sm'}`}>
                       <thead>
                         <tr>
-                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Types</th>
-                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Sorties</th>
-                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Types</th>
-                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">Entrées</th>
+                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.columns.types')}</th>
+                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-red-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.series.exits')}</th>
+                          <th className="sticky top-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.columns.types')}</th>
+                          <th className="sticky top-0 z-10 text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-green-100 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]" scope="col">{t('dashboard.series.entries')}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {movementsCompareTableDataB.rowCount === 0 ? (
                           <tr>
-                            <td colSpan={4} className="px-3 py-4 text-center text-gray-500 border-b border-gray-200">Aucun mouvement sur la plage sélectionnée</td>
+                            <td colSpan={4} className="px-3 py-4 text-center text-gray-500 border-b border-gray-200">{t('dashboard.compare.noMovements')}</td>
                           </tr>
                         ) : (
                           Array.from({ length: movementsCompareTableDataB.rowCount }, (_, i) => {
@@ -3449,7 +3211,7 @@ const Dashboard: React.FC = () => {
                       </tbody>
                       <tfoot>
                         <tr className="font-semibold bg-gray-50">
-                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-red-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">Total</td>
+                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-red-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">{t('dashboard.columns.total')}</td>
                           <td className="sticky bottom-8 z-10 px-3 py-2 text-right border-t border-r border-gray-200 bg-red-100 tabular-nums shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">
                             −{formatCurrency(convertMovementsToDisplayCurrency(movementsCompareTableDataB.totalSorties, movementsCompareYAxisCurrency as CurrencySymbol), movementsCompareYAxisCurrency)}
                             {movementsCompareShowPct && movementsCompareTableDataA && movementsCompareTableDataA.totalSorties !== 0 && (
@@ -3458,7 +3220,7 @@ const Dashboard: React.FC = () => {
                               </span>
                             )}
                           </td>
-                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-green-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">Total</td>
+                          <td className="sticky bottom-8 z-10 px-3 py-2 border-t border-r border-gray-200 bg-green-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">{t('dashboard.columns.total')}</td>
                           <td className="sticky bottom-8 z-10 px-3 py-2 text-right border-t border-gray-200 bg-green-100 tabular-nums shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]">
                             +{formatCurrency(convertMovementsToDisplayCurrency(movementsCompareTableDataB.totalEntrées, movementsCompareYAxisCurrency as CurrencySymbol), movementsCompareYAxisCurrency)}
                             {movementsCompareShowPct && movementsCompareTableDataA && movementsCompareTableDataA.totalEntrées !== 0 && (
@@ -3469,7 +3231,7 @@ const Dashboard: React.FC = () => {
                           </td>
                         </tr>
                         <tr className="font-semibold bg-gray-100">
-                          <td className="sticky bottom-0 z-10 px-3 py-2 border-t border-gray-200 bg-gray-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]" colSpan={3}>Balance</td>
+                          <td className="sticky bottom-0 z-10 px-3 py-2 border-t border-gray-200 bg-gray-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)]" colSpan={3}>{t('dashboard.series.balance')}</td>
                           <td className={`sticky bottom-0 z-10 px-3 py-2 text-right border-t border-gray-200 tabular-nums bg-gray-100 shadow-[0_-1px_0_0_rgba(0,0,0,0.05)] ${movementsCompareTableDataB.totalEntrées - movementsCompareTableDataB.totalSorties >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                             {(() => {
                               const balance = movementsCompareTableDataB.totalEntrées - movementsCompareTableDataB.totalSorties;
@@ -3498,8 +3260,8 @@ const Dashboard: React.FC = () => {
                       <table className={`border-collapse w-full ${movementsCompareShowPct ? 'text-[13px]' : 'text-sm'}`}>
                         <thead>
                           <tr>
-                            <th className="text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-gray-100" scope="col">Compte</th>
-                            <th className="text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-gray-100" scope="col">Balance</th>
+                            <th className="text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-gray-100" scope="col">{t('dashboard.columns.account')}</th>
+                            <th className="text-right font-semibold text-gray-800 px-3 py-2 border-b border-gray-200 bg-gray-100" scope="col">{t('dashboard.series.balance')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3523,7 +3285,7 @@ const Dashboard: React.FC = () => {
                         </tbody>
                         <tfoot>
                           <tr className="font-semibold bg-gray-100">
-                            <td className="px-3 py-2 border-t border-r border-gray-200">Balance</td>
+                            <td className="px-3 py-2 border-t border-r border-gray-200">{t('dashboard.series.balance')}</td>
                             <td className={`px-3 py-2 text-right border-t border-gray-200 tabular-nums ${movementsCompareTableDataB.totalEntrées - movementsCompareTableDataB.totalSorties >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                               {(() => {
                                 const total = movementsCompareTableDataB.totalEntrées - movementsCompareTableDataB.totalSorties;
@@ -3584,7 +3346,7 @@ const Dashboard: React.FC = () => {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                  Tableaux et filtres
+                  {t('dashboard.sections.tables')}
                 </span>
               </span>
             </button>
@@ -3598,7 +3360,7 @@ const Dashboard: React.FC = () => {
                     return next;
                   });
                 }}
-                title="Paramètres"
+                title={t('dashboard.settings.title')}
                 className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
                   tablesFiltersOpen
                     ? 'bg-gray-200 border-gray-300 text-gray-800'
@@ -3635,13 +3397,13 @@ const Dashboard: React.FC = () => {
                       }
                       className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
                     >
-                      Paramètres
+                      {t('dashboard.settings.title')}
                       <span className="text-gray-500">▼</span>
                     </button>
                     <div className="flex-1 min-h-0 flex flex-col p-3 gap-3 overflow-y-auto">
                       <div className="flex-shrink-0">
                         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                          Devise d&apos;affichage
+                          {t('dashboard.settings.displayCurrency')}
                         </label>
                         <select
                           value={tablesYAxisCurrency}
@@ -3652,7 +3414,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                         >
-                          {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                          {yAxisCurrencies.map(({ value, label }) => (
                             <option key={value} value={value}>
                               {label}
                             </option>
@@ -3661,7 +3423,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="flex-shrink-0">
                         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                          Hauteur max. tableau transactions
+                          {t('dashboard.settings.transactionsTableMaxHeight')}
                         </label>
                         <div className="flex items-center gap-2">
                           <input
@@ -3683,7 +3445,7 @@ const Dashboard: React.FC = () => {
                         </div>
                       </div>
                       <div className="flex-shrink-0 border-t border-gray-200 pt-2 space-y-2">
-                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Synchronisation plage</span>
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t('dashboard.settings.rangeSync')}</span>
                         <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                           <input
                             type="checkbox"
@@ -3691,11 +3453,11 @@ const Dashboard: React.FC = () => {
                             onChange={(e) => handleTablesMovementsSyncChange(e.target.checked)}
                             className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
-                          <span>Synchroniser avec Suivi des mouvements</span>
+                          <span>{t('dashboard.syncWith', { section: t('dashboard.sections.movements') })}</span>
                         </label>
                       </div>
                       <div className="flex-shrink-0 border-t border-gray-200 pt-2 space-y-2">
-                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Mouvements</span>
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t('dashboard.settings.movementsGroup')}</span>
                         <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                           <input
                             type="checkbox"
@@ -3707,7 +3469,7 @@ const Dashboard: React.FC = () => {
                             }}
                             className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
-                          <span>Entrées</span>
+                          <span>{t('dashboard.series.entries')}</span>
                         </label>
                         <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                           <input
@@ -3720,20 +3482,20 @@ const Dashboard: React.FC = () => {
                             }}
                             className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                           />
-                          <span>Sorties</span>
+                          <span>{t('dashboard.series.exits')}</span>
                         </label>
                       </div>
                       {tablesDashboardData && (
                         <>
                           <div className="flex-shrink-0 border-t border-gray-200 pt-2">
                             <div className="flex items-center justify-between gap-1 mb-1">
-                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Titres</label>
+                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t('dashboard.settings.titles')}</label>
                               <button
                                 type="button"
                                 className="text-xs text-blue-600 hover:underline flex-shrink-0"
                                 onClick={() => setTablesTitleExactQueries((prev) => [...prev, ''])}
                               >
-                                + Ligne
+                                {t('dashboard.settings.addLine')}
                               </button>
                             </div>
                             <div className="flex flex-col gap-1.5">
@@ -3766,7 +3528,7 @@ const Dashboard: React.FC = () => {
                                           });
                                         }
                                       }}
-                                      placeholder="Vide = ignoré · OU entre lignes (« + Ligne ») (contient)"
+                                      placeholder={t('dashboard.settings.filterPlaceholder')}
                                       list={movementsColumns?.titleCol && sug.length > 0 ? listId : undefined}
                                       className="min-w-0 flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800 placeholder:text-gray-400"
                                       autoComplete="off"
@@ -3775,7 +3537,7 @@ const Dashboard: React.FC = () => {
                                       <button
                                         type="button"
                                         className="flex-shrink-0 px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-200"
-                                        title="Retirer cette ligne"
+                                        title={t('dashboard.settings.removeLine')}
                                         onClick={() =>
                                           setTablesTitleExactQueries((prev) => prev.filter((_, j) => j !== i))
                                         }
@@ -3797,13 +3559,13 @@ const Dashboard: React.FC = () => {
                           </div>
                           <div className="flex-shrink-0 border-t border-gray-200 pt-2">
                             <div className="flex items-center justify-between gap-1 mb-1">
-                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Types</label>
+                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t('dashboard.settings.types')}</label>
                               <button
                                 type="button"
                                 className="text-xs text-blue-600 hover:underline flex-shrink-0"
                                 onClick={() => setTablesTypeExactQueries((prev) => [...prev, ''])}
                               >
-                                + Ligne
+                                {t('dashboard.settings.addLine')}
                               </button>
                             </div>
                             <div className="flex flex-col gap-1.5">
@@ -3836,7 +3598,7 @@ const Dashboard: React.FC = () => {
                                           });
                                         }
                                       }}
-                                      placeholder="Vide = ignoré · OU entre lignes (« + Ligne ») (contient)"
+                                      placeholder={t('dashboard.settings.filterPlaceholder')}
                                       list={movementsColumns?.typeCol && sug.length > 0 ? listId : undefined}
                                       className="min-w-0 flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800 placeholder:text-gray-400"
                                       autoComplete="off"
@@ -3845,7 +3607,7 @@ const Dashboard: React.FC = () => {
                                       <button
                                         type="button"
                                         className="flex-shrink-0 px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-200"
-                                        title="Retirer cette ligne"
+                                        title={t('dashboard.settings.removeLine')}
                                         onClick={() =>
                                           setTablesTypeExactQueries((prev) => prev.filter((_, j) => j !== i))
                                         }
@@ -3867,13 +3629,13 @@ const Dashboard: React.FC = () => {
                           </div>
                           <div className="flex-shrink-0 border-t border-gray-200 pt-2">
                             <div className="flex items-center justify-between gap-1 mb-1">
-                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Comptes</label>
+                              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t('dashboard.settings.accounts')}</label>
                               <button
                                 type="button"
                                 className="text-xs text-blue-600 hover:underline flex-shrink-0"
                                 onClick={() => setTablesAccountExactQueries((prev) => [...prev, ''])}
                               >
-                                + Ligne
+                                {t('dashboard.settings.addLine')}
                               </button>
                             </div>
                             <div className="flex flex-col gap-1.5">
@@ -3906,7 +3668,7 @@ const Dashboard: React.FC = () => {
                                           });
                                         }
                                       }}
-                                      placeholder="Vide = ignoré · OU entre lignes (« + Ligne ») (contient)"
+                                      placeholder={t('dashboard.settings.filterPlaceholder')}
                                       list={movementsColumns?.accountCol && sug.length > 0 ? listId : undefined}
                                       className="min-w-0 flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800 placeholder:text-gray-400"
                                       autoComplete="off"
@@ -3915,7 +3677,7 @@ const Dashboard: React.FC = () => {
                                       <button
                                         type="button"
                                         className="flex-shrink-0 px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-200"
-                                        title="Retirer cette ligne"
+                                        title={t('dashboard.settings.removeLine')}
                                         onClick={() =>
                                           setTablesAccountExactQueries((prev) => prev.filter((_, j) => j !== i))
                                         }
@@ -3962,7 +3724,7 @@ const Dashboard: React.FC = () => {
                             : tablesSliderEndDate
                       }
                       onChange={handleTablesDateRangeChange}
-                      syncLabel="Synchroniser avec Évolution des soldes"
+                      syncLabel={t('dashboard.syncWith', { section: t('dashboard.sections.balances') })}
                       syncChecked={tablesSyncsWithChart}
                       onSyncChange={handleTablesChartSyncChange}
                       fullYearsMode={dateRangeSliderFullYears}
@@ -3970,7 +3732,7 @@ const Dashboard: React.FC = () => {
                     />
                   </div>
                 )}
-                {movementsDataLoading && <div className="py-6 text-center text-gray-500">Chargement…</div>}
+                {movementsDataLoading && <div className="py-6 text-center text-gray-500">{t('common.loading')}</div>}
                 {!movementsDataLoading && movementsDataError && (
                   <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3">{movementsDataError}</div>
                 )}
@@ -3997,8 +3759,8 @@ const Dashboard: React.FC = () => {
                                   }
                                   onChange={toggleTablesBlocSelectAllVisible}
                                   className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                  title="Tout sélectionner ou tout désélectionner"
-                                  aria-label="Sélectionner ou désélectionner toutes les transactions affichées"
+                                  title={t('dashboard.tables.selectAllTitle')}
+                                  aria-label={t('dashboard.tables.selectAllAria')}
                                 />
                               </th>
                               <th
@@ -4007,7 +3769,7 @@ const Dashboard: React.FC = () => {
                               >
                                 <button
                                   type="button"
-                                  title="Trier par index"
+                                  title={t('dashboard.sortBy.index')}
                                   onClick={() =>
                                     setTablesBlocTxSort((prev) =>
                                       prev.col === 'index'
@@ -4017,7 +3779,7 @@ const Dashboard: React.FC = () => {
                                   }
                                   className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
                                 >
-                                  Index
+                                  {t('dashboard.columns.index')}
                                   {tablesBlocTxSort.col === 'index' && (
                                     <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                       {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
@@ -4031,7 +3793,7 @@ const Dashboard: React.FC = () => {
                               >
                                 <button
                                   type="button"
-                                  title="Trier par date"
+                                  title={t('dashboard.sortBy.date')}
                                   onClick={() =>
                                     setTablesBlocTxSort((prev) =>
                                       prev.col === 'date'
@@ -4041,7 +3803,7 @@ const Dashboard: React.FC = () => {
                                   }
                                   className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
                                 >
-                                  Date
+                                  {t('dashboard.columns.date')}
                                   {tablesBlocTxSort.col === 'date' && (
                                     <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                       {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
@@ -4055,7 +3817,7 @@ const Dashboard: React.FC = () => {
                               >
                                 <button
                                   type="button"
-                                  title="Trier par titre"
+                                  title={t('dashboard.sortBy.title')}
                                   onClick={() =>
                                     setTablesBlocTxSort((prev) =>
                                       prev.col === 'title'
@@ -4065,7 +3827,7 @@ const Dashboard: React.FC = () => {
                                   }
                                   className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
                                 >
-                                  Titre
+                                  {t('dashboard.columns.title')}
                                   {tablesBlocTxSort.col === 'title' && (
                                     <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                       {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
@@ -4079,7 +3841,7 @@ const Dashboard: React.FC = () => {
                               >
                                 <button
                                   type="button"
-                                  title="Trier par type"
+                                  title={t('dashboard.sortBy.type')}
                                   onClick={() =>
                                     setTablesBlocTxSort((prev) =>
                                       prev.col === 'type'
@@ -4089,7 +3851,7 @@ const Dashboard: React.FC = () => {
                                   }
                                   className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
                                 >
-                                  Type
+                                  {t('dashboard.columns.type')}
                                   {tablesBlocTxSort.col === 'type' && (
                                     <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                       {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
@@ -4103,7 +3865,7 @@ const Dashboard: React.FC = () => {
                               >
                                 <button
                                   type="button"
-                                  title="Trier par compte"
+                                  title={t('dashboard.sortBy.account')}
                                   onClick={() =>
                                     setTablesBlocTxSort((prev) =>
                                       prev.col === 'account'
@@ -4113,7 +3875,7 @@ const Dashboard: React.FC = () => {
                                   }
                                   className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
                                 >
-                                  Compte
+                                  {t('dashboard.columns.account')}
                                   {tablesBlocTxSort.col === 'account' && (
                                     <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                       {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
@@ -4127,7 +3889,7 @@ const Dashboard: React.FC = () => {
                               >
                                 <button
                                   type="button"
-                                  title="Trier par montant"
+                                  title={t('dashboard.sortBy.amount')}
                                   onClick={() =>
                                     setTablesBlocTxSort((prev) =>
                                       prev.col === 'amount'
@@ -4137,7 +3899,7 @@ const Dashboard: React.FC = () => {
                                   }
                                   className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-200/80 rounded border-0 bg-transparent"
                                 >
-                                  Montant
+                                  {t('dashboard.columns.amount')}
                                   {tablesBlocTxSort.col === 'amount' && (
                                     <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                       {tablesBlocTxSort.dir === 'asc' ? '↑' : '↓'}
@@ -4162,7 +3924,7 @@ const Dashboard: React.FC = () => {
                                       checked={tablesBlocSelectedRowKeys.has(row.rowKey)}
                                       onChange={() => toggleTablesBlocRowSelected(row.rowKey)}
                                       className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                      aria-label={`Inclure la transaction ${row.txIndex} dans les totaux par type et compte`}
+                                      aria-label={t('dashboard.tables.includeRowAria', { index: row.txIndex })}
                                     />
                                   </td>
                                   <td className="px-3 py-2 text-gray-700 whitespace-nowrap tabular-nums w-14">
@@ -4197,24 +3959,21 @@ const Dashboard: React.FC = () => {
                         role="status"
                         aria-live="polite"
                       >
-                        {tablesBlocSortedTxRows.length === 1
-                          ? '1 transaction affichée'
-                          : `${tablesBlocSortedTxRows.length} transactions affichées`}
+                        {t('dashboard.tables.transactionsShown', { count: tablesBlocSortedTxRows.length })}
                         {tablesBlocSelectedRowKeys.size > 0 && (
                           <span className="block sm:inline sm:ml-2 mt-1 sm:mt-0 text-gray-600">
-                            · Totaux type / compte : {tablesBlocSelectedRowKeys.size}{' '}
-                            {tablesBlocSelectedRowKeys.size > 1 ? 'lignes sélectionnées' : 'ligne sélectionnée'}
+                            {t('dashboard.tables.selectionTotals', { count: tablesBlocSelectedRowKeys.size })}
                           </span>
                         )}
                       </div>
                     </div>
                     {tablesDashboardData.rows.length === 0 && (
-                      <p className="text-sm text-gray-500 text-center py-4">Aucune transaction pour les filtres sélectionnés.</p>
+                      <p className="text-sm text-gray-500 text-center py-4">{t('dashboard.tables.noTransactions')}</p>
                     )}
                     <div className="flex flex-col xl:flex-row gap-4 w-full items-stretch">
                       <div className="min-w-0 shrink xl:flex-[1] xl:basis-0 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
                         <div className="px-2 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-800 flex-shrink-0">
-                          Types — entrées
+                          {t('dashboard.tables.typesEntries')}
                         </div>
                         <div className="overflow-x-auto min-h-0">
                           <table className="w-full text-sm table-fixed">
@@ -4226,7 +3985,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par type"
+                                    title={t('dashboard.sortBy.type')}
                                     onClick={() =>
                                       setTablesBlocTypeInSort((prev) =>
                                         prev.col === 'type'
@@ -4236,7 +3995,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full min-w-0 items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    <span className="truncate">Type</span>
+                                    <span className="truncate">{t('dashboard.columns.type')}</span>
                                     {tablesBlocTypeInSort.col === 'type' && (
                                       <span className="flex-shrink-0 font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocTypeInSort.dir === 'asc' ? '↑' : '↓'}
@@ -4250,7 +4009,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par montant des entrées"
+                                    title={t('dashboard.sortBy.entriesAmount')}
                                     onClick={() =>
                                       setTablesBlocTypeInSort((prev) =>
                                         prev.col === 'entrées'
@@ -4260,7 +4019,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    Entrées
+                                    {t('dashboard.series.entries')}
                                     {tablesBlocTypeInSort.col === 'entrées' && (
                                       <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocTypeInSort.dir === 'asc' ? '↑' : '↓'}
@@ -4291,7 +4050,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="min-w-0 shrink xl:flex-[1] xl:basis-0 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
                         <div className="px-2 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-800 flex-shrink-0">
-                          Types — sorties
+                          {t('dashboard.tables.typesExits')}
                         </div>
                         <div className="overflow-x-auto min-h-0">
                           <table className="w-full text-sm table-fixed">
@@ -4303,7 +4062,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par type"
+                                    title={t('dashboard.sortBy.type')}
                                     onClick={() =>
                                       setTablesBlocTypeOutSort((prev) =>
                                         prev.col === 'type'
@@ -4313,7 +4072,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full min-w-0 items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    <span className="truncate">Type</span>
+                                    <span className="truncate">{t('dashboard.columns.type')}</span>
                                     {tablesBlocTypeOutSort.col === 'type' && (
                                       <span className="flex-shrink-0 font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocTypeOutSort.dir === 'asc' ? '↑' : '↓'}
@@ -4327,7 +4086,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par montant des sorties"
+                                    title={t('dashboard.sortBy.exitsAmount')}
                                     onClick={() =>
                                       setTablesBlocTypeOutSort((prev) =>
                                         prev.col === 'sorties'
@@ -4337,7 +4096,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    Sorties
+                                    {t('dashboard.series.exits')}
                                     {tablesBlocTypeOutSort.col === 'sorties' && (
                                       <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocTypeOutSort.dir === 'asc' ? '↑' : '↓'}
@@ -4368,7 +4127,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="min-w-0 shrink xl:flex-[2.5] xl:basis-0 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
                         <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-800 flex-shrink-0">
-                          Synthèse par compte
+                          {t('dashboard.tables.accountSummary')}
                         </div>
                         <div className="overflow-x-auto min-h-0">
                           <table className="w-full text-sm">
@@ -4380,7 +4139,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par compte"
+                                    title={t('dashboard.sortBy.account')}
                                     onClick={() =>
                                       setTablesBlocAccountSort((prev) =>
                                         prev.col === 'account'
@@ -4390,7 +4149,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full items-center gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    Compte
+                                    {t('dashboard.columns.account')}
                                     {tablesBlocAccountSort.col === 'account' && (
                                       <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
@@ -4404,7 +4163,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par entrées"
+                                    title={t('dashboard.sortBy.entries')}
                                     onClick={() =>
                                       setTablesBlocAccountSort((prev) =>
                                         prev.col === 'entrées'
@@ -4414,7 +4173,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    Entrées
+                                    {t('dashboard.series.entries')}
                                     {tablesBlocAccountSort.col === 'entrées' && (
                                       <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
@@ -4428,7 +4187,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par sorties"
+                                    title={t('dashboard.sortBy.exits')}
                                     onClick={() =>
                                       setTablesBlocAccountSort((prev) =>
                                         prev.col === 'sorties'
@@ -4438,7 +4197,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    Sorties
+                                    {t('dashboard.series.exits')}
                                     {tablesBlocAccountSort.col === 'sorties' && (
                                       <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
@@ -4452,7 +4211,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   <button
                                     type="button"
-                                    title="Trier par balance"
+                                    title={t('dashboard.sortBy.balance')}
                                     onClick={() =>
                                       setTablesBlocAccountSort((prev) =>
                                         prev.col === 'balance'
@@ -4462,7 +4221,7 @@ const Dashboard: React.FC = () => {
                                     }
                                     className="inline-flex w-full items-center justify-end gap-1 font-inherit text-inherit uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 rounded border-0 bg-transparent"
                                   >
-                                    Balance
+                                    {t('dashboard.series.balance')}
                                     {tablesBlocAccountSort.col === 'balance' && (
                                       <span className="font-normal tabular-nums text-gray-500" aria-hidden>
                                         {tablesBlocAccountSort.dir === 'asc' ? '↑' : '↓'}
@@ -4507,12 +4266,12 @@ const Dashboard: React.FC = () => {
                     <div className="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 flex flex-col gap-2">
                       {tablesBlocSelectedRowKeys.size > 0 && (
                         <p className="text-xs text-gray-600">
-                          Les montants ci-dessous ne comptent que les lignes cochées dans le tableau.
+                          {t('dashboard.tables.selectedRowsOnly')}
                         </p>
                       )}
                       <div className="flex flex-wrap gap-6 justify-between items-center">
                       <div className="text-sm">
-                        <span className="text-gray-600">Total entrées : </span>
+                        <span className="text-gray-600">{t('dashboard.tables.totalEntriesLabel')}</span>
                         <span className="font-semibold text-green-700 tabular-nums">
                           +
                           {formatCurrency(
@@ -4522,7 +4281,7 @@ const Dashboard: React.FC = () => {
                         </span>
                       </div>
                       <div className="text-sm">
-                        <span className="text-gray-600">Total sorties : </span>
+                        <span className="text-gray-600">{t('dashboard.tables.totalExitsLabel')}</span>
                         <span className="font-semibold text-red-700 tabular-nums">
                           −
                           {formatCurrency(
@@ -4532,7 +4291,7 @@ const Dashboard: React.FC = () => {
                         </span>
                       </div>
                       <div className="text-sm">
-                        <span className="text-gray-600">Balance : </span>
+                        <span className="text-gray-600">{t('dashboard.tables.balanceLabel')}</span>
                         <span
                           className={`font-semibold tabular-nums ${
                             tablesDashboardData.balance >= 0 ? 'text-green-700' : 'text-red-700'
@@ -4549,9 +4308,9 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                 )}
-                {!movementsDataLoading && !movementsDataError && sourceData && !tablesDashboardData && (
+                {!movementsDataLoading && !movementsDataError && movementsColumns?.amountCol && !tablesDashboardData && (
                   <div className="py-4 text-center text-gray-500 text-sm">
-                    Données source sans colonne Date ou AMOUNT GBP, ou plage vide.
+                    {t('dashboard.empty.noDateOrAmountGbp')}
                   </div>
                 )}
               </div>
@@ -4585,7 +4344,7 @@ const Dashboard: React.FC = () => {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                  Suivi annuel
+                  {t('dashboard.sections.yearly')}
                 </span>
               </span>
             </button>
@@ -4599,7 +4358,7 @@ const Dashboard: React.FC = () => {
                     return next;
                   });
                 }}
-                title="Paramètres"
+                title={t('dashboard.settings.title')}
                 className={`flex-shrink-0 p-2 rounded-lg border transition-colors ${
                   vueGlobaleFiltersOpen
                     ? 'bg-gray-200 border-gray-300 text-gray-800'
@@ -4640,13 +4399,13 @@ const Dashboard: React.FC = () => {
                   })}
                   className="flex-shrink-0 w-full px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 flex items-center justify-between"
                 >
-                  Paramètres
+                  {t('dashboard.settings.title')}
                   <span className="text-gray-500">▼</span>
                 </button>
                 <div className="flex-1 min-h-0 flex flex-col p-3 gap-4 overflow-hidden">
                   <div className="flex-shrink-0">
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                      Devise d&apos;affichage
+                      {t('dashboard.settings.displayCurrency')}
                     </label>
                     <select
                       value={vueGlobaleYAxisCurrency}
@@ -4657,7 +4416,7 @@ const Dashboard: React.FC = () => {
                       }}
                       className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-800"
                     >
-                      {Y_AXIS_CURRENCIES.map(({ value, label }) => (
+                      {yAxisCurrencies.map(({ value, label }) => (
                         <option key={value} value={value}>
                           {label}
                         </option>
@@ -4667,7 +4426,7 @@ const Dashboard: React.FC = () => {
                   {yearlyViewData && yearlyViewData.years.length > 0 && (
                     <div className="flex-shrink-0">
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                        Années visibles
+                        {t('dashboard.settings.visibleYears')}
                       </label>
                       <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
                         {yearlyViewData.years.map((year) => {
@@ -4699,7 +4458,7 @@ const Dashboard: React.FC = () => {
                   {yearlySummarySeriesLabels.length > 0 && (
                     <div className="flex-shrink-0 flex flex-col">
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                        Afficher uniquement les labels cochés
+                        {t('dashboard.settings.onlyCheckedLabels')}
                       </label>
                       <label className="flex items-center gap-2 text-sm text-gray-800 cursor-pointer select-none mb-2">
                         <input
@@ -4721,13 +4480,13 @@ const Dashboard: React.FC = () => {
                           }}
                           className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                         />
-                        <span>{areAllYearlySummarySeriesChecked ? 'Tout décocher' : 'Tout cocher'}</span>
+                        <span>{areAllYearlySummarySeriesChecked ? t('dashboard.settings.uncheckAll') : t('dashboard.settings.checkAll')}</span>
                       </label>
                       <div className="max-h-40 overflow-y-auto rounded border border-gray-200 bg-white p-2 space-y-1.5">
                         {yearlySummarySeriesLabels.map((label) => {
                           const checked = !(vueGlobaleHiddenSeriesByLabel[label] ?? false);
                           const isSortieLabel = yearlySummarySortieLabelSet.has(label);
-                          const isBalance = label === 'Balance';
+                          const isBalance = label === t('dashboard.series.balance');
                           return (
                             <label
                               key={label}
@@ -4758,7 +4517,7 @@ const Dashboard: React.FC = () => {
                                 }`}
                                 aria-hidden
                                 title={
-                                  isBalance ? 'Balance' : isSortieLabel ? 'Type sortie' : 'Type entrée'
+                                  isBalance ? t('dashboard.series.balance') : isSortieLabel ? t('dashboard.settings.exitType') : t('dashboard.settings.entryType')
                                 }
                               />
                             </label>
@@ -4769,7 +4528,7 @@ const Dashboard: React.FC = () => {
                   )}
                   <div className="flex-shrink-0">
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                      Affichage
+                      {t('dashboard.settings.display')}
                     </label>
                     <div className="space-y-2">
                       <label className="flex items-center gap-2 cursor-pointer">
@@ -4783,7 +4542,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Tableau (types par année)</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.settings.showTable')}</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -4796,7 +4555,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Graphe</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.settings.showChart')}</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -4809,13 +4568,13 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Tableau outils d&apos;analyse</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.settings.showSummaryTable')}</span>
                       </label>
                     </div>
                   </div>
                   <div className="flex-shrink-0 border-t border-gray-200 pt-3 mt-1">
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                      Outils d&apos;analyse
+                      {t('dashboard.settings.analysisTools')}
                     </label>
                     <div className="space-y-2">
                       <label className="flex items-center gap-2 cursor-pointer">
@@ -4829,7 +4588,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Courbe de tendance (+ équation)</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.settings.trendLine')}</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -4842,7 +4601,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Moyenne entrées</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.series.averageEntries')}</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -4855,7 +4614,7 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Moyenne sorties</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.series.averageExits')}</span>
                       </label>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -4868,11 +4627,11 @@ const Dashboard: React.FC = () => {
                           }}
                           className="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-400"
                         />
-                        <span className="text-sm text-gray-700">Moyenne balance</span>
+                        <span className="text-sm text-gray-700">{t('dashboard.series.averageBalance')}</span>
                       </label>
                     </div>
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2 mt-3">
-                      Hauteur du graphique
+                      {t('dashboard.settings.chartHeight')}
                     </label>
                     <div className="flex items-center gap-2">
                       <input
@@ -4901,7 +4660,7 @@ const Dashboard: React.FC = () => {
           )}
           <div className="flex-1 min-w-0 flex flex-col gap-4">
             {movementsDataLoading && (
-              <div className="py-6 text-center text-gray-500">Chargement…</div>
+              <div className="py-6 text-center text-gray-500">{t('common.loading')}</div>
             )}
             {!movementsDataLoading && movementsDataError && (
               <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3">
@@ -4910,7 +4669,7 @@ const Dashboard: React.FC = () => {
             )}
             {!movementsDataLoading && !movementsDataError && yearlyViewDataFiltered && yearlyViewDataFiltered.years.length === 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-800 px-4 py-3 text-sm">
-                Aucune année sélectionnée. Cochez au moins une année dans les paramètres.
+                {t('dashboard.yearly.noYearSelected')}
               </div>
             )}
             {!movementsDataLoading && !movementsDataError && yearlyViewDataFiltered && yearlyViewDataFiltered.years.length > 0 && (
@@ -4927,7 +4686,7 @@ const Dashboard: React.FC = () => {
                     <thead>
                       <tr>
                         <th className="sticky left-0 z-10 text-left font-semibold text-gray-800 px-3 py-2 border-b border-r border-gray-200 bg-gray-100 min-w-[8rem]" scope="col">
-                          Type
+                          {t('dashboard.columns.type')}
                         </th>
                         {yearlyViewDataFiltered.years.map((year, yearIndex) => (
                           <th
@@ -4944,7 +4703,7 @@ const Dashboard: React.FC = () => {
                         {yearlyViewDataFiltered.types.length === 0 ? (
                         <tr>
                           <td colSpan={1 + yearlyViewDataFiltered.years.length} className="px-3 py-4 text-center text-gray-500 border-b border-gray-200">
-                            Aucune donnée par type
+                            {t('dashboard.yearly.noTypeData')}
                           </td>
                         </tr>
                       ) : (
@@ -4982,7 +4741,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   ▼
                                 </span>
-                                Entrées
+                                {t('dashboard.series.entries')}
                               </span>
                             </td>
                             {yearlyViewDataFiltered.years.map((year, yearIndex) => (
@@ -5010,7 +4769,7 @@ const Dashboard: React.FC = () => {
                             ))}
                           <tr className="border-b border-gray-200 bg-green-50">
                             <td className="sticky left-0 z-10 pl-6 pr-3 py-1.5 border-r border-gray-200 bg-green-50 font-medium text-green-800">
-                              Total entrées
+                              {t('dashboard.totalEntries')}
                             </td>
                             {yearlyViewDataFiltered.years.map((year, yearIndex) => {
                               const entrées = yearlyViewDataFiltered.totalEntréesByYear[year] ?? 0;
@@ -5055,7 +4814,7 @@ const Dashboard: React.FC = () => {
                                 >
                                   ▼
                                 </span>
-                                Sorties
+                                {t('dashboard.series.exits')}
                               </span>
                             </td>
                             {yearlyViewDataFiltered.years.map((year, yearIndex) => (
@@ -5083,7 +4842,7 @@ const Dashboard: React.FC = () => {
                             ))}
                           <tr className="border-b border-gray-200 bg-red-50">
                             <td className="sticky left-0 z-10 pl-6 pr-3 py-1.5 border-r border-gray-200 bg-red-50 font-medium text-red-800">
-                              Total sorties
+                              {t('dashboard.totalExits')}
                             </td>
                             {yearlyViewDataFiltered.years.map((year, yearIndex) => {
                               const sorties = yearlyViewDataFiltered.totalSortiesByYear[year] ?? 0;
@@ -5097,7 +4856,7 @@ const Dashboard: React.FC = () => {
                           </tr>
                           <tr className="bg-gray-50 font-semibold">
                             <td className="sticky left-0 z-10 px-3 pr-3 py-2 border-r border-gray-200 bg-gray-100 text-gray-800">
-                              Balance Annuelle
+                              {t('dashboard.yearly.annualBalance')}
                             </td>
                             {yearlyViewDataFiltered.years.map((year, yearIndex) => {
                               const balance = (yearlyViewDataFiltered.totalEntréesByYear[year] ?? 0) - (yearlyViewDataFiltered.totalSortiesByYear[year] ?? 0);
@@ -5137,9 +4896,9 @@ const Dashboard: React.FC = () => {
                 )}
               </>
             )}
-            {!movementsDataLoading && !movementsDataError && !yearlyViewData && sourceData && (
+            {!movementsDataLoading && !movementsDataError && !yearlyViewData && movementsColumns?.amountCol && (
               <div className="py-4 text-center text-gray-500 text-sm">
-                Données source sans colonne Date ou montant, ou aucune donnée.
+                {t('dashboard.empty.noDateOrAmount')}
               </div>
             )}
           </div>
@@ -5151,7 +4910,7 @@ const Dashboard: React.FC = () => {
 
       <div className="flex-1 flex flex-col items-center justify-center text-gray-600">
         <p>
-          Chamaccounts 2026 – Logiciel de comptabilité pour indépendants.
+          {t('dashboard.footer')}
         </p>
       </div>
     </main>

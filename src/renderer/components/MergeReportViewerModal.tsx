@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Papa from 'papaparse';
+import { useTranslation } from 'react-i18next';
 import { ACCOUNT_BALANCE_MERGE_REPORT_PATH, MERGE_REPORT_PATH } from '@/shared/dataPaths';
 import { MERGE_REPORT_SUCCESS_REASON } from '@/shared/mergeReportConstants';
 import { mergeAccountBalanceImports, type AccountBalanceMergeResult } from '../services/AccountBalanceMergeService';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
+import { translateKnownFrMessage } from '../i18n/translateImportPrepMessage';
 
 export interface ValidRowShape {
   DATE: string;
@@ -64,11 +66,13 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
   onClose = () => {},
   reloadKey = 0,
   reportPath = MERGE_REPORT_PATH,
-  modalTitle = 'Rapport merge_report.csv',
+  modalTitle: modalTitleProp,
   forceMergeMode = 'transactionsAppend',
   onAfterForceMerge,
   onAccountBalanceMergeComplete,
 }) => {
+  const { t } = useTranslation();
+  const modalTitle = modalTitleProp ?? t('mergeReport.defaultTitle');
   const [rowsWithIds, setRowsWithIds] = useState<RowWithId[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -99,7 +103,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
           }
         ).electronAPI;
         if (!api?.readFile) {
-          setLoadError('Lecture fichier non disponible.');
+          setLoadError(t('mergeReport.fileReadUnavailable'));
           setRowsWithIds([]);
           setHeaders([]);
           return;
@@ -108,8 +112,8 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
         if (!result.success || result.data === undefined) {
           const fallback =
             reportPath === ACCOUNT_BALANCE_MERGE_REPORT_PATH
-              ? 'Impossible de lire account_balance_merge_report.csv.'
-              : 'Impossible de lire merge_report.csv.';
+              ? t('mergeReport.readFailedAccountBalance')
+              : t('mergeReport.readFailedMerge');
           setLoadError(result.error ?? fallback);
           setRowsWithIds([]);
           setHeaders([]);
@@ -130,7 +134,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
     };
 
     void load();
-  }, [shouldLoad, reportPath, reloadKey]);
+  }, [shouldLoad, reportPath, reloadKey, t]);
 
   const displayHeaders = useMemo(() => {
     const base = headers.length > 0 ? headers : [];
@@ -224,7 +228,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
   const handleForceMerge = useCallback(async () => {
     if (forceMergeMode === 'accountBalanceReplace') {
       if (ignoredIds.size === 0) {
-        setForceMessage('Cochez « Ignorer l’anomalie » sur au moins une ligne pour activer la fusion forcée.');
+        setForceMessage(t('mergeReport.forceNeedsCheck'));
         return;
       }
       setForceLoading(true);
@@ -236,7 +240,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
           onAccountBalanceMergeComplete?.(result);
           finishSuccess();
         } else {
-          setForceMessage(result.error ?? 'Échec de la fusion avec remplacement des dates.');
+          setForceMessage(result.error ?? t('mergeReport.forceReplaceFailed'));
         }
       } finally {
         setForceLoading(false);
@@ -257,7 +261,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
       toAppend.push(row);
     }
     if (toAppend.length === 0) {
-      setForceMessage('Aucune ligne ignorée valide pour la fusion forcée.');
+      setForceMessage(t('mergeReport.forceNoValidRows'));
       return;
     }
     setForceLoading(true);
@@ -273,7 +277,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
         }
       ).electronAPI;
       if (!api?.appendForcedTransactionRows) {
-        setForceMessage('Fonction de fusion forcée non disponible.');
+        setForceMessage(t('mergeReport.forceUnavailable'));
         return;
       }
       const result = await api.appendForcedTransactionRows(toAppend);
@@ -281,7 +285,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
         onAfterForceMerge?.();
         finishSuccess();
       } else {
-        setForceMessage(result.error ?? 'Échec de la fusion forcée.');
+        setForceMessage(result.error ?? t('mergeReport.forceFailed'));
       }
     } finally {
       setForceLoading(false);
@@ -293,6 +297,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
     onAfterForceMerge,
     onAccountBalanceMergeComplete,
     finishSuccess,
+    t,
   ]);
 
   if (variant === 'modal' && !open) return null;
@@ -303,11 +308,11 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
   const forceButtonTitle =
     forceMergeMode === 'accountBalanceReplace'
       ? canForce
-        ? 'Relancer la fusion en remplaçant les dates déjà présentes par les imports.'
-        : 'Cochez « Ignorer l’anomalie » sur au moins une ligne pour activer.'
+        ? t('mergeReport.forceReplaceHint')
+        : t('mergeReport.forceNeedsCheckShort')
       : canForce
-        ? 'Ajouter au fichier traité les lignes cochées (ex. doublons forcés).'
-        : 'Cochez « Ignorer l’anomalie » sur au moins une ligne pour activer.';
+        ? t('mergeReport.forceAppendHint')
+        : t('mergeReport.forceNeedsCheckShort');
 
   const bodyScrollClass =
     variant === 'inline' ? 'min-h-0 max-h-[min(70vh,520px)] flex-1 overflow-auto px-3 py-3' : 'min-h-0 flex-1 overflow-auto px-4 py-3';
@@ -329,7 +334,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
             type="button"
             onClick={onClose}
             className="rounded px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-            aria-label="Fermer"
+            aria-label={t('mergeReport.close')}
           >
             ×
           </button>
@@ -338,21 +343,21 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
         <div className="shrink-0 border-b border-gray-200 px-3 py-2">
           <p className="text-xs font-medium text-gray-800">{modalTitle}</p>
           <p className="mt-0.5 text-xs text-gray-500">
-            Une ligne par entrée issue des fichiers CSV du dossier Import (généré à la préparation).
+            {t('mergeReport.inlineSubtitle')}
           </p>
         </div>
       )}
 
       <div className={bodyScrollClass}>
-        {loading && <p className="text-sm text-gray-500">Chargement…</p>}
+        {loading && <p className="text-sm text-gray-500">{t('common.loading')}</p>}
         {loadError && (
           <p className="text-sm text-red-600 rounded border border-red-200 bg-red-50 px-2 py-1">{loadError}</p>
         )}
         {!loading && !loadError && rowsWithIds.length === 0 && (
           <p className="text-sm text-gray-600">
             {variant === 'inline'
-              ? 'Aucun rapport encore — lancez « Préparer l’import » pour analyser les lignes du dossier Import.'
-              : 'Aucune ligne dans le rapport (ou fichier vide).'}
+              ? t('mergeReport.noReportInline')
+              : t('mergeReport.noRowsModal')}
           </p>
         )}
         {!loading && !loadError && rowsWithIds.length > 0 && (
@@ -371,9 +376,9 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
                             disabled={ignorableRowIds.length === 0}
                             onChange={toggleIgnoreAll}
                             className="rounded border-gray-400"
-                            aria-label="Tout ignorer : cocher ou décocher toutes les lignes ignorables"
+                            aria-label={t('mergeReport.ignoreAllAria')}
                           />
-                          <span className="text-gray-800">Tout ignorer</span>
+                          <span className="text-gray-800">{t('mergeReport.ignoreAll')}</span>
                         </label>
                       ) : (
                         <button
@@ -410,10 +415,10 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
                             <td key={col} className="border-t border-gray-100 px-2 py-1.5 align-top">
                               {success ? (
                                 <span className="inline-block rounded border border-emerald-600 bg-emerald-100 px-2 py-0.5 font-medium text-emerald-900">
-                                  {MERGE_REPORT_SUCCESS_REASON}
+                                  {t('mergeReport.successReason')}
                                 </span>
                               ) : (
-                                <span className="text-gray-800">{cell}</span>
+                                <span className="text-gray-800">{translateKnownFrMessage(cell, t)}</span>
                               )}
                             </td>
                           );
@@ -434,7 +439,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
                                 onChange={() => toggleIgnore(id)}
                                 className="rounded border-gray-400"
                               />
-                              <span className="text-gray-700">Ignorer l&apos;anomalie</span>
+                              <span className="text-gray-700">{t('mergeReport.ignoreAnomaly')}</span>
                             </label>
                           ) : (
                             <span className="text-gray-400">—</span>
@@ -466,7 +471,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
             onClick={onClose}
             className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
-            Fermer
+            {t('mergeReport.close')}
           </button>
         )}
         <button
@@ -476,7 +481,7 @@ export const MergeReportViewer: React.FC<MergeReportViewerProps> = ({
           title={forceButtonTitle}
           className="rounded border border-amber-700 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {forceLoading ? 'Traitement…' : 'Forcer la fusion'}
+          {forceLoading ? t('common.processing') : t('mergeReport.forceMerge')}
         </button>
       </div>
     </div>

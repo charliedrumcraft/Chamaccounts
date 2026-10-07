@@ -1,5 +1,6 @@
 /// <reference path="../vite-env.d.ts" />
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   SourceDataCSVService,
   type SourceDataResult,
@@ -12,8 +13,16 @@ import { SupportDataCSVService, SUPPORT_DATA_CSV_PATH } from '../services/Suppor
 import { EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
 import { canonicalAccountFromSource, accountLabelFromSource } from '../constants/accountSourceLabels';
 import { formatDateDDMMYYYY, formatEur, formatGbp, formatAmountGbpForCsv, formatCurrency } from '../utils/format';
-import { amountToGbp, convertToAxisCurrency, type CurrencySymbol } from '../services/EffectiveExchangeRates';
-import Papa from 'papaparse';
+import {
+  amountToGbp,
+  convertToAxisCurrency,
+  type CurrencySymbol,
+} from '../services/EffectiveExchangeRates';
+import {
+  coerceDisplayCurrency,
+  displayCurrencyOptionsFromWorking,
+} from '../utils/displayCurrencyOptions';
+import { axisSymbolToCurrencyCode, isAmountIndicatorHeader } from '@/shared/workingCurrencies';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
 import {
   TRANSACTION_SOURCE_COLUMN,
@@ -75,18 +84,12 @@ function readSupportImportModuleExpanded(): boolean {
   return true;
 }
 
-const DISPLAY_CURRENCIES: { value: CurrencySymbol; label: string }[] = [
-  { value: '£', label: 'GBP' },
-  { value: '€', label: 'EUR' },
-  { value: 'CHF', label: 'CHF' },
-];
-
 function readStoredDisplayCurrency(): CurrencySymbol {
   try {
-    const saved = localStorage.getItem(DISPLAY_CURRENCY_STORAGE_KEY);
-    if (saved === '£' || saved === '€' || saved === 'CHF') return saved;
-  } catch {}
-  return '£';
+    return coerceDisplayCurrency(localStorage.getItem(DISPLAY_CURRENCY_STORAGE_KEY));
+  } catch {
+    return coerceDisplayCurrency(null);
+  }
 }
 
 /** Mois YYYY-MM déduit de la saisie date (sinon mois courant) pour les suggestions de date. */
@@ -177,8 +180,8 @@ function formatDisplayAmount(amount: number, displayCurrency: CurrencySymbol): s
   return formatCurrency(amount, displayCurrency);
 }
 
-function getDisplayCurrencyCode(displayCurrency: CurrencySymbol): 'GBP' | 'EUR' | 'CHF' {
-  return displayCurrency === '£' ? 'GBP' : displayCurrency === '€' ? 'EUR' : 'CHF';
+function getDisplayCurrencyCode(displayCurrency: CurrencySymbol): string {
+  return axisSymbolToCurrencyCode(displayCurrency);
 }
 
 function getSupportRowDisplayAmount(
@@ -219,6 +222,9 @@ function sumDisplayAmountForRows(
   return any ? total : 0;
 }
 
+/** Clé interne pour les lignes sans libellé (affichage traduit via `support.untitled`). */
+const UNTITLED_TITLE_KEY = '(Sans titre)';
+
 /** Sommes dans la devise d'affichage regroupées par libellé (colonne TITLE), pour les lignes données. */
 function aggregateDisplayAmountByTitle(
   rows: Record<string, string>[],
@@ -231,7 +237,7 @@ function aggregateDisplayAmountByTitle(
   const map = new Map<string, number>();
   for (const row of rows) {
     const rawTitle = (row[titleHeader] ?? '').trim();
-    const key = rawTitle || '(Sans titre)';
+    const key = rawTitle || UNTITLED_TITLE_KEY;
     const amount = getSupportRowDisplayAmount(row, displayCurrency, amountHeader, currencyHeader, amountGbpHeader);
     if (amount === null) continue;
     map.set(key, (map.get(key) ?? 0) + amount);
@@ -253,12 +259,13 @@ type SoutienTitleTotalDisplayRow = {
 function buildTitleTotalsDisplayRows(
   base: { title: string; totalAmount: number }[],
   applyCombine: boolean,
-  groups: SoutienTitleCombineGroup[]
+  groups: SoutienTitleCombineGroup[],
+  labelFor: (title: string) => string = (x) => x
 ): SoutienTitleTotalDisplayRow[] {
   if (!applyCombine || !groups.length) {
     return base.map((x) => ({
       rowKey: `raw:${x.title}`,
-      displayTitle: x.title,
+      displayTitle: labelFor(x.title),
       totalAmount: x.totalAmount,
     }));
   }
@@ -282,11 +289,11 @@ function buildTitleTotalsDisplayRows(
 
     if (!matched.length) continue;
 
-    const label = (g.label ?? '').trim() || matched.join(' + ');
+    const label = (g.label ?? '').trim() || matched.map(labelFor).join(' + ');
     out.push({
       rowKey: `combine:${g.id}`,
       displayTitle: label,
-      detail: matched.join(' + '),
+      detail: matched.map(labelFor).join(' + '),
       totalAmount: sum,
     });
   }
@@ -295,7 +302,7 @@ function buildTitleTotalsDisplayRows(
     if (!consumed.has(x.title)) {
       out.push({
         rowKey: `raw:${x.title}`,
-        displayTitle: x.title,
+        displayTitle: labelFor(x.title),
         totalAmount: x.totalAmount,
       });
     }
@@ -419,7 +426,7 @@ function soutienCellDisplay(
 }
 
 function displaySupportHeaderLabel(header: string, displayCurrency: CurrencySymbol): string {
-  if (/^amount\s*gbp$/i.test(header)) return `AMOUNT ${getDisplayCurrencyCode(displayCurrency)}`;
+  if (isAmountIndicatorHeader(header)) return `AMOUNT ${getDisplayCurrencyCode(displayCurrency)}`;
   return header;
 }
 
@@ -576,6 +583,7 @@ function buildSupportRowMatchKey(
 }
 
 const Support: React.FC = () => {
+  const { t } = useTranslation();
   const projects = useProjectsFromStorage();
   const [data, setData] = useState<SourceDataResult | null>(null);
   /** Pour chaque ligne de `data.rows` : fichier src_transaction_data.csv ou Support_data.csv. */
@@ -643,6 +651,22 @@ const Support: React.FC = () => {
   const [editCurrency, setEditCurrency] = useState('EUR');
   const [editMessage, setEditMessage] = useState<string | null>(null);
   const [displayCurrency, setDisplayCurrency] = useState<CurrencySymbol>(() => readStoredDisplayCurrency());
+  const displayCurrencies = displayCurrencyOptionsFromWorking();
+  const displayCurrenciesKey = displayCurrencies.map((o) => o.value).join('|');
+
+  useEffect(() => {
+    setDisplayCurrency((prev) => {
+      const next = coerceDisplayCurrency(prev);
+      if (next !== prev) {
+        try {
+          localStorage.setItem(DISPLAY_CURRENCY_STORAGE_KEY, next);
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
+  }, [displayCurrenciesKey]);
 
   const loadData = useCallback((options?: { silent?: boolean }) => {
     const silent = options?.silent === true;
@@ -653,7 +677,7 @@ const Support: React.FC = () => {
         if (!main && (!support?.rows?.length)) {
           setData(null);
           setRowOrigins([]);
-          setError(`Aucune donnée : ${SOURCE_DATA_PATH} absent ou vide et aucune ligne dans Support_data.csv.`);
+          setError(t('support.noData', { path: SOURCE_DATA_PATH }));
           return;
         }
         let headers = main?.headers ?? support?.headers ?? [];
@@ -700,12 +724,12 @@ const Support: React.FC = () => {
         setRowOrigins([...srcRows.map(() => 'src' as const), ...supportRows.map(() => 'support' as const)]);
       })
       .catch((err) => {
-        setError(err?.message ?? 'Erreur lors du chargement des données.');
+        setError(err?.message ?? t('transactions.loadFailed'));
       })
       .finally(() => {
         if (!silent) setLoading(false);
       });
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadData();
@@ -783,9 +807,10 @@ const Support: React.FC = () => {
   );
 
   const setDisplayCurrencyPersist = useCallback((currency: CurrencySymbol) => {
-    setDisplayCurrency(currency);
+    const next = coerceDisplayCurrency(currency);
+    setDisplayCurrency(next);
     try {
-      localStorage.setItem(DISPLAY_CURRENCY_STORAGE_KEY, currency);
+      localStorage.setItem(DISPLAY_CURRENCY_STORAGE_KEY, next);
     } catch {}
   }, []);
 
@@ -866,14 +891,20 @@ const Support: React.FC = () => {
     [titleTotalsByTitle]
   );
 
+  const titleLabelFor = useCallback(
+    (title: string) => (title === UNTITLED_TITLE_KEY ? t('support.untitled') : title),
+    [t]
+  );
+
   const titleTotalsDisplayRows = useMemo(
     () =>
       buildTitleTotalsDisplayRows(
         titleTotalsByTitle,
         titleCombineState.applyCombine,
-        titleCombineState.groups
+        titleCombineState.groups,
+        titleLabelFor
       ),
-    [titleTotalsByTitle, titleCombineState.applyCombine, titleCombineState.groups]
+    [titleTotalsByTitle, titleCombineState.applyCombine, titleCombineState.groups, titleLabelFor]
   );
 
   const titleTotalsDisplayRowsSorted = useMemo(() => {
@@ -903,8 +934,8 @@ const Support: React.FC = () => {
     const set = new Set<string>();
     for (const x of titleTotalsByTitle) set.add(x.title);
     for (const g of titleCombineState.groups) {
-      for (const t of g.titles) {
-        const u = t.trim();
+      for (const gt of g.titles) {
+        const u = gt.trim();
         if (u) set.add(u);
       }
     }
@@ -932,7 +963,7 @@ const Support: React.FC = () => {
         totalAmount: x.totalAmount,
         displayName:
           x.projectKey === '__sans_projet__'
-            ? '(Sans projet)'
+            ? t('support.noProject')
             : projetLabelForId(projects, x.projectKey) || x.projectKey,
         color:
           x.projectKey === '__sans_projet__'
@@ -944,7 +975,7 @@ const Support: React.FC = () => {
         if (b.projectKey === '__sans_projet__') return -1;
         return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
       });
-  }, [supportRowsForTitleTotals, projetColumnHeader, displayCurrency, amountColumnHeader, currencyColumnHeader, amountGbpHeader, projects]);
+  }, [supportRowsForTitleTotals, projetColumnHeader, displayCurrency, amountColumnHeader, currencyColumnHeader, amountGbpHeader, projects, t]);
 
   const projectSubtotalDisplayRows = useMemo(
     () =>
@@ -970,7 +1001,7 @@ const Support: React.FC = () => {
         if (!key || map.has(key)) continue;
         map.set(
           key,
-          key === '__sans_projet__' ? '(Sans projet)' : projetLabelForId(projects, key) || key
+          key === '__sans_projet__' ? t('support.noProject') : projetLabelForId(projects, key) || key
         );
       }
     }
@@ -981,7 +1012,7 @@ const Support: React.FC = () => {
         if (b.projectKey === '__sans_projet__') return -1;
         return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
       });
-  }, [projectTotalsList, projectSubtotalState.groups, projects]);
+  }, [projectTotalsList, projectSubtotalState.groups, projects, t]);
 
   const projectSubtotalActive =
     projectSubtotalState.applySubtotals &&
@@ -1000,7 +1031,7 @@ const Support: React.FC = () => {
         {
           yearKey: 'all',
           year: null,
-          sectionTitle: 'Transactions',
+          sectionTitle: t('support.year.allTransactions'),
           rows: supportRowsOnly,
         },
       ];
@@ -1030,12 +1061,12 @@ const Support: React.FC = () => {
       out.push({
         yearKey: 'yunknown',
         year: null,
-        sectionTitle: 'Date inconnue ou invalide',
+        sectionTitle: t('support.year.unknownDate'),
         rows: unknown,
       });
     }
     return out;
-  }, [supportRowsOnly, dateColumn]);
+  }, [supportRowsOnly, dateColumn, t]);
 
   const handleSortYear = useCallback((yearKey: string, header: string) => {
     setYearPanelState((prev) => {
@@ -1113,15 +1144,15 @@ const Support: React.FC = () => {
       const titleTrim = draft.title.trim();
       const amountTrim = draft.amount.trim().replace(',', '.');
       if (!dateTrim || !titleTrim || !amountTrim) {
-        return { row: {}, error: 'Renseignez au minimum la date, le libellé et le montant.' };
+        return { row: {}, error: t('support.validation.minFields') };
       }
       const amountNum = parseFloat(amountTrim);
       if (Number.isNaN(amountNum) || amountNum === 0) {
-        return { row: {}, error: 'Montant invalide.' };
+        return { row: {}, error: t('support.validation.invalidAmount') };
       }
       const cur = (draft.currency ?? '').trim().toUpperCase() || 'EUR';
       if (!['EUR', 'GBP', 'CHF'].includes(cur)) {
-        return { row: {}, error: 'Devise : EUR, GBP ou CHF.' };
+        return { row: {}, error: t('support.validation.currency') };
       }
 
       const dateH = base.headers.find((h) => /date/i.test(h));
@@ -1130,7 +1161,7 @@ const Support: React.FC = () => {
       const currencyH = base.headers.find((h) => /^currency$/i.test(h));
       const amountGbpH = base.headers.find((h) => /^amount\s*gbp$/i.test(h));
       if (!dateH || !titleH || !amountH || !currencyH) {
-        return { row: {}, error: 'Colonnes DATE, TITLE, AMOUNT ou CURRENCY manquantes dans le fichier.' };
+        return { row: {}, error: t('support.validation.missingColumns') };
       }
 
       const headers = ensureHeadersForWrite(base.headers);
@@ -1166,7 +1197,7 @@ const Support: React.FC = () => {
       if (projetH) row[projetH] = (draft.projet ?? '').trim();
       return { row, error: null };
     },
-    []
+    [t]
   );
 
   const persistMergedFiles = useCallback(
@@ -1175,12 +1206,6 @@ const Support: React.FC = () => {
       headersFromData: string[],
       origins: ('src' | 'support')[]
     ): Promise<{ success: boolean; error?: string }> => {
-      const api = (window as unknown as {
-        electronAPI?: { writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }> };
-      }).electronAPI;
-      if (!api?.writeFile) {
-        return { success: false, error: 'Écriture fichier non disponible.' };
-      }
       const { srcRows, supportRows } = splitRowsByOrigin(mergedRows, origins);
       const headers = ensureHeadersForWrite(headersFromData);
       const withIndexHeader = headers.some((h) => /^index$/i.test(h)) ? headers : ['Index', ...headers];
@@ -1188,18 +1213,16 @@ const Support: React.FC = () => {
       const normSrc = stripSourceColumnFromSourceData(normSrcRaw);
       const normSupportRaw = normalizeOrderAndIndex({ headers: withIndexHeader, rows: supportRows });
       const normSupport = stripAccountColumnFromSupportData(normSupportRaw);
-      const csvSrc = Papa.unparse(normSrc.rows, { columns: normSrc.headers, delimiter: ';' });
-      const csvSupport = Papa.unparse(normSupport.rows, { columns: normSupport.headers, delimiter: ';' });
-      const r1 = await api.writeFile(SOURCE_DATA_PATH, csvSrc);
+      const r1 = await SourceDataCSVService.replaceAll(normSrc.rows);
       if (!r1.success) return r1;
-      return api.writeFile(SUPPORT_DATA_CSV_PATH, csvSupport);
+      return SupportDataCSVService.replaceAll(normSupport.rows);
     },
     []
   );
 
   const handleAppendSupportLine = useCallback(async () => {
     if (!data?.headers?.length || !typeHeader) {
-      setAddMessage('Données non chargées ou colonne TYPE absente.');
+      setAddMessage(t('support.dataNotLoaded'));
       return;
     }
     const draft: DraftFields = {
@@ -1211,7 +1234,7 @@ const Support: React.FC = () => {
     };
     const built = buildManualSupportRow(draft, data, typeHeader, null);
     if (built.error || !built.row) {
-      setAddMessage(built.error ?? 'Erreur.');
+      setAddMessage(built.error ?? t('common.error'));
       return;
     }
 
@@ -1222,11 +1245,11 @@ const Support: React.FC = () => {
       const nextOrigins = [...rowOrigins, 'support' as const];
       const result = await persistMergedFiles(mergedRows, data.headers, nextOrigins);
       if (result.success) {
-        setAddMessage(`Ligne ajoutée dans ${SUPPORT_DATA_CSV_PATH}.`);
+        setAddMessage(t('support.lineAdded', { path: SUPPORT_DATA_CSV_PATH }));
         resetDraft();
         loadData({ silent: true });
       } else {
-        setAddMessage(result.error ?? "Erreur lors de l'enregistrement.");
+        setAddMessage(result.error ?? t('support.saveError'));
       }
     } finally {
       setCsvWriteLoading(false);
@@ -1244,6 +1267,7 @@ const Support: React.FC = () => {
     loadData,
     resetDraft,
     rowOrigins,
+    t,
   ]);
 
   const handleImportSupportWizardLines = useCallback(
@@ -1251,7 +1275,7 @@ const Support: React.FC = () => {
       drafts: SupportImportDraft[]
     ): Promise<{ success: boolean; error?: string; appendedCount?: number }> => {
       if (!data?.headers?.length || !typeHeader) {
-        return { success: false, error: 'Données non chargées ou colonne TYPE absente.' };
+        return { success: false, error: t('support.dataNotLoaded') };
       }
       setCsvWriteLoading(true);
       setAddMessage(null);
@@ -1265,7 +1289,7 @@ const Support: React.FC = () => {
             null
           );
           if (built.error || !built.row) {
-            return { success: false, error: built.error ?? 'Erreur sur une ligne du lot.' };
+            return { success: false, error: built.error ?? t('support.batchRowError') };
           }
           newRows.push(built.row);
         }
@@ -1276,12 +1300,12 @@ const Support: React.FC = () => {
           loadData({ silent: true });
           return { success: true, appendedCount: newRows.length };
         }
-        return { success: false, error: result.error ?? "Erreur lors de l'enregistrement." };
+        return { success: false, error: result.error ?? t('support.saveError') };
       } finally {
         setCsvWriteLoading(false);
       }
     },
-    [data, typeHeader, buildManualSupportRow, persistMergedFiles, loadData, rowOrigins]
+    [data, typeHeader, buildManualSupportRow, persistMergedFiles, loadData, rowOrigins, t]
   );
 
   const supportPrepWizard = useSupportImportPrepWizard({
@@ -1327,7 +1351,7 @@ const Support: React.FC = () => {
     if (!data || editDataRowIndex == null || !typeHeader) return;
     const original = data.rows[editDataRowIndex];
     if (!original || !isManualRow(original)) {
-      setEditMessage('Ligne introuvable ou non modifiable.');
+      setEditMessage(t('support.rowNotEditable'));
       return;
     }
     const projetH = data.headers.find((h) => /^projet$/i.test(h));
@@ -1353,7 +1377,7 @@ const Support: React.FC = () => {
         closeEditModal();
         loadData({ silent: true });
       } else {
-        setEditMessage(result.error ?? "Erreur lors de l'enregistrement.");
+        setEditMessage(result.error ?? t('support.saveError'));
       }
     } finally {
       setCsvWriteLoading(false);
@@ -1372,6 +1396,7 @@ const Support: React.FC = () => {
     closeEditModal,
     isManualRow,
     rowOrigins,
+    t,
   ]);
 
   const handleDeleteManualRow = useCallback(
@@ -1379,7 +1404,7 @@ const Support: React.FC = () => {
       if (!data?.rows[dataRowIndex] || !typeHeader) return;
       const row = data.rows[dataRowIndex];
       if (!isManualRow(row)) return;
-      if (!window.confirm('Supprimer cette ligne saisie manuellement ? Cette action est enregistrée dans le fichier.')) {
+      if (!window.confirm(t('support.confirmDelete'))) {
         return;
       }
 
@@ -1390,16 +1415,16 @@ const Support: React.FC = () => {
         const nextOrigins = rowOrigins.filter((_, i) => i !== dataRowIndex);
         const result = await persistMergedFiles(nextRows, data.headers, nextOrigins);
         if (result.success) {
-          setAddMessage('Ligne supprimée.');
+          setAddMessage(t('support.lineDeleted'));
           loadData({ silent: true });
         } else {
-          setAddMessage(result.error ?? 'Erreur lors de la suppression.');
+          setAddMessage(result.error ?? t('support.deleteError'));
         }
       } finally {
         setCsvWriteLoading(false);
       }
     },
-    [data, typeHeader, isManualRow, persistMergedFiles, loadData, rowOrigins]
+    [data, typeHeader, isManualRow, persistMergedFiles, loadData, rowOrigins, t]
   );
 
   const isFileImportedSupportRow = useCallback(
@@ -1429,16 +1454,16 @@ const Support: React.FC = () => {
         );
         const result = await persistMergedFiles(nextRows, data.headers, rowOrigins);
         if (result.success) {
-          setAddMessage(currentlyIgnored ? 'Ligne réactivée pour les totaux.' : 'Ligne ignorée pour les totaux.');
+          setAddMessage(currentlyIgnored ? t('support.lineReactivated') : t('support.lineIgnored'));
           loadData({ silent: true });
         } else {
-          setAddMessage(result.error ?? 'Erreur lors de l’enregistrement.');
+          setAddMessage(result.error ?? t('support.saveError'));
         }
       } finally {
         setCsvWriteLoading(false);
       }
     },
-    [data, typeHeader, isFileImportedSupportRow, persistMergedFiles, loadData, rowOrigins]
+    [data, typeHeader, isFileImportedSupportRow, persistMergedFiles, loadData, rowOrigins, t]
   );
 
   const handleSetProjetRow = useCallback(
@@ -1455,33 +1480,44 @@ const Support: React.FC = () => {
         );
         const result = await persistMergedFiles(nextRows, data.headers, rowOrigins);
         if (result.success) loadData({ silent: true });
-        else setAddMessage(result.error ?? 'Erreur lors de l’enregistrement.');
+        else setAddMessage(result.error ?? t('support.saveError'));
       } finally {
         setCsvWriteLoading(false);
       }
     },
-    [data, typeHeader, persistMergedFiles, loadData, rowOrigins]
+    [data, typeHeader, persistMergedFiles, loadData, rowOrigins, t]
   );
+
+  /** Résumé du nombre de lignes pris en compte dans les récapitulatifs par titre / projet. */
+  const aggregateRowsSummary = globalSearchText.trim()
+    ? t('support.afterGlobalSearch', { count: supportRowsForTitleTotals.length })
+    : `${t('support.countedInSummary', { count: supportRowsForAggregates.length })}${
+        supportRowsOnly.length > supportRowsForAggregates.length
+          ? t('support.ignoredSuffix', { count: supportRowsOnly.length - supportRowsForAggregates.length })
+          : ''
+      }`;
 
   return (
     <>
       <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-3">
-            <h1 className="text-2xl font-bold text-gray-800">Soutien</h1>
+            <h1 className="text-2xl font-bold text-gray-800">{t('nav.support')}</h1>
             <p className="text-sm text-gray-600 max-w-3xl">
-              Liste des transactions de type « Support » (fusion de {SOURCE_DATA_PATH} et de{' '}
-              {SUPPORT_DATA_CSV_PATH}). Les lignes importées affichent « {TRANSACTION_SOURCE_VALUE_FILE} » ; une
-              saisie ajoutée ici est enregistrée dans Support_data.csv avec la source « {TRANSACTION_SOURCE_VALUE_MANUAL}
-              ». Vous pouvez modifier ou supprimer uniquement ces lignes saisies depuis cette page.
+              {t('support.pageDescription', {
+                srcPath: SOURCE_DATA_PATH,
+                supportPath: SUPPORT_DATA_CSV_PATH,
+                fileValue: TRANSACTION_SOURCE_VALUE_FILE,
+                manualValue: TRANSACTION_SOURCE_VALUE_MANUAL,
+              })}
             </p>
           </div>
           <div
             className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5 shadow-sm"
             role="group"
-            aria-label="Devise d'affichage"
+            aria-label={t('support.displayCurrencyAria')}
           >
-            {DISPLAY_CURRENCIES.map(({ value, label }) => (
+            {displayCurrencies.map(({ value, label }) => (
               <button
                 key={value}
                 type="button"
@@ -1523,10 +1559,9 @@ const Support: React.FC = () => {
                 ▼
               </span>
               <div className="min-w-0">
-                <h2 className="text-lg font-semibold text-gray-800">Import wizard</h2>
+                <h2 className="text-lg font-semibold text-gray-800">{t('transactions.importWizard.title')}</h2>
                 <p className="text-sm text-gray-500 mt-0.5">
-                  {importModuleExpanded ? 'Fermer' : 'Ouvrir'} le module d&apos;importation vers{' '}
-                  Support_data.csv (collage tableur)
+                  {importModuleExpanded ? t('support.importModule.close') : t('support.importModule.open')}
                 </p>
               </div>
             </div>
@@ -1535,11 +1570,11 @@ const Support: React.FC = () => {
             <div id="support-import-module" className="mt-3">
               <div
                 className="rounded-lg border border-gray-200 bg-gray-50/50 p-4"
-                aria-label="Zone Import wizard"
+                aria-label={t('transactions.importWizard.zoneLabel')}
               >
                 <div className="space-y-4">
                   <div>
-                    <h3 className="text-sm font-semibold text-gray-700 mb-2">Préparation de l&apos;import</h3>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-2">{t('transactions.importWizard.prepTitle')}</h3>
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
@@ -1553,14 +1588,16 @@ const Support: React.FC = () => {
                         }
                         title={
                           !supportPrepWizard.mappingWizardActive
-                            ? 'Activez le mapping wizard pour préparer l’import vers Support_data.csv'
+                            ? t('support.importModule.needMapping')
                             : supportPrepWizard.importPreviewImportableRows.length === 0
-                              ? 'Aucune ligne importable (ignorées ou invalides) avec les réglages actuels'
+                              ? t('support.importModule.noImportableRows')
                               : undefined
                         }
                         className="rounded border border-blue-600 bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                       >
-                        {supportPrepWizard.importLinesLoading ? 'Import…' : 'Importer les lignes'}
+                        {supportPrepWizard.importLinesLoading
+                          ? t('transactions.importWizard.importLinesShort')
+                          : t('transactions.importWizard.importLines')}
                       </button>
                     </div>
                   </div>
@@ -1572,7 +1609,7 @@ const Support: React.FC = () => {
         </div>
 
         {loading && (
-          <div className="flex items-center justify-center py-12 text-gray-500">Chargement…</div>
+          <div className="flex items-center justify-center py-12 text-gray-500">{t('common.loading')}</div>
         )}
 
         {error && !loading && (
@@ -1581,17 +1618,16 @@ const Support: React.FC = () => {
 
         {data && !loading && typeHeader && (
           <div className="mb-4 rounded-lg border border-gray-200 bg-white shadow-sm p-4 space-y-3">
-              <h2 className="text-lg font-semibold text-gray-800">Ajouter une ligne Support</h2>
+              <h2 className="text-lg font-semibold text-gray-800">{t('support.addLine.title')}</h2>
               <p className="text-sm text-gray-600">
-                La ligne est ajoutée à la fin du fichier (réindexation automatique). Les autres lignes (fichier importé) ne
-                sont pas modifiables ici.
+                {t('support.addLine.description')}
               </p>
               <div
                 className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-4xl"
                 data-support-add-form
               >
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="font-medium text-gray-700">Date</span>
+                  <span className="font-medium text-gray-700">{t('support.fields.date')}</span>
                   <input
                     type="text"
                     value={draftDate}
@@ -1616,7 +1652,7 @@ const Support: React.FC = () => {
                       }
                     }}
                     list={draftDateSuggestions.length > 0 ? 'support-draft-date-suggestions' : undefined}
-                    placeholder="JJ.MM.AAAA ou JJ/MM/AAAA"
+                    placeholder={t('support.addLine.datePlaceholder')}
                     autoComplete="off"
                     className="rounded border border-gray-300 px-2 py-1.5 text-sm"
                     disabled={csvWriteLoading}
@@ -1630,7 +1666,7 @@ const Support: React.FC = () => {
                   )}
                 </label>
                 <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-                  <span className="font-medium text-gray-700">Libellé (TITLE)</span>
+                  <span className="font-medium text-gray-700">{t('support.fields.title')}</span>
                   <input
                     type="text"
                     value={draftTitle}
@@ -1658,7 +1694,7 @@ const Support: React.FC = () => {
                   )}
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="font-medium text-gray-700">Montant (AMOUNT)</span>
+                  <span className="font-medium text-gray-700">{t('support.fields.amount')}</span>
                   <input
                     type="text"
                     inputMode="decimal"
@@ -1687,7 +1723,7 @@ const Support: React.FC = () => {
                   )}
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="font-medium text-gray-700">Devise</span>
+                  <span className="font-medium text-gray-700">{t('support.fields.currency')}</span>
                   <select
                     value={draftCurrency}
                     onChange={(e) => setDraftCurrency(e.target.value)}
@@ -1700,7 +1736,7 @@ const Support: React.FC = () => {
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="font-medium text-gray-700">Projet</span>
+                  <span className="font-medium text-gray-700">{t('support.fields.projet')}</span>
                   <ProjetSelectCell
                     rawId={draftProjet}
                     projects={projects}
@@ -1717,7 +1753,7 @@ const Support: React.FC = () => {
                   disabled={csvWriteLoading || !isSupportDraftComplete}
                   className="rounded border px-3 py-1.5 text-sm font-medium border-blue-600 bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-blue-300 disabled:bg-blue-300 disabled:text-white/80 disabled:hover:bg-blue-300"
                 >
-                  {csvWriteLoading ? 'Enregistrement…' : 'Ajouter la ligne dans Support_data.csv'}
+                  {csvWriteLoading ? t('common.saving') : t('support.addLine.submit')}
                 </button>
                 <button
                   type="button"
@@ -1725,7 +1761,7 @@ const Support: React.FC = () => {
                   disabled={csvWriteLoading || isSupportDraftEmpty}
                   className="rounded border px-3 py-1.5 text-sm font-medium border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:hover:bg-gray-100"
                 >
-                  Effacer la saisie
+                  {t('support.addLine.clear')}
                 </button>
                 {addMessage && (
                   <p className={`text-sm rounded border px-2 py-1 ${uiMessageClass(getUiMessageTone(addMessage))}`}>
@@ -1738,22 +1774,21 @@ const Support: React.FC = () => {
 
         {data && !loading && !typeHeader && (
           <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3">
-            Colonne TYPE introuvable dans le fichier source.
+            {t('support.typeColumnMissing')}
           </div>
         )}
 
         {data && !loading && typeHeader && (
           <div className="flex flex-col gap-6">
             <p className="text-sm text-gray-600">
-              {supportRowsOnly.length} ligne{supportRowsOnly.length !== 1 ? 's' : ''} au total (type Support). Pour les
-              lignes issues du fichier « {TRANSACTION_SOURCE_VALUE_FILE} », le bouton Ignorer exclut la ligne des totaux
-              par titre et des sommes par année (réversible). Les récapitulatifs par libellé (TITLE) et par projet (PROJET)
-              sont au-dessus des blocs par année ; chaque bloc se développe ou se replie au clic. La recherche globale filtre
-              aussi ces récapitulatifs. Les années sont en ordre croissant.
+              {t('support.intro', {
+                count: supportRowsOnly.length,
+                fileValue: TRANSACTION_SOURCE_VALUE_FILE,
+              })}
             </p>
             {supportRowsOnly.length === 0 ? (
               <p className="text-sm text-gray-500 px-2 py-6 text-center rounded-lg border border-dashed border-gray-200">
-                Aucune ligne Support.
+                {t('support.noSupportRows')}
               </p>
             ) : (
               <>
@@ -1763,7 +1798,7 @@ const Support: React.FC = () => {
                       htmlFor="soutien-global-search"
                       className="text-sm font-semibold text-gray-900 shrink-0 sm:pt-0.5"
                     >
-                      Recherche globale
+                      {t('support.globalSearch.label')}
                     </label>
                     <div className="flex flex-1 flex-wrap items-center gap-2 min-w-0">
                       <input
@@ -1772,7 +1807,7 @@ const Support: React.FC = () => {
                         autoComplete="off"
                         value={globalSearchText}
                         onChange={(e) => setGlobalSearchText(e.target.value)}
-                        placeholder="Toutes colonnes, toutes les années…"
+                        placeholder={t('support.globalSearch.placeholder')}
                         disabled={csvWriteLoading}
                         className="flex-1 min-w-[12rem] rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-inner focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         aria-describedby="soutien-global-search-hint"
@@ -1784,14 +1819,13 @@ const Support: React.FC = () => {
                           disabled={csvWriteLoading}
                           className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap"
                         >
-                          Effacer
+                          {t('transactions.filters.clear')}
                         </button>
                       ) : null}
                     </div>
                   </div>
                   <p id="soutien-global-search-hint" className="text-xs text-gray-600 mt-2">
-                    S&apos;applique à chaque tableau en même temps (toutes colonnes visibles). Tant que ce champ n&apos;est
-                    pas vide, les filtres par tableau ci-dessous sont ignorés.
+                    {t('support.globalSearch.hint')}
                   </p>
                 </div>
                 <section
@@ -1825,21 +1859,15 @@ const Support: React.FC = () => {
                           id="soutien-bloc-titre-by-title"
                           className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight"
                         >
-                          Totaux par titre (libellé)
+                          {t('support.titleTotals.title')}
                         </span>
                         <span className="block text-sm text-gray-500 mt-1.5">
-                          {globalSearchText.trim()
-                            ? `${supportRowsForTitleTotals.length} ligne${supportRowsForTitleTotals.length !== 1 ? 's' : ''} après recherche globale (hors ignorées)`
-                            : `${supportRowsForAggregates.length} ligne${supportRowsForAggregates.length !== 1 ? 's' : ''} comptée${supportRowsForAggregates.length !== 1 ? 's' : ''} dans ce récapitulatif${
-                                supportRowsOnly.length > supportRowsForAggregates.length
-                                  ? ` · ${supportRowsOnly.length - supportRowsForAggregates.length} ignorée${supportRowsOnly.length - supportRowsForAggregates.length !== 1 ? 's' : ''}`
-                                  : ''
-                              }`}
+                          {aggregateRowsSummary}
                           {titleTotalsByTitle.length > 0
-                            ? ` · ${titleTotalsByTitle.length} titre${titleTotalsByTitle.length !== 1 ? 's' : ''} distinct${titleTotalsByTitle.length !== 1 ? 's' : ''}${
+                            ? `${t('support.titleTotals.distinctTitles', { count: titleTotalsByTitle.length })}${
                                 titleCombineActive &&
                                 titleTotalsDisplayRows.length !== titleTotalsByTitle.length
-                                  ? ` · ${titleTotalsDisplayRows.length} ligne${titleTotalsDisplayRows.length !== 1 ? 's' : ''} affichée${titleTotalsDisplayRows.length !== 1 ? 's' : ''} (regroupements)`
+                                  ? t('support.titleTotals.displayedRows', { count: titleTotalsDisplayRows.length })
                                   : ''
                               }`
                             : ''}
@@ -1852,19 +1880,19 @@ const Support: React.FC = () => {
                       id="soutien-panel-by-title-totals"
                       className="flex flex-col min-h-0 px-4 pb-4 pt-3"
                       role="region"
-                      aria-label="Sommes par libellé"
+                      aria-label={t('support.titleTotals.regionAria')}
                     >
                       {!titleColumnHeader || (!amountColumnHeader && !amountGbpHeader) ? (
                         <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                           {!titleColumnHeader && !amountColumnHeader && !amountGbpHeader
-                            ? 'Colonnes TITLE, AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'
+                            ? t('support.missing.titleAmountAll')
                             : !titleColumnHeader
-                              ? 'Colonne TITLE introuvable — récapitulatif par titre indisponible.'
-                              : 'Colonnes AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'}
+                              ? t('support.missing.titleOnly')
+                              : t('support.missing.amountBoth')}
                         </p>
                       ) : titleTotalsByTitle.length === 0 ? (
                         <p className="text-sm text-gray-500 py-4 text-center border border-dashed border-gray-200 rounded-lg">
-                          Aucune ligne avec montant exploitable pour construire le récapitulatif.
+                          {t('support.titleTotals.noUsableAmount')}
                         </p>
                       ) : (
                         <div className="flex flex-col gap-3">
@@ -1891,18 +1919,18 @@ const Support: React.FC = () => {
                                 </span>
                                 <span className="min-w-0 flex-1">
                                   <span className="block text-sm font-semibold text-gray-900">
-                                    Regroupement de libellés
+                                    {t('support.titleCombine.title')}
                                   </span>
                                   {!titleCombineState.regroupementPanelExpanded ? (
                                     <span className="block text-xs text-gray-500 mt-0.5">
                                       {titleCombineState.groups.length === 0
-                                        ? 'Aucun groupe'
-                                        : `${titleCombineState.groups.length} groupe${
-                                            titleCombineState.groups.length !== 1 ? 's' : ''
-                                          }`}
+                                        ? t('support.titleCombine.none')
+                                        : t('support.titleCombine.groupCount', {
+                                            count: titleCombineState.groups.length,
+                                          })}
                                       {titleCombineState.applyCombine
-                                        ? ' · appliqué au tableau'
-                                        : ' · non appliqué'}
+                                        ? t('support.appliedToTable')
+                                        : t('support.notApplied')}
                                     </span>
                                   ) : null}
                                 </span>
@@ -1923,14 +1951,11 @@ const Support: React.FC = () => {
                                         disabled={csvWriteLoading}
                                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                       />
-                                      Appliquer au tableau
+                                      {t('support.applyToTable')}
                                     </label>
                                   </div>
                                   <p className="text-xs text-gray-600 leading-relaxed">
-                                    Additionnez plusieurs libellés TITLE sous un nom affiché. Les libellés proposés
-                                    correspondent au récapitulatif actuel (recherche globale incluse). Un même libellé
-                                    ne peut figurer que dans un seul groupe ; le choix dans un groupe le retire des
-                                    autres.
+                                    {t('support.titleCombine.help')}
                                   </p>
                                   <div className="space-y-2">
                                     {titleCombineState.groups.map((g) => (
@@ -1940,7 +1965,7 @@ const Support: React.FC = () => {
                                       >
                                         <div className="flex flex-wrap items-start gap-2 justify-between">
                                           <label className="flex flex-col gap-1 text-xs font-medium text-gray-700 flex-1 min-w-[12rem]">
-                                            Nom du libellé combiné
+                                            {t('support.titleCombine.nameLabel')}
                                             <input
                                               type="text"
                                               value={g.label}
@@ -1952,7 +1977,7 @@ const Support: React.FC = () => {
                                                   ),
                                                 }))
                                               }
-                                              placeholder="ex. Dons récurrents (total)"
+                                              placeholder={t('support.titleCombine.namePlaceholder')}
                                               disabled={csvWriteLoading}
                                               className="rounded border border-gray-300 px-2 py-1.5 text-sm font-normal"
                                             />
@@ -1968,14 +1993,14 @@ const Support: React.FC = () => {
                                             disabled={csvWriteLoading}
                                             className="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 shrink-0"
                                           >
-                                            Supprimer
+                                            {t('support.actions.delete')}
                                           </button>
                                         </div>
                                         <div className="flex flex-col gap-1 text-xs font-medium text-gray-700">
-                                          <span>Libellés à additionner (cases à cocher)</span>
+                                          <span>{t('support.titleCombine.labelsToSum')}</span>
                                           <div className="rounded border border-gray-300 bg-white p-2 max-h-52 overflow-auto space-y-1.5">
                                             {titleOptionsForCombineUi.length === 0 ? (
-                                              <p className="text-xs text-gray-500">Aucun libellé disponible.</p>
+                                              <p className="text-xs text-gray-500">{t('support.titleCombine.noLabels')}</p>
                                             ) : (
                                               titleOptionsForCombineUi.map((opt) => {
                                                 const checked = g.titles.includes(opt);
@@ -1991,7 +2016,7 @@ const Support: React.FC = () => {
                                                       onChange={(e) => {
                                                         const nextTitles = e.target.checked
                                                           ? [...g.titles, opt]
-                                                          : g.titles.filter((t) => t !== opt);
+                                                          : g.titles.filter((x) => x !== opt);
                                                         setTitleCombineState((s) => ({
                                                           ...s,
                                                           groups: rebalanceTitleCombineGroups(
@@ -2004,9 +2029,9 @@ const Support: React.FC = () => {
                                                       className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                                     />
                                                     <span>
-                                                      {opt}
+                                                      {titleLabelFor(opt)}
                                                       {!titleKeysInCurrentTotals.has(opt) ? (
-                                                        <span className="text-gray-500"> — hors filtre actuel</span>
+                                                        <span className="text-gray-500"> {t('support.outsideCurrentFilter')}</span>
                                                       ) : null}
                                                     </span>
                                                   </label>
@@ -2032,7 +2057,7 @@ const Support: React.FC = () => {
                                     disabled={csvWriteLoading}
                                     className="rounded border border-blue-600 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                                   >
-                                    Ajouter un regroupement
+                                    {t('support.titleCombine.add')}
                                   </button>
                                 </div>
                               ) : null}
@@ -2066,7 +2091,7 @@ const Support: React.FC = () => {
                                       }
                                     >
                                       <span className="inline-flex items-center gap-1.5">
-                                        Titre (libellé)
+                                        {t('support.titleTotals.columnTitle')}
                                         {titleTotalsTableSort.key === 'title' ? (
                                           <span className="tabular-nums text-xs font-normal text-gray-500" aria-hidden>
                                             {titleTotalsTableSort.dir === 'asc' ? '↑' : '↓'}
@@ -2131,7 +2156,7 @@ const Support: React.FC = () => {
                               </tbody>
                               <tfoot>
                                 <tr className="bg-slate-100/90 border-t-2 border-slate-300">
-                                  <td className="px-3 py-2.5 font-semibold text-gray-900">Total général</td>
+                                  <td className="px-3 py-2.5 font-semibold text-gray-900">{t('support.grandTotal')}</td>
                                   <td className="px-3 py-2.5 text-right text-base sm:text-lg font-bold text-slate-900 tabular-nums whitespace-nowrap">
                                     {formatDisplayAmount(titleTotalsGrand, displayCurrency)}
                                   </td>
@@ -2174,20 +2199,16 @@ const Support: React.FC = () => {
                           id="soutien-bloc-by-project"
                           className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight"
                         >
-                          Sommes par projet
+                          {t('support.projectTotals.title')}
                         </span>
                         <span className="block text-sm text-gray-500 mt-1.5">
-                          {globalSearchText.trim()
-                            ? `${supportRowsForTitleTotals.length} ligne${supportRowsForTitleTotals.length !== 1 ? 's' : ''} après recherche globale (hors ignorées)`
-                            : `${supportRowsForAggregates.length} ligne${supportRowsForAggregates.length !== 1 ? 's' : ''} comptée${supportRowsForAggregates.length !== 1 ? 's' : ''} dans ce récapitulatif${
-                                supportRowsOnly.length > supportRowsForAggregates.length
-                                  ? ` · ${supportRowsOnly.length - supportRowsForAggregates.length} ignorée${supportRowsOnly.length - supportRowsForAggregates.length !== 1 ? 's' : ''}`
-                                  : ''
-                              }`}
+                          {aggregateRowsSummary}
                           {projectTotalsList.length > 0
-                            ? ` · ${projectTotalsList.length} projet${projectTotalsList.length !== 1 ? 's' : ''}${
+                            ? `${t('support.projectTotals.projectCount', { count: projectTotalsList.length })}${
                                 projectSubtotalActive && projectSubtotalDisplayRows.length > 0
-                                  ? ` · ${projectSubtotalDisplayRows.length} sous-total${projectSubtotalDisplayRows.length !== 1 ? 's' : ''}`
+                                  ? t('support.projectTotals.subtotalCount', {
+                                      count: projectSubtotalDisplayRows.length,
+                                    })
                                   : ''
                               }`
                             : ''}
@@ -2200,19 +2221,19 @@ const Support: React.FC = () => {
                       id="soutien-panel-by-project-totals"
                       className="flex flex-col min-h-0 px-4 pb-4 pt-3"
                       role="region"
-                      aria-label="Sommes par projet"
+                      aria-label={t('support.projectTotals.regionAria')}
                     >
                       {!projetColumnHeader || (!amountColumnHeader && !amountGbpHeader) ? (
                         <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                           {!projetColumnHeader && !amountColumnHeader && !amountGbpHeader
-                            ? 'Colonnes PROJET, AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'
+                            ? t('support.missing.projetAmountAll')
                             : !projetColumnHeader
-                              ? 'Colonne PROJET introuvable — récapitulatif par projet indisponible.'
-                              : 'Colonnes AMOUNT et AMOUNT GBP introuvables — récapitulatif indisponible.'}
+                              ? t('support.missing.projetOnly')
+                              : t('support.missing.amountBoth')}
                         </p>
                       ) : projectTotalsList.length === 0 ? (
                         <p className="text-sm text-gray-500 py-4 text-center border border-dashed border-gray-200 rounded-lg">
-                          Aucune ligne avec montant exploitable pour construire le récapitulatif par projet.
+                          {t('support.projectTotals.noUsableAmount')}
                         </p>
                       ) : (
                         <div className="flex flex-col gap-3">
@@ -2239,18 +2260,18 @@ const Support: React.FC = () => {
                                 </span>
                                 <span className="min-w-0 flex-1">
                                   <span className="block text-sm font-semibold text-gray-900">
-                                    Calculer un sous-total
+                                    {t('support.subtotals.title')}
                                   </span>
                                   {!projectSubtotalState.panelExpanded ? (
                                     <span className="block text-xs text-gray-500 mt-0.5">
                                       {projectSubtotalState.groups.length === 0
-                                        ? 'Aucun sous-total'
-                                        : `${projectSubtotalState.groups.length} sous-total${
-                                            projectSubtotalState.groups.length !== 1 ? 's' : ''
-                                          }`}
+                                        ? t('support.subtotals.none')
+                                        : t('support.subtotals.count', {
+                                            count: projectSubtotalState.groups.length,
+                                          })}
                                       {projectSubtotalState.applySubtotals
-                                        ? ' · appliqué au tableau'
-                                        : ' · non appliqué'}
+                                        ? t('support.appliedToTable')
+                                        : t('support.notApplied')}
                                     </span>
                                   ) : null}
                                 </span>
@@ -2271,15 +2292,11 @@ const Support: React.FC = () => {
                                         disabled={csvWriteLoading}
                                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                       />
-                                      Appliquer au tableau
+                                      {t('support.applyToTable')}
                                     </label>
                                   </div>
                                   <p className="text-xs text-gray-600 leading-relaxed">
-                                    Additionnez plusieurs projets sous un nom affiché pour obtenir un sous-total. Les
-                                    projets proposés correspondent au récapitulatif actuel (recherche globale incluse).
-                                    Un même projet ne peut figurer que dans un seul sous-total ; le choix dans un
-                                    sous-total le retire des autres. Les lignes projets restent affichées ; les
-                                    sous-totaux apparaissent juste avant le total général.
+                                    {t('support.subtotals.help')}
                                   </p>
                                   <div className="space-y-2">
                                     {projectSubtotalState.groups.map((g) => (
@@ -2289,7 +2306,7 @@ const Support: React.FC = () => {
                                       >
                                         <div className="flex flex-wrap items-start gap-2 justify-between">
                                           <label className="flex flex-col gap-1 text-xs font-medium text-gray-700 flex-1 min-w-[12rem]">
-                                            Nom du sous-total
+                                            {t('support.subtotals.nameLabel')}
                                             <input
                                               type="text"
                                               value={g.label}
@@ -2301,7 +2318,7 @@ const Support: React.FC = () => {
                                                   ),
                                                 }))
                                               }
-                                              placeholder="ex. Projets Europe (sous-total)"
+                                              placeholder={t('support.subtotals.namePlaceholder')}
                                               disabled={csvWriteLoading}
                                               className="rounded border border-gray-300 px-2 py-1.5 text-sm font-normal"
                                             />
@@ -2317,14 +2334,14 @@ const Support: React.FC = () => {
                                             disabled={csvWriteLoading}
                                             className="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 shrink-0"
                                           >
-                                            Supprimer
+                                            {t('support.actions.delete')}
                                           </button>
                                         </div>
                                         <div className="flex flex-col gap-1 text-xs font-medium text-gray-700">
-                                          <span>Projets à additionner (cases à cocher)</span>
+                                          <span>{t('support.subtotals.projectsToSum')}</span>
                                           <div className="rounded border border-gray-300 bg-white p-2 max-h-52 overflow-auto space-y-1.5">
                                             {projectOptionsForSubtotalUi.length === 0 ? (
-                                              <p className="text-xs text-gray-500">Aucun projet disponible.</p>
+                                              <p className="text-xs text-gray-500">{t('support.subtotals.noProjects')}</p>
                                             ) : (
                                               projectOptionsForSubtotalUi.map((opt) => {
                                                 const checked = g.projectKeys.includes(opt.projectKey);
@@ -2340,7 +2357,7 @@ const Support: React.FC = () => {
                                                       onChange={(e) => {
                                                         const nextKeys = e.target.checked
                                                           ? [...g.projectKeys, opt.projectKey]
-                                                          : g.projectKeys.filter((t) => t !== opt.projectKey);
+                                                          : g.projectKeys.filter((x) => x !== opt.projectKey);
                                                         setProjectSubtotalState((s) => ({
                                                           ...s,
                                                           groups: rebalanceProjectSubtotalGroups(
@@ -2355,7 +2372,7 @@ const Support: React.FC = () => {
                                                     <span>
                                                       {opt.displayName}
                                                       {!projectKeysInCurrentTotals.has(opt.projectKey) ? (
-                                                        <span className="text-gray-500"> — hors filtre actuel</span>
+                                                        <span className="text-gray-500"> {t('support.outsideCurrentFilter')}</span>
                                                       ) : null}
                                                     </span>
                                                   </label>
@@ -2381,7 +2398,7 @@ const Support: React.FC = () => {
                                     disabled={csvWriteLoading}
                                     className="rounded border border-blue-600 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                                   >
-                                    Ajouter un sous-total
+                                    {t('support.subtotals.add')}
                                   </button>
                                 </div>
                               ) : null}
@@ -2392,7 +2409,7 @@ const Support: React.FC = () => {
                               <table className="w-full border-collapse text-sm min-w-[280px]">
                                 <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 z-10">
                                   <tr>
-                                    <th className="text-left font-semibold text-gray-700 px-3 py-2">Projet</th>
+                                    <th className="text-left font-semibold text-gray-700 px-3 py-2">{t('support.fields.projet')}</th>
                                     <th className="text-right font-semibold text-gray-700 px-3 py-2 whitespace-nowrap">
                                       {`Σ ${getDisplayCurrencyCode(displayCurrency)}`}
                                     </th>
@@ -2440,7 +2457,7 @@ const Support: React.FC = () => {
                                 </tbody>
                                 <tfoot>
                                   <tr className="bg-slate-100/90 border-t-2 border-slate-300">
-                                    <td className="px-3 py-2.5 font-semibold text-gray-900">Total général</td>
+                                    <td className="px-3 py-2.5 font-semibold text-gray-900">{t('support.grandTotal')}</td>
                                     <td className="px-3 py-2.5 text-right text-base sm:text-lg font-bold text-slate-900 tabular-nums whitespace-nowrap">
                                       {formatDisplayAmount(projectTotalsGrand, displayCurrency)}
                                     </td>
@@ -2514,18 +2531,18 @@ const Support: React.FC = () => {
                             id={`soutien-bloc-titre-${group.yearKey}`}
                             className="block text-xl sm:text-2xl font-bold text-gray-900 tracking-tight"
                           >
-                            {group.year != null ? `Année ${group.sectionTitle}` : group.sectionTitle}
+                            {group.year != null ? t('support.year.title', { year: group.sectionTitle }) : group.sectionTitle}
                           </span>
                           <span className="block text-sm text-gray-500 mt-1.5">
-                            {group.rows.length} ligne{group.rows.length !== 1 ? 's' : ''} dans ce bloc
+                            {t('support.year.rowsInBlock', { count: group.rows.length })}
                             {filterActive && expanded
                               ? globalActive
-                                ? ' — recherche globale active (tous les tableaux)'
-                                : ' — filtre de ce tableau actif ci-dessous'
+                                ? t('support.year.globalActive')
+                                : t('support.year.localActive')
                               : filterActive && !expanded
                                 ? globalActive
-                                  ? ' — recherche globale active (développez pour voir)'
-                                  : ' — filtre de ce tableau actif (développez pour voir)'
+                                  ? t('support.year.globalActiveCollapsed')
+                                  : t('support.year.localActiveCollapsed')
                                 : ''}
                           </span>
                         </span>
@@ -2548,14 +2565,14 @@ const Support: React.FC = () => {
                         role="region"
                         aria-label={
                           group.year != null
-                            ? `Détail année ${group.sectionTitle}`
-                            : `Détail : ${group.sectionTitle}`
+                            ? t('support.year.detailYearAria', { year: group.sectionTitle })
+                            : t('support.year.detailAria', { title: group.sectionTitle })
                         }
                       >
                     <div className="shrink-0 px-4 py-2.5 border-b border-gray-100 bg-gray-50/80 flex flex-wrap items-center gap-3">
                       {globalActive ? (
                         <span className="text-xs font-medium text-amber-900 bg-amber-100/90 border border-amber-200 rounded-md px-2 py-1.5 w-full sm:w-auto">
-                          Recherche globale active — filtres de ce tableau sont ignorés.
+                          {t('support.filters.globalActiveNotice')}
                         </span>
                       ) : null}
                       <div className="flex items-center gap-2 min-w-0">
@@ -2563,7 +2580,7 @@ const Support: React.FC = () => {
                           htmlFor={`soutien-col-${group.yearKey}`}
                           className={`text-sm whitespace-nowrap ${globalActive ? 'text-gray-400' : 'text-gray-600'}`}
                         >
-                          Colonne
+                          {t('transactions.filters.column')}
                         </label>
                         <select
                           id={`soutien-col-${group.yearKey}`}
@@ -2571,9 +2588,9 @@ const Support: React.FC = () => {
                           onChange={(e) => patchYearPanel(group.yearKey, { filterColumn: e.target.value })}
                           className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[120px] disabled:opacity-60"
                           disabled={csvWriteLoading || globalActive}
-                          title={globalActive ? 'Désactivé tant que la recherche globale est renseignée.' : undefined}
+                          title={globalActive ? t('support.filters.disabledByGlobal') : undefined}
                         >
-                          <option value="__all__">Toutes</option>
+                          <option value="__all__">{t('transactions.filters.allColumns')}</option>
                           {yearDisplayHeaders.map((h) => (
                             <option key={h} value={h}>
                               {displaySupportHeaderLabel(h, displayCurrency)}
@@ -2586,14 +2603,14 @@ const Support: React.FC = () => {
                           id={`soutien-search-${group.yearKey}`}
                           type="text"
                           placeholder={
-                            globalActive ? 'Filtre local (inactif — recherche globale)' : 'Rechercher dans ce tableau…'
+                            globalActive ? t('support.filters.localInactivePlaceholder') : t('support.filters.localPlaceholder')
                           }
                           value={panel.filterText}
                           onChange={(e) => patchYearPanel(group.yearKey, { filterText: e.target.value })}
                           className="flex-1 rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-0 disabled:opacity-60"
                           disabled={csvWriteLoading || globalActive}
-                          aria-label={`Rechercher pour ${group.sectionTitle}`}
-                          title={globalActive ? 'Désactivé tant que la recherche globale est renseignée.' : undefined}
+                          aria-label={t('support.filters.searchAria', { title: group.sectionTitle })}
+                          title={globalActive ? t('support.filters.disabledByGlobal') : undefined}
                         />
                         {panel.filterText && !globalActive ? (
                           <button
@@ -2601,16 +2618,16 @@ const Support: React.FC = () => {
                             onClick={() => patchYearPanel(group.yearKey, { filterText: '' })}
                             className="text-gray-500 hover:text-gray-700 text-sm whitespace-nowrap"
                           >
-                            Effacer
+                            {t('transactions.filters.clear')}
                           </button>
                         ) : null}
                       </div>
                       <span className="text-gray-500 text-sm">
-                        {sorted.length} / {group.rows.length} affichée{sorted.length !== 1 ? 's' : ''}
+                        {t('support.filters.shownCount', { count: sorted.length, total: group.rows.length })}
                       </span>
                     </div>
                     <div className="px-4 pt-3 pb-1">
-                      <p className="text-xs font-medium uppercase tracking-wide text-gray-400 mb-2">Tableau des transactions</p>
+                      <p className="text-xs font-medium uppercase tracking-wide text-gray-400 mb-2">{t('transactions.title')}</p>
                       <div className="rounded-lg border border-gray-200 bg-white overflow-hidden shadow-inner">
                         <div className="overflow-auto max-h-[min(50vh,520px)] min-h-[120px] overscroll-contain">
                       <table className="w-full border-collapse text-sm min-w-[640px]">
@@ -2627,7 +2644,11 @@ const Support: React.FC = () => {
                                   {panel.sortColumn === h && (
                                     <span
                                       className="text-blue-600"
-                                      aria-label={panel.sortDirection === 'asc' ? 'Croissant' : 'Décroissant'}
+                                      aria-label={
+                                        panel.sortDirection === 'asc'
+                                          ? t('transactions.table.sortAsc')
+                                          : t('transactions.table.sortDesc')
+                                      }
                                     >
                                       {panel.sortDirection === 'asc' ? '↑' : '↓'}
                                     </span>
@@ -2636,7 +2657,7 @@ const Support: React.FC = () => {
                               </th>
                             ))}
                             <th className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 sticky right-0 z-20 border-l border-gray-200 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.06)]">
-                              Actions
+                              {t('support.actions.title')}
                             </th>
                           </tr>
                         </thead>
@@ -2648,8 +2669,8 @@ const Support: React.FC = () => {
                                 className="px-3 py-8 text-center text-sm text-gray-500"
                               >
                                 {globalActive
-                                  ? 'Aucune ligne ne correspond à la recherche globale pour ce bloc.'
-                                  : 'Aucune ligne ne correspond au filtre de ce tableau.'}
+                                  ? t('support.filters.noMatchGlobal')
+                                  : t('support.filters.noMatchLocal')}
                               </td>
                             </tr>
                           ) : (
@@ -2698,7 +2719,7 @@ const Support: React.FC = () => {
                                           disabled={csvWriteLoading || editOpen}
                                           className="rounded border border-blue-600 bg-white px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                                         >
-                                          Modifier
+                                          {t('support.actions.edit')}
                                         </button>
                                         <button
                                           type="button"
@@ -2706,7 +2727,7 @@ const Support: React.FC = () => {
                                           disabled={csvWriteLoading}
                                           className="rounded border border-red-600 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                                         >
-                                          Supprimer
+                                          {t('support.actions.delete')}
                                         </button>
                                       </div>
                                     ) : fileImported && dataRowIndex >= 0 ? (
@@ -2721,7 +2742,7 @@ const Support: React.FC = () => {
                                               : 'border-gray-500 bg-white text-gray-800 hover:bg-gray-100'
                                           }`}
                                         >
-                                          {ignored ? 'Réactiver' : 'Ignorer'}
+                                          {ignored ? t('support.actions.reactivate') : t('support.actions.ignore')}
                                         </button>
                                       </div>
                                     ) : (
@@ -2739,22 +2760,23 @@ const Support: React.FC = () => {
                     </div>
                     <footer className="mt-2 mx-4 mb-4 px-4 py-4 sm:py-5 rounded-lg border-2 border-slate-300 bg-gradient-to-b from-slate-50 to-slate-100/90 shadow-sm">
                       <p className="text-xs font-medium uppercase tracking-wide text-slate-500 text-left mb-3">
-                        Total du bloc {group.year != null ? group.year : `« ${group.sectionTitle} »`}
+                        {t('support.footer.blockTotal', {
+                          label: group.year != null ? String(group.year) : `« ${group.sectionTitle} »`,
+                        })}
                       </p>
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
                         <p className="text-sm text-gray-600 text-left shrink-0">
-                          <span className="font-medium text-gray-800">Synthèse</span>
+                          <span className="font-medium text-gray-800">{t('support.footer.summary')}</span>
                           <span className="text-gray-600">
                             {' '}
-                            ({sortedForSum.length} ligne{sortedForSum.length !== 1 ? 's' : ''} comptée
-                            {sortedForSum.length !== 1 ? 's' : ''} dans la somme
+                            ({t('support.footer.counted', { count: sortedForSum.length })}
                             {ignoredInSortedView > 0
-                              ? ` · ${ignoredInSortedView} ignorée${ignoredInSortedView !== 1 ? 's' : ''} exclue${ignoredInSortedView !== 1 ? 's' : ''}`
+                              ? t('support.footer.ignoredExcluded', { count: ignoredInSortedView })
                               : ''}
                             {globalActive
-                              ? ', recherche globale'
+                              ? t('support.footer.globalSearch')
                               : localFilterActive
-                                ? ', filtre du tableau appliqué'
+                                ? t('support.footer.tableFilter')
                                 : ''}
                             )
                           </span>
@@ -2771,7 +2793,7 @@ const Support: React.FC = () => {
                         )}
                         {!amountColumnHeader && !amountGbpHeader && (
                           <p className="text-sm text-gray-500 text-left sm:text-right sm:ml-auto">
-                            Colonnes AMOUNT et AMOUNT GBP absentes — total non calculé
+                            {t('support.footer.amountColumnsMissing')}
                           </p>
                         )}
                       </div>
@@ -2800,11 +2822,11 @@ const Support: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="soutien-edit-title" className="text-lg font-semibold text-gray-900">
-              Modifier la ligne (saisie manuelle)
+              {t('support.editModal.title')}
             </h2>
             <div className="grid grid-cols-1 gap-3">
               <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-gray-700">Date</span>
+                <span className="font-medium text-gray-700">{t('support.fields.date')}</span>
                 <input
                   type="text"
                   value={editDate}
@@ -2814,7 +2836,7 @@ const Support: React.FC = () => {
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-gray-700">Libellé (TITLE)</span>
+                <span className="font-medium text-gray-700">{t('support.fields.title')}</span>
                 <input
                   type="text"
                   value={editTitle}
@@ -2824,7 +2846,7 @@ const Support: React.FC = () => {
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-gray-700">Montant (AMOUNT)</span>
+                <span className="font-medium text-gray-700">{t('support.fields.amount')}</span>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -2835,7 +2857,7 @@ const Support: React.FC = () => {
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-gray-700">Devise</span>
+                <span className="font-medium text-gray-700">{t('support.fields.currency')}</span>
                 <select
                   value={editCurrency}
                   onChange={(e) => setEditCurrency(e.target.value)}
@@ -2860,7 +2882,7 @@ const Support: React.FC = () => {
                 disabled={csvWriteLoading}
                 className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
-                Annuler
+                {t('transactions.cancel')}
               </button>
               <button
                 type="button"
@@ -2868,7 +2890,7 @@ const Support: React.FC = () => {
                 disabled={csvWriteLoading}
                 className="rounded border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >
-                {csvWriteLoading ? 'Enregistrement…' : 'Enregistrer'}
+                {csvWriteLoading ? t('common.saving') : t('support.actions.save')}
               </button>
             </div>
           </div>

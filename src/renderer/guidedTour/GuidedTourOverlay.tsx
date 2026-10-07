@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { useGuidedTour } from './GuidedTourContext';
+import { GuidedTourStepBody } from './steps';
 
 type SpotlightRect = {
   top: number;
@@ -24,6 +26,7 @@ function measureHighlight(selector: string | undefined): SpotlightRect | null {
 }
 
 const GuidedTourOverlay: React.FC = () => {
+  const { t } = useTranslation();
   const { active, step, stepIndex, totalSteps, endTour, nextStep, prevStep } = useGuidedTour();
   const [spotlight, setSpotlight] = useState<SpotlightRect | null>(null);
 
@@ -80,12 +83,14 @@ const GuidedTourOverlay: React.FC = () => {
       <div className="fixed inset-0 z-[10001] flex items-center justify-center p-4 pointer-events-none">
         <div className="pointer-events-auto w-full max-w-sm max-h-[min(85vh,calc(100%-2rem))] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-2xl p-4">
         <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 mb-1">
-          Visite guidée · {stepIndex + 1} / {totalSteps}
+          {t('guidedTour.overlay.label')} · {stepIndex + 1} / {totalSteps}
         </p>
         <h2 id="guided-tour-title" className="text-base font-bold text-gray-900">
-          {step.title}
+          {t(`guidedTour.steps.${step.i18nKey}.title`)}
         </h2>
-        <div className="mt-2 text-sm text-gray-700 leading-relaxed space-y-1">{step.body}</div>
+        <div className="mt-2 text-sm text-gray-700 leading-relaxed space-y-1">
+          <GuidedTourStepBody step={step} />
+        </div>
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
           <button
@@ -93,7 +98,7 @@ const GuidedTourOverlay: React.FC = () => {
             onClick={endTour}
             className="text-xs text-gray-500 hover:text-gray-800 underline-offset-2 hover:underline"
           >
-            Quitter
+            {t('guidedTour.overlay.quit')}
           </button>
           <div className="flex gap-2">
             <button
@@ -102,14 +107,14 @@ const GuidedTourOverlay: React.FC = () => {
               disabled={stepIndex === 0}
               className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
             >
-              Précédent
+              {t('guidedTour.overlay.previous')}
             </button>
             <button
               type="button"
               onClick={nextStep}
               className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
             >
-              {isLast ? 'Terminer' : 'Suivant'}
+              {isLast ? t('guidedTour.overlay.finish') : t('guidedTour.overlay.next')}
             </button>
           </div>
         </div>

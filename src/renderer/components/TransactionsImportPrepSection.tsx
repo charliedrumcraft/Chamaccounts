@@ -1,5 +1,6 @@
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Trans, useTranslation } from 'react-i18next';
 import { useTransactionsImportPrepWizard } from '../hooks/useTransactionsImportPrepWizard';
 import {
   buildDefaultColumnMapping,
@@ -127,6 +128,7 @@ function wizardColumnSamplePreview(
  * Tableau d’édition avant import (mapping colonnes, saisie). L’état est fourni par useTransactionsImportPrepWizard.
  */
 const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps> = (props) => {
+  const { t } = useTranslation();
   const {
     sourceRowsForSuggestions = [],
     sourceHeadersForSuggestions = [],
@@ -278,27 +280,28 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
   return (
     <>
       <div>
-        <h2 className="text-sm font-semibold text-gray-700 mb-2">Édition des données avant import</h2>
+        <h2 className="text-sm font-semibold text-gray-700 mb-2">{t('transactions.importPrep.title')}</h2>
         <p className="text-xs text-gray-600 mb-2 max-w-3xl">
-          Par défaut, seules les <strong className="font-semibold text-gray-800">données brutes</strong> des CSV du
-          dossier Import sont affichées (aucun mapping). Activez le <strong className="font-semibold text-gray-800">mapping wizard</strong>{' '}
-          pour appliquer les règles automatiques de colonnes et préparer l’import vers{' '}
-          <code className="text-gray-800">src_transaction_data.csv</code>. Tous les champs de ce fichier sont alors
-          visibles : ceux déduits du CSV apparaissent en colonnes éditables, les autres en saisie manuelle. La détection
-          d’anomalies (règles métier + doublons + dates hors mois de référence du lot ou ordre non chronologique) → ⚠️ ambre ; champs manuels encore vides → panneau rouge « saisie recommandée » (import possible sans). Survolez la cellule de statut pour le détail (affichage immédiat).
+          <Trans
+            i18nKey="transactions.importPrep.description"
+            components={{
+              raw: <strong className="font-semibold text-gray-800" />,
+              mw: <strong className="font-semibold text-gray-800" />,
+              code: <code className="text-gray-800" />,
+            }}
+          />
         </p>
         <div className="mb-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 max-w-3xl">
-          <p className="text-xs font-medium text-gray-700 mb-1">Coller depuis un tableur</p>
+          <p className="text-xs font-medium text-gray-700 mb-1">{t('transactions.importPrep.pasteTitle')}</p>
           <p className="text-[11px] text-gray-500 mb-2">
-            Copiez des cellules dans Excel, Numbers ou Google Sheets (séparateur tabulation), ou du texte CSV, puis
-            collez ici. Les lignes sont ajoutées au lot en cours (en plus des fichiers du dossier Import).
+            {t('transactions.importPrep.pasteDescription')}
           </p>
           <textarea
             value={clipboardDraft}
             onChange={(e) => setClipboardDraft(e.target.value)}
             spellCheck={false}
             rows={4}
-            placeholder="Collez ici (Ctrl+V / Cmd+V)…"
+            placeholder={t('transactions.importPrep.pastePlaceholder')}
             disabled={importWizardLoading}
             className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-400 disabled:opacity-50"
           />
@@ -310,7 +313,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                 onChange={(e) => setPasteFirstLineAsData(e.target.checked)}
                 className="rounded border-gray-400"
               />
-              Pas d’en-tête (1re ligne = donnée)
+              {t('transactions.importPrep.pasteNoHeader')}
             </label>
             <button
               type="button"
@@ -323,7 +326,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
               }}
               className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-45"
             >
-              Ajouter au tableau
+              {t('transactions.importPrep.pasteAdd')}
             </button>
           </div>
         </div>
@@ -336,8 +339,8 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
             disabled={importWizardLoading || !importWizardModel?.rows.length}
             title={
               mappingWizardActive
-                ? 'Désactiver : revenir à l’affichage des données brutes du dossier Import'
-                : 'Activer : appliquer le mapping automatique et préparer l’import'
+                ? t('transactions.importPrep.mappingOnTitle')
+                : t('transactions.importPrep.mappingOffTitle')
             }
             className={`relative overflow-hidden rounded-xl border px-4 py-2 text-sm font-semibold shadow-md disabled:cursor-not-allowed disabled:opacity-45 ${
               mappingWizardActive
@@ -361,7 +364,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
               Mapping wizard
             </span>
             <span className={`relative ml-2 text-xs font-normal ${mappingWizardActive ? 'text-slate-300' : 'text-gray-600'}`}>
-              {mappingWizardActive ? 'activé' : 'désactivé — données brutes'}
+              {mappingWizardActive ? t('transactions.importPrep.mappingOn') : t('transactions.importPrep.mappingOff')}
             </span>
           </button>
           <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer select-none max-w-xs">
@@ -372,7 +375,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
               disabled={importWizardLoading}
               className="rounded border-gray-400"
             />
-            CSV dossier Import : 1re ligne = donnée (relecture auto)
+            {t('transactions.importPrep.diskFirstLine')}
           </label>
         </div>
         {importWizardMessage && (
@@ -385,12 +388,11 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
           </p>
         )}
         {importWizardLoading && (
-          <p className="text-sm text-gray-500 mb-2">Lecture des fichiers CSV dans Import…</p>
+          <p className="text-sm text-gray-500 mb-2">{t('transactions.importPrep.readingFiles')}</p>
         )}
         {!importWizardLoading && !importWizardModel?.rows.length && (
           <p className="text-sm text-amber-800 rounded border border-amber-200 bg-amber-50 px-2 py-1">
-            Aucune ligne à afficher : ajoutez des fichiers CSV dans le dossier Import, ou utilisez la zone « Coller
-            depuis un tableur » ci-dessus.
+            {t('transactions.importPrep.emptyState')}
           </p>
         )}
         {importWizardModel && importWizardModel.rows.length > 0 && (
@@ -398,25 +400,28 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
             <div className="px-2 py-1.5 bg-gray-100 text-xs font-medium text-gray-700">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span>
-                  Préparation —{' '}
+                  {t('transactions.importPrep.prepHeader')}{' '}
                   <span className="font-semibold text-gray-900" title={importWizardSourceFileNames.join(', ')}>
                     {importWizardSourceFileNames.join(', ')}
                   </span>{' '}
                   ({mappingWizardActive
-                    ? `${importPrepIgnSkipHeader.total} lignes au total · ${importPrepIgnSkipHeader.active} non ignorée${importPrepIgnSkipHeader.active !== 1 ? 's' : ''}`
-                    : `${importWizardModel.rows.length} lignes`}
+                    ? t('transactions.importPrep.statsMapped', {
+                        total: importPrepIgnSkipHeader.total,
+                        active: importPrepIgnSkipHeader.active,
+                      })
+                    : t('transactions.importPrep.statsRaw', { count: importWizardModel.rows.length })}
                   )
                   {mappingWizardActive
-                    ? ' — édition avec mapping (colonnes CSV brutes masquées) ; résultat final dans les colonnes src_transaction_data'
-                    : ' — données brutes (mapping wizard désactivé)'}
+                    ? t('transactions.importPrep.modeMapped')
+                    : t('transactions.importPrep.modeRaw')}
                 </span>
                 {mappingWizardActive && (
                   <label
                     className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
                     title={
                       importPrepAnomalySkipHeader.count === 0
-                        ? 'Aucune ligne en anomalie (⚠️)'
-                        : 'Cocher pour ignorer toutes les lignes affichant une alerte ⚠️ ; décocher pour les rétablir'
+                        ? t('transactions.importPrep.skipAnomaliesNone')
+                        : t('transactions.importPrep.skipAnomaliesHint')
                     }
                   >
                     <input
@@ -426,9 +431,9 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                       checked={importPrepAnomalySkipHeader.allSkipped}
                       disabled={importPrepAnomalySkipHeader.count === 0}
                       onChange={toggleSkipAllAnomalous}
-                      aria-label="Ignorer toutes les lignes en anomalie"
+                      aria-label={t('transactions.importPrep.skipAnomaliesAria')}
                     />
-                    Ignorer les lignes en anomalie
+                    {t('transactions.importPrep.skipAnomalies')}
                     {importPrepAnomalySkipHeader.count > 0 && (
                       <span className="text-gray-500">({importPrepAnomalySkipHeader.count})</span>
                     )}
@@ -439,8 +444,8 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                     className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
                     title={
                       importPrepDuplicateSkipHeader.count === 0
-                        ? 'Aucun doublon détecté'
-                        : 'Cocher pour ignorer toutes les lignes déjà présentes dans src_transaction_data.csv ; décocher pour les rétablir'
+                        ? t('transactions.importPrep.skipDuplicatesNone')
+                        : t('transactions.importPrep.skipDuplicatesHint')
                     }
                   >
                     <input
@@ -450,9 +455,9 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                       checked={importPrepDuplicateSkipHeader.allSkipped}
                       disabled={importPrepDuplicateSkipHeader.count === 0}
                       onChange={toggleSkipAllDuplicates}
-                      aria-label="Ignorer toutes les lignes en doublon"
+                      aria-label={t('transactions.importPrep.skipDuplicatesAria')}
                     />
-                    Ignorer les doublons
+                    {t('transactions.importPrep.skipDuplicates')}
                     {importPrepDuplicateSkipHeader.count > 0 && (
                       <span className="text-gray-500">({importPrepDuplicateSkipHeader.count})</span>
                     )}
@@ -462,10 +467,9 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
             </div>
             {mappingWizardActive && importWizardModel.columns.length > 0 && (
               <div className="px-2 py-2 border-b border-indigo-100 bg-indigo-50/50 text-xs text-gray-800">
-                <p className="font-semibold text-gray-900 mb-0.5">Attribution des colonnes sources</p>
+                <p className="font-semibold text-gray-900 mb-0.5">{t('transactions.importPrep.columnMappingTitle')}</p>
                 <p className="text-[11px] text-gray-600 mb-2">
-                  « Auto » = inférence à partir des données. Numéro = position de colonne dans le fichier ; à droite,
-                  premières valeurs non vides (aperçu).
+                  {t('transactions.importPrep.columnMappingHint')}
                 </p>
                 <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
                   {importWizardModel.columns.map((col) => {
@@ -478,7 +482,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                       <div
                         key={col.key}
                         className="flex flex-wrap items-center gap-x-2 gap-y-1"
-                        title={`Fichier source : ${col.fileName}`}
+                        title={t('transactions.importPrep.sourceFile', { name: col.fileName })}
                       >
                         <span className="w-10 shrink-0 font-mono text-[11px] font-semibold text-gray-700">
                           {colNo}
@@ -487,10 +491,10 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                           className="min-w-[10rem] shrink-0 rounded border border-gray-300 bg-white px-1 py-0.5 text-[11px]"
                           value={selectVal}
                           onChange={(e) => updateImportColumnMappingUser(col.key, e.target.value)}
-                          aria-label={`Mapping colonne ${colNo}`}
+                          aria-label={t('transactions.importPrep.mapColumnAria', { n: colNo })}
                         >
-                          <option value="__AUTO__">Auto ({inferred || '—'})</option>
-                          <option value="">Ignorer</option>
+                          <option value="__AUTO__">{t('transactions.importPrep.autoOption', { inferred: inferred || '—' })}</option>
+                          <option value="">{t('transactions.importPrep.ignoreOption')}</option>
                           {WIZARD_STANDARD_KEYS.filter((k) => k !== '').map((k) => (
                             <option key={k} value={k}>
                               {k}
@@ -551,9 +555,9 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                     : `px-1 py-1 ${stickyTh}`;
                         const thAria =
                           def.kind === 'line'
-                            ? 'Ligne dans le fichier source'
+                            ? t('transactions.importPrep.colLineAria')
                             : def.kind === 'dup'
-                              ? 'Alertes et statut de la ligne'
+                              ? t('transactions.importPrep.colStatusAria')
                               : undefined;
                         return (
                           <th
@@ -573,10 +577,10 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                       checked={importPrepIgnSkipHeader.allSkipped}
                                       disabled={importWizardRowIds.length === 0}
                                       onChange={toggleImportPrepSkipAll}
-                                      aria-label="Tout ignorer ou tout rétablir les lignes"
+                                      aria-label={t('transactions.importPrep.skipAllAria')}
                                     />
                                     <label htmlFor="prep-ign-header-cb" className="cursor-pointer select-none text-gray-800">
-                                      Ign.
+                                      {t('transactions.importPrep.skipCol')}
                                     </label>
                                   </div>
                                 )}
@@ -588,7 +592,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                     <div className="mt-0.5 text-[10px] leading-tight text-indigo-600">
                                       Mapping wizard
                                       <br />
-                                      <span className="text-indigo-900">Saisie manuelle</span>
+                                      <span className="text-indigo-900">{t('transactions.importPrep.manualEntry')}</span>
                                     </div>
                                   </>
                                 )}
@@ -704,7 +708,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                             return n;
                                           });
                                         }}
-                                        aria-label="Ignorer cette ligne"
+                                        aria-label={t('transactions.importPrep.skipRowAria')}
                                       />
                                     )}
                                     {def.kind === 'line' && (
@@ -716,16 +720,16 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                           <div
                                             className="rounded-md border-2 border-red-600 bg-red-100 px-1.5 py-1 text-center shadow-sm"
                                             role="status"
-                                            aria-label="Saisie manuelle recommandée (import possible sans)"
+                                            aria-label={t('transactions.importPrep.manualBadgeAria')}
                                           >
                                             <span className="block text-[9px] font-bold uppercase tracking-wide text-red-950">
-                                              Saisie manuelle
+                                              {t('transactions.importPrep.manualBadgeLine1')}
                                             </span>
                                             <span className="mt-0.5 block text-[8px] font-semibold leading-tight text-red-900">
-                                              recommandée
+                                              {t('transactions.importPrep.manualBadgeLine2')}
                                             </span>
                                             <span className="mt-0.5 block text-[7px] leading-tight text-red-800/95">
-                                              import possible
+                                              {t('transactions.importPrep.manualBadgeLine3')}
                                             </span>
                                           </div>
                                         )}
@@ -755,9 +759,9 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                             updateWizardManualCell(p.row.id, 'CURRENCY', e.target.value)
                                           }
                                           className="w-full min-w-0 max-w-full rounded border border-indigo-200/90 bg-indigo-50/90 px-0.5 py-0.5 text-[11px] text-indigo-950"
-                                          aria-label="CURRENCY (Mapping wizard)"
+                                          aria-label={t('transactions.importPrep.currencyAria')}
                                         >
-                                          <option value="">— Auto (€/£/CHF dans AMOUNT)</option>
+                                          <option value="">{t('transactions.importPrep.currencyAuto')}</option>
                                           <option value="EUR">EUR</option>
                                           <option value="GBP">GBP</option>
                                           <option value="CHF">CHF</option>
@@ -978,7 +982,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                           {directRaw ? (
                                             <span
                                               className="shrink-0 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-gray-200 px-1 text-[9px] font-bold leading-none text-gray-600"
-                                              title="Valeur identique à la cellule du fichier brut (sans interprétation)"
+                                              title={t('transactions.importPrep.rawEqualsTitle')}
                                               aria-hidden
                                             >
                                               =

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { DataSetupStatus, LegacyDataLocation } from '@/shared/profiles';
 
 type DataSetupProps = {
@@ -6,6 +7,7 @@ type DataSetupProps = {
 };
 
 const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<DataSetupStatus | null>(null);
   const [profileName, setProfileName] = useState('');
   const [selectedPath, setSelectedPath] = useState('');
@@ -30,19 +32,19 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
     async (dataRoot: string, name: string, initialize: boolean) => {
       const api = window.electronAPI;
       if (!api?.registerDataProfile) {
-        setError('Configuration des données indisponible (hors application desktop).');
+        setError(t('dataSetup.unavailable'));
         return;
       }
       setLoading(true);
       setError(null);
       try {
         const r = await api.registerDataProfile({
-          name: name.trim() || dataRoot.split(/[/\\]/).pop() || 'Profil',
+          name: name.trim() || dataRoot.split(/[/\\]/).pop() || t('common.defaultProfileName'),
           dataRoot,
           initialize,
         });
         if (!r.success) {
-          setError(r.error ?? 'Impossible d’enregistrer le profil.');
+          setError(r.error ?? t('dataSetup.registerFailed'));
           return;
         }
         onComplete();
@@ -50,7 +52,7 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
         setLoading(false);
       }
     },
-    [onComplete]
+    [onComplete, t]
   );
 
   const handlePickExisting = useCallback(async () => {
@@ -74,23 +76,23 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
     try {
       const init = await api.initializeDataFolder(pick.path);
       if (!init.success || !init.path) {
-        setError(init.error ?? 'Impossible de créer l’arborescence.');
+        setError(init.error ?? t('dataSetup.createTreeFailed'));
         return;
       }
-      const name = profileName.trim() || pick.path.split(/[/\\]/).pop() || 'Profil';
+      const name = profileName.trim() || pick.path.split(/[/\\]/).pop() || t('common.defaultProfileName');
       await registerProfile(init.path, name, false);
     } finally {
       setLoading(false);
     }
-  }, [profileName, registerProfile]);
+  }, [profileName, registerProfile, t]);
 
   const handleUseSelected = useCallback(async () => {
     if (!selectedPath.trim()) {
-      setError('Choisissez un dossier de données.');
+      setError(t('dataSetup.chooseFolder'));
       return;
     }
     await registerProfile(selectedPath, profileName, false);
-  }, [selectedPath, profileName, registerProfile]);
+  }, [selectedPath, profileName, registerProfile, t]);
 
   const handleLegacy = useCallback(
     (legacy: LegacyDataLocation) => {
@@ -108,7 +110,7 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
   if (!status) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100 text-slate-600">
-        Chargement…
+        {t('common.loading')}
       </div>
     );
   }
@@ -116,27 +118,24 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
       <div className="w-full max-w-xl bg-white rounded-xl shadow-lg border border-slate-200 p-8">
-        <h1 className="text-2xl font-bold text-slate-900">Dossier de données</h1>
-        <p className="mt-2 text-sm text-slate-600">
-          Chamaccounts sépare le code applicatif de vos fichiers CSV. Indiquez où stocker les
-          transactions, soldes et réglages de ce profil. Ce dossier ne fait pas partie du dépôt Git.
-        </p>
+        <h1 className="text-2xl font-bold text-slate-900">{t('dataSetup.title')}</h1>
+        <p className="mt-2 text-sm text-slate-600">{t('dataSetup.description')}</p>
 
         <label className="mt-6 block text-sm font-medium text-slate-700" htmlFor="profile-name">
-          Nom du profil
+          {t('dataSetup.profileName')}
         </label>
         <input
           id="profile-name"
           type="text"
           value={profileName}
           onChange={(e) => setProfileName(e.target.value)}
-          placeholder="ex. Perso, Pro…"
+          placeholder={t('dataSetup.profilePlaceholder')}
           className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
         />
 
         {status.legacyLocations.length > 0 && (
           <div className="mt-6">
-            <h2 className="text-sm font-semibold text-slate-800">Données existantes détectées</h2>
+            <h2 className="text-sm font-semibold text-slate-800">{t('dataSetup.legacyTitle')}</h2>
             <ul className="mt-2 space-y-2">
               {status.legacyLocations.map((legacy) => (
                 <li key={legacy.path}>
@@ -161,7 +160,7 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
                   onClick={() => void handleConfirmLegacy()}
                   className="mt-3 w-full rounded bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800 disabled:opacity-50"
                 >
-                  Utiliser cet emplacement
+                  {t('dataSetup.useLocation')}
                 </button>
               )}
           </div>
@@ -174,7 +173,7 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
             onClick={() => void handlePickExisting()}
             className="rounded border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
           >
-            Choisir un dossier existant…
+            {t('dataSetup.pickExisting')}
           </button>
           {selectedPath &&
             !status.legacyLocations.some((l) => l.path === selectedPath) && (
@@ -187,7 +186,7 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
               onClick={() => void handleUseSelected()}
               className="rounded bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
             >
-              Confirmer ce dossier
+              {t('dataSetup.confirmFolder')}
             </button>
           )}
           <button
@@ -196,12 +195,12 @@ const DataSetup: React.FC<DataSetupProps> = ({ onComplete }) => {
             onClick={() => void handleCreateNew()}
             className="rounded border border-emerald-600 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
           >
-            Créer un nouveau dossier (structure vide)
+            {t('dataSetup.createNew')}
           </button>
         </div>
 
         {error && <p className="mt-4 text-sm text-red-700">{error}</p>}
-        {loading && <p className="mt-2 text-sm text-slate-500">Traitement…</p>}
+        {loading && <p className="mt-2 text-sm text-slate-500">{t('common.processing')}</p>}
       </div>
     </div>
   );
