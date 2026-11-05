@@ -19,8 +19,20 @@ import { EXCLUDE_ANOMALY_COLUMN, detectAnomalies } from '../services/AnomalyDete
 import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
 import { getSuggestions, getDateSuggestionsForMonth, completeDateForMonth, isTextSuggestibleColumn } from '../services/SuggestInputService';
 import { accountLabelFromSource } from '../constants/accountSourceLabels';
-import { resolveBalanceLineIdForTransactionType } from '../constants/annualBudgetTypeMapping';
-import { getYearSnapshot, type YearSnapshot } from '../services/annualBudgetStorage';
+import {
+  getDefaultLineAssignedTypes,
+  resolveBalanceLineIdForTransactionType,
+} from '../constants/annualBudgetTypeMapping';
+import {
+  getYearBilanStructure,
+  getYearSnapshot,
+  type BudgetCategory,
+  type YearSnapshot,
+} from '../services/annualBudgetStorage';
+import {
+  ASSETS_BANK_LINE_ID,
+  ASSETS_BF_CATEGORY_ID,
+} from '../services/annualBudgetTracking';
 import {
   formatDateDDMMYYYY,
   formatAmountForRowCurrency,
@@ -45,6 +57,10 @@ import {
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
 import { ResizableTableHeadCell } from '../components/Common/ResizableTableHeadCell';
+import SettingsGearIcon from '../components/Common/SettingsGearIcon';
+import MonthlyBudgetProgressSection, {
+  type BudgetProgressRow,
+} from '../components/MonthlyBudgetProgressSection';
 import {
   defaultEditColumnWidth,
   useResizableTableColumns,
@@ -64,6 +80,7 @@ const OVERVIEW_BAR_BUDGET = 'monthly-accounting-overview-bar-budget';
 const OVERVIEW_BAR_MODE_LEGACY = 'monthly-accounting-overview-bar-mode';
 const OVERVIEW_AVERAGE_PERIOD = 'monthly-accounting-overview-average-period';
 const SECTION_MONTHLY_CHART = 'monthly-accounting-section-chart-expanded';
+const SECTION_MONTHLY_BUDGET_PROGRESS = 'monthly-accounting-section-budget-progress-expanded';
 const SECTION_MONTHLY_OVERVIEW = 'monthly-accounting-section-overview-expanded';
 const SECTION_MONTHLY_TABLE = 'monthly-accounting-section-table-expanded';
 const MA_TABLE_COL_WIDTHS_KEY = 'monthly-accounting-table-col-widths';
@@ -260,6 +277,116 @@ function monthlyForecastForTypeDisplay(
   const annualGbp = snap.budgetValues[lineId] ?? 0;
   const monthlyGbp = annualGbp / 12;
   return convertMovementsToDisplayCurrency(monthlyGbp, displayCurrency);
+}
+
+const BUDGET_PROGRESS_MIN_GBP = 0.005;
+
+function isBroughtForwardBudgetLine(lineId: string, categoryId: string): boolean {
+  return lineId === ASSETS_BANK_LINE_ID || categoryId === ASSETS_BF_CATEGORY_ID;
+}
+
+/**
+ * Lignes de progression budget : toutes les lignes bilan budgétisées (prévision ≠ 0),
+ * y compris si aucun type n’a de transaction ce mois (réalisé = 0).
+ * Une ligne par type affecté ; sans type affecté → une ligne au libellé du bilan.
+ */
+function buildBudgetProgressRowsFromSnapshot(
+  snap: YearSnapshot,
+  year: number,
+  displayCurrency: CurrencySymbol,
+  byTypeSorties: Record<string, number>,
+  byTypeEntrées: Record<string, number>
+): { expenses: BudgetProgressRow[]; income: BudgetProgressRow[] } {
+  const structure = getYearBilanStructure(year) ?? snap.bilanStructure ?? null;
+  const assets: BudgetCategory[] = structure?.assets ?? [];
+  const liabilities: BudgetCategory[] = structure?.liabilities ?? [];
+  const lineLabels = structure?.lineLabels ?? {};
+  const defaultMap = getDefaultLineAssignedTypes();
+  const lineAssigned = snap.lineAssignedTypes ?? {};
+
+  const expenses: BudgetProgressRow[] = [];
+  const income: BudgetProgressRow[] = [];
+  const seenExpense = new Set<string>();
+  const seenIncome = new Set<string>();
+
+  const pushSide = (side: 'assets' | 'liabilities', cats: BudgetCategory[]) => {
+    const actualMap = side === 'assets' ? byTypeEntrées : byTypeSorties;
+    const out = side === 'assets' ? income : expenses;
+    const seen = side === 'assets' ? seenIncome : seenExpense;
+
+    for (const cat of cats) {
+      for (const line of cat.lines ?? []) {
+        if (!line?.id) continue;
+        if (isBroughtForwardBudgetLine(line.id, cat.id)) continue;
+        const annualGbp = snap.budgetValues[line.id] ?? 0;
+        if (Math.abs(annualGbp) < BUDGET_PROGRESS_MIN_GBP) continue;
+
+        const monthlyBudget = Math.abs(
+          convertMovementsToDisplayCurrency(annualGbp / 12, displayCurrency)
+        );
+        const assigned =
+          lineAssigned[line.id] !== undefined
+            ? lineAssigned[line.id]
+            : (defaultMap[line.id] ?? []);
+        const labels =
+          assigned.length > 0
+            ? assigned.map((t) => t.trim()).filter(Boolean)
+            : [lineLabels[line.id] ?? line.label];
+
+        for (const label of labels) {
+          if (seen.has(label)) continue;
+          seen.add(label);
+          out.push({
+            type: label,
+            actual: actualMap[label] ?? 0,
+            budget: monthlyBudget,
+          });
+        }
+      }
+    }
+  };
+
+  pushSide('liabilities', liabilities);
+  pushSide('assets', assets);
+
+  /** Secours : clés budgétées absentes de la structure (signe du forecast → côté). */
+  if (expenses.length === 0 && income.length === 0) {
+    const knownLineIds = new Set<string>();
+    for (const cat of [...assets, ...liabilities]) {
+      for (const line of cat.lines ?? []) knownLineIds.add(line.id);
+    }
+    for (const [lineId, annualGbp] of Object.entries(snap.budgetValues ?? {})) {
+      if (lineId === ASSETS_BANK_LINE_ID) continue;
+      if (Math.abs(annualGbp) < BUDGET_PROGRESS_MIN_GBP) continue;
+      if (knownLineIds.has(lineId)) continue;
+      const side: 'assets' | 'liabilities' = annualGbp < 0 ? 'liabilities' : 'assets';
+      const actualMap = side === 'assets' ? byTypeEntrées : byTypeSorties;
+      const out = side === 'assets' ? income : expenses;
+      const seen = side === 'assets' ? seenIncome : seenExpense;
+      const monthlyBudget = Math.abs(
+        convertMovementsToDisplayCurrency(annualGbp / 12, displayCurrency)
+      );
+      const assigned =
+        lineAssigned[lineId] !== undefined
+          ? lineAssigned[lineId]
+          : (defaultMap[lineId] ?? []);
+      const labels =
+        assigned.length > 0
+          ? assigned.map((t) => t.trim()).filter(Boolean)
+          : [lineLabels[lineId] ?? lineId];
+      for (const label of labels) {
+        if (seen.has(label)) continue;
+        seen.add(label);
+        out.push({
+          type: label,
+          actual: actualMap[label] ?? 0,
+          budget: monthlyBudget,
+        });
+      }
+    }
+  }
+
+  return { expenses, income };
 }
 
 /** Parse un montant depuis une cellule (virgule ou point décimal). */
@@ -493,6 +620,9 @@ const MonthlyAccounting: React.FC = () => {
   } | null>(null);
   const [sectionChartExpanded, setSectionChartExpanded] = useState(() =>
     loadMonthlySectionExpanded(SECTION_MONTHLY_CHART, true)
+  );
+  const [sectionBudgetProgressExpanded, setSectionBudgetProgressExpanded] = useState(() =>
+    loadMonthlySectionExpanded(SECTION_MONTHLY_BUDGET_PROGRESS, true)
   );
   const [sectionOverviewExpanded, setSectionOverviewExpanded] = useState(() =>
     loadMonthlySectionExpanded(SECTION_MONTHLY_OVERVIEW, true)
@@ -893,6 +1023,30 @@ const MonthlyAccounting: React.FC = () => {
     window.addEventListener('annual-budget-snapshot-changed', handler);
     return () => window.removeEventListener('annual-budget-snapshot-changed', handler);
   }, [selectedMonth]);
+
+  const budgetProgressYear = selectedMonth
+    ? parseInt(selectedMonth.split('-')[0], 10)
+    : NaN;
+
+  /** Toutes les lignes budgétisées (bilan), même sans transaction ce mois (réalisé = 0). */
+  const budgetProgressRows = useMemo(() => {
+    const empty = { expenses: [] as BudgetProgressRow[], income: [] as BudgetProgressRow[] };
+    if (!budgetSnapshot || Number.isNaN(budgetProgressYear)) return empty;
+    const c = cumulativeChartYAxisCurrency as CurrencySymbol;
+    const byTypeSorties: Record<string, number> = Object.fromEntries(
+      overviewData?.byTypeSorties ?? []
+    );
+    const byTypeEntrées: Record<string, number> = Object.fromEntries(
+      overviewData?.byTypeEntrées ?? []
+    );
+    return buildBudgetProgressRowsFromSnapshot(
+      budgetSnapshot,
+      budgetProgressYear,
+      c,
+      byTypeSorties,
+      byTypeEntrées
+    );
+  }, [overviewData, budgetSnapshot, budgetProgressYear, cumulativeChartYAxisCurrency]);
 
   /** Totaux par mois (et par type) pour calcul des moyennes — depuis IPC (GBP → devise affichage). */
   const monthlyTotals = useMemo(() => {
@@ -1563,20 +1717,7 @@ const MonthlyAccounting: React.FC = () => {
                         : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                     }`}
                   >
-                    <svg
-                      className="w-5 h-5"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                      />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
+                    <SettingsGearIcon className="w-5 h-5" />
                   </button>
                 </div>
               </div>
@@ -1741,6 +1882,24 @@ const MonthlyAccounting: React.FC = () => {
           </section>
         )}
 
+        {data && !loading && selectedMonth && !Number.isNaN(budgetProgressYear) && (
+          <MonthlyBudgetProgressSection
+            year={budgetProgressYear}
+            currency={cumulativeChartYAxisCurrency as CurrencySymbol}
+            expenses={budgetProgressRows.expenses}
+            income={budgetProgressRows.income}
+            expanded={sectionBudgetProgressExpanded}
+            hasBudgetSnapshot={budgetSnapshot != null}
+            onToggleExpanded={() => {
+              setSectionBudgetProgressExpanded((e) => {
+                const next = !e;
+                saveMonthlySectionExpanded(SECTION_MONTHLY_BUDGET_PROGRESS, next);
+                return next;
+              });
+            }}
+          />
+        )}
+
         {data && !loading && selectedMonth && overviewData && (
           <section className="flex flex-col rounded-xl border-2 border-gray-200/90 bg-white shadow-md overflow-hidden mb-6">
             <header
@@ -1801,20 +1960,7 @@ const MonthlyAccounting: React.FC = () => {
                         : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                     }`}
                   >
-                    <svg
-                      className="w-5 h-5"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                      />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
+                    <SettingsGearIcon className="w-5 h-5" />
                   </button>
                 </div>
               </div>

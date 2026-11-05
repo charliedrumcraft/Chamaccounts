@@ -15,7 +15,13 @@
     "active": "Actif",
     "remove": "Retirer",
     "activate": "Activer",
+    "edit": "Modifier",
+    "cancel": "Annuler",
     "defaultProfileName": "Profil"
+  },
+  "helpInfo": {
+    "gotIt": "Compris",
+    "close": "Fermer"
   },
   "nav": {
     "dashboard": "Tableau de bord",
@@ -25,12 +31,57 @@
     "annualBudget": "Budget annuel",
     "support": "Soutien",
     "settings": "Réglages",
+    "profile": "Profil",
     "openMenu": "Ouvrir le menu",
     "collapseMenu": "Réduire le menu",
     "guidedTour": "Visite guidée",
     "activeProfile": "Profil actif",
     "profileNotConfigured": "Profil non configuré",
     "version": "Version {{version}}"
+  },
+  "gettingStarted": {
+    "title": "Premiers pas",
+    "subtitle": "{{done}} sur {{total}} étapes — suivez la liste pour voir vos premiers graphiques.",
+    "dismiss": "Masquer cette checklist",
+    "go": "Y aller",
+    "nextCta": "Suivant : {{step}}",
+    "steps": {
+      "currencies": "Choisir les devises de travail",
+      "accounts": "Ajouter vos comptes",
+      "types": "Ajouter les types de revenus et dépenses",
+      "importTransactions": "Importer vos premières transactions",
+      "importBalances": "Importer les soldes de comptes (optionnel)"
+    },
+    "hints": {
+      "currencies": "La devise principale sert de référence de conversion dans les rapports.",
+      "accounts": "Ouvrez Profil et listez les comptes bancaires utilisés (avec devise).",
+      "types": "Les types aident à catégoriser l’import et à détecter les anomalies.",
+      "importTransactions": "Ouvrez le module d’import, ajoutez un CSV ou collez des lignes, mappez les colonnes, puis importez.",
+      "importBalances": "Importez les soldes mensuels pour alimenter le graphique d’évolution du tableau de bord."
+    },
+    "emptyDashboardTitle": "Aucune donnée à afficher pour l’instant",
+    "emptyDashboardBody": "Configurez votre profil, puis importez un relevé CSV. La checklist ci-dessus vous guide.",
+    "emptyDashboardCta": "Importer des transactions",
+    "startQuickTour": "Visite rapide (2 min)"
+  },
+  "profileSettings": {
+    "title": "Profil",
+    "mappingProfiles": {
+      "title": "Entraîner le mapping wizard",
+      "description": "Enregistrez la forme des CSV de vos banques (en-têtes → DATE, TITLE, AMOUNT…). Lors d’un prochain import avec les mêmes en-têtes, le mapping wizard réapplique automatiquement ce profil.",
+      "empty": "Aucun profil de mapping — importez un CSV d’exemple ci-dessous pour en créer un.",
+      "trainTitle": "Nouveau profil depuis un CSV",
+      "editTitle": "Modifier le profil",
+      "nameLabel": "Nom (ex. banque)",
+      "namePlaceholder": "ex. N26",
+      "pickCsv": "Choisir un CSV d’exemple…",
+      "save": "Enregistrer le profil",
+      "needCsv": "Choisissez d’abord un CSV d’exemple.",
+      "unreadableCsv": "Impossible de lire les en-têtes de ce CSV.",
+      "saved": "Profil « {{name}} » enregistré.",
+      "removed": "Profil retiré.",
+      "removeConfirm": "Supprimer ce profil de mapping ?"
+    }
   },
   "settings": {
     "title": "Réglages",
@@ -111,14 +162,23 @@
     },
     "projects": {
       "title": "Projets",
-      "description": "Définissez des projets et une couleur chacun. Ils apparaissent en liste déroulante dans la colonne PROJET (transactions, Soutien, comptabilité mensuelle) ; le fichier enregistre l’identifiant du projet, stable même si vous renommez le libellé ici.",
+      "description": "Catalogue métier du profil (fichier AppState/projects.json). Ils apparaissent en liste déroulante dans la colonne PROJET (transactions, Soutien, comptabilité mensuelle) ; les lignes enregistrent l’identifiant du projet, stable même si vous renommez le libellé ici.",
       "empty": "Aucun projet — ajoutez-en un pour commencer.",
       "name": "Nom",
       "color": "Couleur",
       "colorTitle": "Couleur du projet",
       "delete": "Supprimer",
       "add": "Ajouter un projet",
-      "defaultName": "Nouveau projet"
+      "defaultName": "Nouveau projet",
+      "confirmDelete": "Supprimer le projet « {{name}} » ? Les lignes qui y sont encore liées resteront orphelines jusqu’à réaffectation.",
+      "confirmDeleteWithLinks": "Supprimer « {{name}} » ? {{count}} ligne(s) y sont encore liées et deviendront orphelines.",
+      "orphansTitle": "Projets orphelins détectés",
+      "orphansHint": "Des identifiants PROJET existent dans vos données mais plus dans le catalogue. Restaurez-les pour retrouver le libellé, ou réaffectez les lignes.",
+      "orphansCount": "{{count}} ligne(s) (soutien {{support}}, transactions {{transactions}})",
+      "orphansChecking": "Vérification des orphelins…",
+      "restoreOrphan": "Restaurer dans le catalogue",
+      "restoredName": "Projet restauré ({{short}})",
+      "restoreFailed": "Impossible de restaurer ce projet."
     },
     "recognised": {
       "title": "Données reconnues",
@@ -262,7 +322,17 @@
     },
     "importPrep": {
       "title": "Édition des données avant import",
-      "description": "Par défaut, seules les <raw>données brutes</raw> des CSV du dossier Import sont affichées (aucun mapping). Activez le <mw>mapping wizard</mw> pour appliquer les règles automatiques de colonnes et préparer l’import vers <code>src_transaction_data.csv</code>. Tous les champs de ce fichier sont alors visibles : ceux déduits du CSV apparaissent en colonnes éditables, les autres en saisie manuelle. La détection d’anomalies (règles métier + doublons + dates hors mois de référence du lot ou ordre non chronologique) → ⚠️ ambre ; champs manuels encore vides → panneau rouge « saisie recommandée » (import possible sans). Survolez la cellule de statut pour le détail (affichage immédiat).",
+      "stepsTitle": "Comment importer",
+      "step1": "Ajoutez des CSV dans le dossier Import, ou collez des lignes depuis un tableur ci-dessous.",
+      "step2": "Activez le mapping wizard (obligatoire pour importer).",
+      "step3": "Vérifiez le mapping des colonnes, corrigez les cellules, ignorez anomalies ou doublons si besoin.",
+      "step4": "Cliquez sur « Importer les lignes » en haut de ce module.",
+      "description": "Avec le <mw>mapping wizard</mw> activé, les colonnes sont alignées pour l’import dans votre fichier de transactions. L’affichage brut (wizard désactivé) sert uniquement à inspecter. Anomalies → ⚠️ ambre ; champs recommandés vides → panneau rouge (import quand même possible). Survolez la cellule de statut pour le détail.",
+      "profileTip": "Conseil : définissez d’abord vos comptes et types dans Profil — les valeurs inconnues sont signalées en anomalie.",
+      "profileTipCta": "Ouvrir Profil",
+      "mappingWizardLabel": "Mapping wizard",
+      "helpToggle": "Comment fonctionne cet import",
+      "helpToggleHide": "Masquer l’aide à l’import",
       "pasteTitle": "Coller depuis un tableur",
       "pasteDescription": "Copiez des cellules dans Excel, Numbers ou Google Sheets (séparateur tabulation), ou du texte CSV, puis collez ici. Les lignes sont ajoutées au lot en cours (en plus des fichiers du dossier Import).",
       "pastePlaceholder": "Collez ici (Ctrl+V / Cmd+V)…",
@@ -289,7 +359,13 @@
       "skipDuplicatesNone": "Aucun doublon détecté",
       "skipDuplicatesHint": "Cocher pour ignorer toutes les lignes déjà présentes dans src_transaction_data.csv ; décocher pour les rétablir",
       "columnMappingTitle": "Attribution des colonnes sources",
-      "columnMappingHint": "« Auto » = inférence à partir des données. Numéro = position de colonne dans le fichier ; à droite, premières valeurs non vides (aperçu).",
+      "columnMappingHint": "« Auto » = profil appris (mêmes en-têtes) ou inférence. Numéro = position de colonne dans le fichier ; à droite, premières valeurs non vides (aperçu).",
+      "saveMappingProfile": "Enregistrer comme profil…",
+      "saveMappingProfilePrompt": "Nom du profil de mapping (ex. banque) :",
+      "saveMappingProfileNameRequired": "Indiquez un nom pour le profil.",
+      "saveMappingProfileNoColumns": "Aucune colonne à enregistrer.",
+      "saveMappingProfileMultiFile": "Plusieurs fichiers chargés : enregistrement basé sur « {{file}} ».",
+      "saveMappingProfileDone": "Profil de mapping « {{name}} » enregistré.",
       "sourceFile": "Fichier source : {{name}}",
       "mapColumnAria": "Mapping colonne {{n}}",
       "autoOption": "Auto ({{inferred}})",
@@ -493,6 +569,10 @@
       "skipAnomaliesAria": "Ignorer toutes les lignes en anomalie",
       "skipAnomaliesNone": "Aucune ligne en anomalie (⚠️)",
       "skipAnomaliesHint": "Cocher pour ignorer toutes les lignes affichant une alerte ⚠️ ; décocher pour les rétablir",
+      "skipDuplicates": "Ignorer les doublons",
+      "skipDuplicatesAria": "Ignorer toutes les lignes en doublon de date",
+      "skipDuplicatesNone": "Aucun doublon de date détecté",
+      "skipDuplicatesHint": "Cocher pour ignorer toutes les dates déjà présentes dans src_account_balance.csv ; décocher pour les rétablir",
       "columnMappingTitle": "Attribution des colonnes sources",
       "columnMappingHint": "« Auto » = d’après le libellé d’en-tête. Numéro = position dans le fichier ; à droite, aperçu des valeurs.",
       "sourceFile": "Fichier source : {{name}}",
@@ -549,6 +629,39 @@
       "compare": "Evolution comparée des mouvements",
       "tables": "Tableaux et filtres",
       "yearly": "Suivi annuel"
+    },
+    "help": {
+      "open": "À propos de ce bloc",
+      "balances": {
+        "title": "Évolution des soldes",
+        "p1": "Montre l’évolution des soldes de comptes dans le temps, à partir des soldes mensuels (début de chaque mois).",
+        "p2": "Vous pouvez afficher un graphique multi-comptes, un graphique de type boursier pour un compte, des courbes de tendance, et des cartes d’écart début/fin.",
+        "p3": "L’icône réglages permet de choisir la devise de l’axe, les comptes visibles, la hauteur du graphique et les options de tendance. La plage de dates peut se synchroniser avec le suivi des mouvements."
+      },
+      "movements": {
+        "title": "Suivi des mouvements",
+        "p1": "Résume entrées et sorties sur une période choisie, à partir des transactions importées.",
+        "p2": "Vous pouvez explorer des camemberts par type, un histogramme mensuel, et une barre de balance horizontale (entrées vs sorties).",
+        "p3": "Les paramètres permettent de choisir la devise d’affichage, les types d’entrées/sorties visibles, la hauteur des graphiques, et la synchro de plage avec l’évolution des soldes."
+      },
+      "compare": {
+        "title": "Evolution comparée des mouvements",
+        "p1": "Compare deux plages de dates côte à côte pour voir comment entrées et sorties diffèrent entre périodes.",
+        "p2": "Chaque plage a ses graphiques et totaux ; vous pouvez afficher des pourcentages relatifs à l’autre plage.",
+        "p3": "Utile pour confronter mois, trimestres ou années sans quitter le tableau de bord."
+      },
+      "tables": {
+        "title": "Tableaux et filtres",
+        "p1": "Liste les transactions de la période sélectionnée, avec filtres sur titre, type et compte (plusieurs lignes combinées en OU).",
+        "p2": "Vous pouvez aussi afficher des tableaux récapitulatifs par type d’entrée/sortie et par compte, et limiter la hauteur du tableau des transactions.",
+        "p3": "La plage de dates peut se synchroniser avec l’évolution des soldes et/ou le suivi des mouvements pour garder tous les blocs alignés."
+      },
+      "yearly": {
+        "title": "Suivi annuel",
+        "p1": "Donne une vue multi-années des entrées et sorties agrégées par type.",
+        "p2": "Vous pouvez afficher un graphique annuel, un tableau types par année, et des outils d’analyse (moyennes, tendances) pour les années cochées dans les paramètres.",
+        "p3": "Idéal pour repérer les motifs récurrents et les évolutions sur le long terme."
+      }
     },
     "series": {
       "entries": "Entrées",
@@ -676,7 +789,8 @@
     },
     "empty": {
       "noDataForFilters": "Aucune donnée pour les filtres sélectionnés.",
-      "noBalanceFile": "Aucune donnée (fichier {{dir}}/src_account_balance.csv ou account_balance.csv absent ou vide)",
+      "noBalanceFile": "Aucun solde pour l’instant. Importez des soldes mensuels depuis Soldes des comptes, ou ajoutez des fichiers sous {{dir}}.",
+      "noBalanceFileCta": "Importer des soldes",
       "noDateOrExpenseIncome": "Données source sans colonne Date ou Expense/Income, ou plage sans données.",
       "noDateOrAmountGbp": "Données source sans colonne Date ou AMOUNT GBP, ou plage vide.",
       "noDateOrAmount": "Données source sans colonne Date ou montant, ou aucune donnée."
@@ -730,6 +844,18 @@
       "period": "Période",
       "average": "Moyenne",
       "monthlyForecast": "Prév. mens."
+    },
+    "budgetProgress": {
+      "title": "Progression budgétaire",
+      "subtitle": "Réalisé du mois vs prévision mensuelle du budget annuel {{year}}",
+      "legend": "Chaque barre va de 0 (gauche) à l’objectif budgétaire du mois (droite). En dépassement : rouge pour les sorties, vert pour les entrées.",
+      "percent": "{{value}} %",
+      "actualVsBudget": "{{actual}} / {{budget}}",
+      "noBudgetTarget": "—",
+      "noSnapshot": "Aucun budget annuel renseigné pour cette année. Renseignez-le dans Budget annuel (feuille bilan) pour afficher la progression.",
+      "noMappedTypes": "Aucune ligne budgétée pour cette année. Renseignez des montants prévisionnels dans Budget annuel (feuille bilan).",
+      "emptyExpenses": "Aucune sortie budgétée.",
+      "emptyIncome": "Aucune entrée budgétée."
     },
     "period": {
       "options": {
@@ -807,6 +933,22 @@
       "expenses": "Dépenses",
       "balance": "Solde annuel"
     },
+    "tracking": {
+      "title": "Suivi budget annuel",
+      "subtitle": "Recettes et dépenses vs budget · {{year}}",
+      "income": "Recettes",
+      "expenses": "Dépenses",
+      "vsBudget": "vs budget",
+      "vsPace": "Écart au rythme de l’année",
+      "yearProgress": "Avancement de l’année",
+      "yearProgressHint": "Comparez le % consommé du budget au % de l’année déjà écoulé.",
+      "delta": "Écart",
+      "consumed": "Consommé",
+      "line": "Ligne / catégorie",
+      "showBreakdown": "Détail par ligne du bilan",
+      "broughtForward": "report",
+      "loading": "Chargement du suivi budget…"
+    },
     "errors": {
       "noSourceData": "Aucune donnée source (src_transaction_data.csv).",
       "loadFailed": "Erreur au chargement."
@@ -862,7 +1004,17 @@
       "actualBankTitle": "Total des comptes au 1er janvier de l’année (soldes)",
       "bankAutoHint": "Réel = total des comptes au 1er janvier",
       "deltaForecastTitle": "Écart : Total Fund C/F (forecast) − total Assets B/F (forecast)",
-      "deltaActualTitle": "Écart : Total Fund C/F (réel) − total Assets B/F (réel)"
+      "deltaActualTitle": "Écart : Total Fund C/F (réel) − total Assets B/F (réel)",
+      "helpToggle": "Comment éditer la feuille de bilan",
+      "helpToggleHide": "Masquer l’aide",
+      "helpTitle": "Éditer la feuille de bilan",
+      "helpStep1": "Cliquez sur « Mode édition » pour renommer catégories et lignes, les réordonner (↑ ↓), changer de niveau (Niveau + / −), en ajouter ou en supprimer.",
+      "helpStep2": "Colonne Forecast : saisissez un montant, ou une formule du type =100*12 puis Entrée.",
+      "helpStep3": "Colonne Réel : en général calculée automatiquement à partir des types de transactions rattachés à la ligne.",
+      "helpStep4": "Utilisez « Affecter » sur une ligne pour lier des types d’entrées ou de sorties : leurs montants de l’année alimentent le Réel.",
+      "helpStep5": "La ligne Bank est spéciale : le Réel peut venir des soldes au 1er janvier, ou être saisi manuellement selon le mode choisi.",
+      "helpStep6": "Quittez le mode édition quand vous avez fini : la structure et les forecasts sont enregistrés pour l’année affichée.",
+      "helpNote": "Astuce : le bloc « Affectation des types » plus bas liste les mouvements non encore rattachés à une ligne du bilan."
     },
     "types": {
       "title": "Mouvements par type et par mois",
@@ -951,10 +1103,18 @@
     "outsideCurrentFilter": "— hors filtre actuel",
     "grandTotal": "Total général",
     "importModule": {
-      "open": "Ouvrir le module d'importation vers Support_data.csv (collage tableur)",
-      "close": "Fermer le module d'importation vers Support_data.csv (collage tableur)",
+      "open": "Ouvrir le module d'importation vers Support_data.csv",
+      "close": "Fermer le module d'importation vers Support_data.csv",
       "needMapping": "Activez le mapping wizard pour préparer l’import vers Support_data.csv",
       "noImportableRows": "Aucune ligne importable (ignorées ou invalides) avec les réglages actuels"
+    },
+    "importWizard": {
+      "emptyConfirmBody": "Tous les fichiers du dossier Import (Soutien) seront déplacés vers la corbeille du système. Vous pourrez les restaurer depuis la corbeille si besoin.",
+      "removeImportedTitle": "Après un import réussi, retire du dossier Import les lignes qui viennent d’être ajoutées à Support_data.csv (les lignes collées depuis le presse-papiers ne sont pas concernées).",
+      "readFailed": "Impossible de lire un fichier.",
+      "copyFailed": "Erreur lors de la copie.",
+      "emptyFailed": "Impossible de vider le dossier.",
+      "noFiles": "Aucun fichier dans le dossier Import."
     },
     "addLine": {
       "title": "Ajouter une ligne Support",
@@ -1078,28 +1238,77 @@
       "title": "Modifier la ligne (saisie manuelle)"
     },
     "importPrep": {
-      "description": "Collez des lignes depuis un tableur, activez le <mw>mapping wizard</mw> pour aligner les colonnes sur <code>Support_data.csv</code> (DATE, TITLE, AMOUNT, CURRENCY), puis importez. Le type « Support » et la source manuelle sont appliqués automatiquement. La colonne d’alerte (⚠️) résume les problèmes : survolez pour le détail.",
-      "pasteDescription": "Copiez des cellules dans Excel, Numbers ou Google Sheets (séparateur tabulation), ou du texte CSV, puis collez ici. Les lignes s’ajoutent au lot en cours.",
-      "clearBatch": "Vider le lot",
+      "stepsTitle": "Comment importer",
+      "step1": "Ajoutez des CSV dans le dossier Import, ou collez des lignes depuis un tableur ci-dessous.",
+      "step2": "Activez le mapping wizard (obligatoire pour importer).",
+      "step3": "Vérifiez le mapping des colonnes, le projet et la devise, corrigez les cellules, ignorez anomalies ou doublons si besoin.",
+      "step4": "Cliquez sur « Importer les lignes » en haut de ce module.",
+      "helpToggle": "Comment fonctionne cet import",
+      "profileTip": "Conseil : définissez d’abord vos projets dans Profil — un projet inconnu bloque l’import (sauf si « Exiger un projet » est décoché).",
+      "profileTipCta": "Ouvrir Profil",
+      "description": "Ajoutez des CSV dans le dossier Import, ou collez depuis un tableur ci-dessus. Activez le <mw>mapping wizard</mw> pour aligner les colonnes sur <code>Support_data.csv</code> (DATE, TITLE, AMOUNT, CURRENCY, PROJET), choisissez le projet du lot (ou ligne par ligne), puis importez. Le type « Support » et la source manuelle sont appliqués automatiquement. La colonne d’alerte (⚠️) résume les problèmes : survolez pour le détail.",
+      "pasteDescription": "Copiez des cellules dans Excel, Numbers ou Google Sheets (séparateur tabulation), ou du texte CSV, puis collez ici. Les lignes s’ajoutent au lot en cours (en plus des fichiers du dossier Import).",
+      "clearBatch": "Recharger depuis le dossier Import",
       "mappingOnTitle": "Désactiver : revenir aux données brutes",
       "mappingOffTitle": "Activer : tableau aligné sur Support_data.csv",
-      "emptyState": "Aucune ligne à afficher : utilisez la zone « Coller depuis un tableur » ci-dessus.",
+      "emptyState": "Aucune ligne à afficher : importez des CSV dans le dossier Import ou utilisez « Coller depuis un tableur » ci-dessus.",
       "statsMapped_one": "{{total}} lignes au total · {{count}} non ignorée",
       "statsMapped_other": "{{total}} lignes au total · {{count}} non ignorées",
       "modeMapped": " — aperçu aligné sur Support_data.csv",
-      "columnMappingHint": "Numéro = position dans le collage. « Auto » utilise l’inférence d’en-tête. À droite : aperçu des premières valeurs.",
+      "columnMappingHint": "Numéro = position dans le collage. L’inférence d’en-tête et les profils enregistrés s’appliquent automatiquement. À droite : aperçu des premières valeurs. Vous pouvez aussi mapper une colonne vers PROJET.",
+      "batchProjetLabel": "Projet du lot",
+      "batchProjetHint": "Appliqué aux lignes sans projet mappé. Modifiable aussi ligne par ligne dans l’aperçu.",
+      "batchCurrencyLabel": "Devise du lot",
+      "batchCurrencyHint": "Appliquée aux lignes sans devise mappée ni indiquée dans le montant.",
+      "duplicateRow": "Doublon (ligne déjà présente dans Support_data.csv)",
+      "skipDuplicatesNone": "Aucun doublon détecté",
+      "skipDuplicatesHint": "Cocher pour ignorer toutes les lignes déjà présentes dans Support_data.csv ; décocher pour les rétablir",
+      "bulkActionsLabel": "Actions de masse :",
+      "forceCurrency": "Appliquer la devise du lot",
+      "forceCurrencyHint": "Écrit la devise du lot sur toutes les lignes (y compris celles déjà mappées).",
+      "forceCurrencyNeedBatch": "Choisissez d’abord une devise du lot.",
+      "forceCurrencyDone": "Devise {{currency}} appliquée à {{count}} ligne(s).",
+      "forceProjet": "Forcer le projet du lot",
+      "forceProjetHint": "Écrit le projet du lot sur toutes les lignes (y compris celles déjà mappées).",
+      "forceProjetNeedBatch": "Choisissez d’abord un projet du lot.",
+      "forceProjetDone": "Projet « {{projet}} » appliqué à {{count}} ligne(s).",
+      "skipAllAlerts": "Ignorer toutes les alertes",
+      "skipAllAlertsHint": "Ignore (ou rétablit) toutes les lignes avec une alerte ⚠️.",
+      "summaryLine": "À importer : {{importable}} / {{total}} · ignorées {{skipped}} · doublons {{duplicates}} · alertes {{alerts}} · {{currencies}} · projet : {{projet}}",
+      "summaryProjetMixed": "plusieurs",
+      "summaryProjetNone": "aucun",
+      "fileAdd": "Ajouter un fichier CSV…",
+      "fileLoading": "Lecture…",
+      "fileEmpty": "Aucun contenu exploitable dans le(s) fichier(s).",
+      "fileAdded": "{{count}} ligne(s) ajoutée(s) depuis {{source}}.",
+      "sourcesLabel": "Sources du lot :",
+      "sourceRemoveAria": "Retirer {{name}} du lot",
+      "sourceRemoved": "Source « {{name}} » retirée du lot.",
+      "sourceRemovedEmpty": "Source « {{name}} » retirée — lot vide.",
+      "keepBatch": "Garder le lot après import",
+      "keepBatchHint": "Si coché, le lot reste affiché après un import réussi (utile pour retenter ou contrôler).",
+      "requireProjet": "Exiger un projet",
+      "requireProjetHint": "Si décoché, les lignes sans projet restent importables.",
+      "createProjet": "Nouveau projet…",
+      "createProjetHint": "Crée un projet et l’assigne comme projet du lot.",
+      "createProjetPrompt": "Nom du nouveau projet :",
+      "createProjetDone": "Projet « {{name}} » créé et sélectionné pour le lot.",
+      "createProjetFailed": "Impossible de créer le projet (nom vide ?).",
+      "appendedKeepBatch": "{{count}} ligne(s) ajoutée(s) à Support_data.csv. Lot conservé.",
       "sourceFile": "Source : {{name}}",
       "targetColumnAria": "Cible colonne {{n}}",
       "alertsAria": "Alertes",
       "batchCleared": "Lot d’import vidé.",
       "enableMappingFirst": "Activez le mapping wizard pour préparer et importer les lignes vers Support_data.csv.",
-      "noValidRows": "Aucune ligne valide à ajouter (vérifiez les alertes ou les lignes ignorées).",
+      "noValidRows": "Aucune ligne valide à ajouter (vérifiez les alertes, le projet, les doublons ou les lignes ignorées).",
       "appended": "{{count}} ligne(s) ajoutée(s) à Support_data.csv.",
       "reasonMissingAmount": "Montant manquant",
       "reasonAmountNaN": "Montant non numérique",
       "reasonAmountInvalid": "Montant invalide (nul ou non numérique)",
       "reasonCurrencyMissing": "Devise manquante (EUR, GBP ou CHF)",
-      "reasonCurrencyInvalid": "Devise : EUR, GBP ou CHF"
+      "reasonCurrencyInvalid": "Devise : EUR, GBP ou CHF",
+      "reasonMissingProjet": "Projet manquant",
+      "reasonUnknownProjet": "Projet inconnu — réassigner"
     }
   },
   "system": {
@@ -1168,15 +1377,65 @@
     "empty": "Aucune exception enregistrée.",
     "removeException": "Lever l’exception"
   },
+  "importSuccess": {
+    "transactionsMessage": "{{count}} ligne(s) de transactions importée(s) avec succès.",
+    "balancesMessage": "{{count}} ligne(s) de soldes importée(s) avec succès.",
+    "viewDashboard": "Voir le tableau de bord",
+    "dismiss": "Fermer"
+  },
   "guidedTour": {
     "overlay": {
       "label": "Visite guidée",
+      "quickLabel": "Visite rapide",
       "quit": "Quitter",
       "previous": "Précédent",
       "next": "Suivant",
       "finish": "Terminer"
     },
+    "menu": {
+      "title": "Aide et prise en main",
+      "subtitle": "Refaire l’introduction ou réafficher la checklist de démarrage.",
+      "quickTour": "Visite rapide (2 min)",
+      "quickTourHint": "Profil → Import → Tableau de bord sur vos données actuelles.",
+      "fullTour": "Visite guidée complète",
+      "fullTourHint": "Toutes les pages avec le profil d’exemple Data Template.",
+      "showChecklist": "Afficher la checklist Premiers pas",
+      "showChecklistHint": "Réouvre la checklist sur le tableau de bord (même si vous l’aviez masquée).",
+      "close": "Fermer"
+    },
+    "offer": {
+      "eyebrow": "Premier lancement",
+      "title": "Faire une visite rapide (2 min) ?",
+      "body": "On parcourt Profil → Import → Tableau de bord sur vos données actuelles. Vous pouvez aussi suivre la checklist « Premiers pas » du tableau de bord à votre rythme.",
+      "startQuick": "Lancer la visite rapide",
+      "checklistOnly": "Je préfère la checklist",
+      "later": "Pas maintenant"
+    },
     "steps": {
+      "quickWelcome": {
+        "title": "Bienvenue — le chemin essentiel",
+        "p1": "Pour voir des graphiques, il faut trois choses : des <strong>comptes et types</strong> dans Profil, un <strong>import</strong> de transactions, puis le <strong>tableau de bord</strong>.",
+        "p2": "Cette visite courte reste sur votre profil (pas de bascule vers des données d’exemple)."
+      },
+      "quickProfile": {
+        "title": "Profil : les comptes d’abord",
+        "p1": "Ajoutez les comptes bancaires utilisés (avec devise). Les types de revenus et dépenses aident à catégoriser l’import et à repérer les valeurs inconnues.",
+        "p2": "Enregistrez les listes avant d’importer pour que les anomalies restent pertinentes."
+      },
+      "quickImport": {
+        "title": "Importer un relevé CSV",
+        "p1": "Ouvrez le module d’import, ajoutez des fichiers ou collez des lignes, activez le <strong>mapping wizard</strong>, vérifiez les colonnes, puis cliquez sur Importer les lignes.",
+        "p2": "La checklist Premiers pas renvoie aussi ici avec le module déjà ouvert."
+      },
+      "quickDashboard": {
+        "title": "Tableau de bord",
+        "p1": "Une fois les données importées, soldes et mouvements apparaissent ici. Les filtres permettent d’explorer types et comptes."
+      },
+      "quickFinish": {
+        "title": "C’est bon",
+        "p1": "Suivez la checklist du tableau de bord s’il manque encore une étape. La visite guidée complète (avec données d’exemple) reste disponible depuis la barre latérale.",
+        "p2": "Astuce : exportez un ZIP projet depuis Réglages avant de changer de machine."
+      },
       "welcome": {
         "title": "Bienvenue dans Chamaccounts",
         "p1": "Cette application centralise vos transactions, soldes de comptes, comptabilité mensuelle et budget. Les données vivent dans un <strong>dossier sur votre disque</strong> (profil actif), pas dans le dépôt Git.",
@@ -1210,7 +1469,7 @@
       "projects": {
         "title": "Projets (étiquettes)",
         "p1": "Les <strong>projets</strong> sont des étiquettes colorées (colonne <code>PROJET</code>) pour segmenter vos lignes : travaux, vacances, activité pro, etc.",
-        "p2": "Le fichier enregistre l’<strong>identifiant</strong> du projet : vous pouvez renommer l’affichage ici sans casser l’historique."
+        "p2": "Le catalogue est une donnée métier du profil (<code>AppState/projects.json</code>). Les lignes enregistrent l’<strong>identifiant</strong> : vous pouvez renommer l’affichage sans casser l’historique."
       },
       "dataFormat": {
         "title": "Format des données attendues",
@@ -1220,7 +1479,7 @@
         "importHeading": "Import bancaire (dossier Import)",
         "importCaption": "colonnes reconnues ; mapping possible vers le fichier traité",
         "balanceHeading": "Soldes mensuels",
-        "balanceCaption": "une colonne par compte actif (ordre = Réglages)",
+        "balanceCaption": "une colonne par compte actif (ordre = Profil)",
         "rates": "Les taux EUR/CHF → GBP se configurent dans Réglages pour calculer <strong>AMOUNT GBP</strong> à l’import.",
         "sample": {
           "groceries": "Courses marché",

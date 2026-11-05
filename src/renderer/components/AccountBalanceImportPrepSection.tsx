@@ -30,7 +30,6 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
   const {
     abImportWizardModel,
     abImportWizardLoading,
-    applyAccountBalanceWizardClipboardPaste,
     diskImportFirstLineAsData,
     setDiskImportFirstLineAsData,
     abColumnTargetUser,
@@ -49,14 +48,15 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
     updateMappedCell,
     importPrepIgnSkipHeader,
     importPrepAnomalySkipHeader,
+    importPrepDuplicateSkipHeader,
     toggleImportPrepSkipAll,
     toggleSkipAllAnomalous,
+    toggleSkipAllDuplicates,
   } = props;
 
   const prepIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
   const prepAnomalyIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
-  const [clipboardDraft, setClipboardDraft] = useState('');
-  const [pasteFirstLineAsData, setPasteFirstLineAsData] = useState(false);
+  const prepDuplicateIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
 
   const columnSamplePreviewByKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -79,6 +79,13 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
     el.indeterminate =
       importPrepAnomalySkipHeader.someSkipped && !importPrepAnomalySkipHeader.allSkipped;
   }, [importPrepAnomalySkipHeader]);
+
+  useEffect(() => {
+    const el = prepDuplicateIgnHeaderCheckboxRef.current;
+    if (!el) return;
+    el.indeterminate =
+      importPrepDuplicateSkipHeader.someSkipped && !importPrepDuplicateSkipHeader.allSkipped;
+  }, [importPrepDuplicateSkipHeader]);
 
   const sourceFileNames = React.useMemo(() => {
     if (!abImportWizardModel?.rows.length) return [] as string[];
@@ -155,45 +162,6 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
             }}
           />
         </p>
-        <div className="mb-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 max-w-3xl">
-          <p className="text-xs font-medium text-gray-700 mb-1">{t('accountBalance.importPrep.pasteTitle')}</p>
-          <p className="text-[11px] text-gray-500 mb-2">
-            {t('accountBalance.importPrep.pasteDescription')}
-          </p>
-          <textarea
-            value={clipboardDraft}
-            onChange={(e) => setClipboardDraft(e.target.value)}
-            spellCheck={false}
-            rows={4}
-            placeholder={t('accountBalance.importPrep.pastePlaceholder')}
-            disabled={abImportWizardLoading}
-            className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-400 disabled:opacity-50"
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-700 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={pasteFirstLineAsData}
-                onChange={(e) => setPasteFirstLineAsData(e.target.checked)}
-                className="rounded border-gray-400"
-              />
-              {t('accountBalance.importPrep.pasteNoHeader')}
-            </label>
-            <button
-              type="button"
-              disabled={abImportWizardLoading || !clipboardDraft.trim()}
-              onClick={() => {
-                applyAccountBalanceWizardClipboardPaste(clipboardDraft, {
-                  firstLineAsData: pasteFirstLineAsData,
-                });
-                setClipboardDraft('');
-              }}
-              className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {t('accountBalance.importPrep.pasteAdd')}
-            </button>
-          </div>
-        </div>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <button
             type="button"
@@ -306,6 +274,30 @@ const AccountBalanceImportPrepSection: React.FC<AccountBalanceImportPrepSectionP
                     {t('accountBalance.importPrep.skipAnomalies')}
                     {importPrepAnomalySkipHeader.count > 0 && (
                       <span className="text-gray-500">({importPrepAnomalySkipHeader.count})</span>
+                    )}
+                  </label>
+                )}
+                {mappingWizardActive && (
+                  <label
+                    className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
+                    title={
+                      importPrepDuplicateSkipHeader.count === 0
+                        ? t('accountBalance.importPrep.skipDuplicatesNone')
+                        : t('accountBalance.importPrep.skipDuplicatesHint')
+                    }
+                  >
+                    <input
+                      ref={prepDuplicateIgnHeaderCheckboxRef}
+                      type="checkbox"
+                      className="shrink-0"
+                      checked={importPrepDuplicateSkipHeader.allSkipped}
+                      disabled={importPrepDuplicateSkipHeader.count === 0}
+                      onChange={toggleSkipAllDuplicates}
+                      aria-label={t('accountBalance.importPrep.skipDuplicatesAria')}
+                    />
+                    {t('accountBalance.importPrep.skipDuplicates')}
+                    {importPrepDuplicateSkipHeader.count > 0 && (
+                      <span className="text-gray-500">({importPrepDuplicateSkipHeader.count})</span>
                     )}
                   </label>
                 )}

@@ -7,24 +7,41 @@ import {
   WIZARD_STANDARD_KEYS,
   type WizardStandardKey,
 } from '../services/supportImportWizardService';
+import { TRANSACTION_PROJET_COLUMN } from '@/shared/transactionsImportCore';
+import { ProjetSelectCell } from './ProjetColumnCells';
+import { getSuggestions } from '../services/SuggestInputService';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
 
 export type SupportImportPrepWizardProps = ReturnType<typeof useSupportImportPrepWizard>;
 
-export type SupportImportPrepSectionProps = SupportImportPrepWizardProps;
+export type SupportImportPrepSectionProps = SupportImportPrepWizardProps & {
+  /** Lignes Support existantes pour suggestions TITLE. */
+  sourceRowsForSuggestions?: Record<string, string>[];
+  /** En-tête colonne TITLE dans Support_data. */
+  titleHeaderForSuggestions?: string | null;
+};
 
 const MAPPING_SELECT_KEYS = WIZARD_STANDARD_KEYS.filter(
-  (k) => k === '' || k === 'DATE' || k === 'TITLE' || k === 'AMOUNT' || k === 'CURRENCY'
+  (k) =>
+    k === '' ||
+    k === 'DATE' ||
+    k === 'TITLE' ||
+    k === 'AMOUNT' ||
+    k === 'CURRENCY' ||
+    k === TRANSACTION_PROJET_COLUMN
 );
+
+const CURRENCY_OPTIONS = ['EUR', 'GBP', 'CHF'] as const;
 
 const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props) => {
   const { t } = useTranslation();
   const {
     supportImportWizardModel,
-    applySupportWizardClipboardPaste,
-    clearWizardBatch,
+    importWizardLoading,
     mappingWizardActive,
     setMappingWizardActive,
+    diskImportFirstLineAsData,
+    setDiskImportFirstLineAsData,
     importColumnMapping,
     updateImportColumnMappingUser,
     rawCellOverrides,
@@ -38,14 +55,29 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
     updateMappedCell,
     importPrepIgnSkipHeader,
     importPrepAnomalySkipHeader,
+    importPrepDuplicateSkipHeader,
     toggleImportPrepSkipAll,
     toggleSkipAllAnomalous,
+    toggleSkipAllDuplicates,
+    saveLearnedMappingProfile,
+    batchProjet,
+    batchCurrency,
+    forceBatchCurrencyOnAllRows,
+    forceBatchProjetOnAllRows,
+    skipAllAlertRows,
+    createProjectAndAssignBatch,
+    keepBatchAfterImport,
+    setKeepBatchAfterImport,
+    requireProjet,
+    setRequireProjet,
+    projects,
+    sourceRowsForSuggestions = [],
+    titleHeaderForSuggestions = null,
   } = props;
 
   const prepIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
   const prepAnomalyIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
-  const [clipboardDraft, setClipboardDraft] = useState('');
-  const [pasteFirstLineAsData, setPasteFirstLineAsData] = useState(false);
+  const prepDuplicateIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
 
   const columnSamplePreviewByKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -69,10 +101,26 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
       importPrepAnomalySkipHeader.someSkipped && !importPrepAnomalySkipHeader.allSkipped;
   }, [importPrepAnomalySkipHeader]);
 
+  useEffect(() => {
+    const el = prepDuplicateIgnHeaderCheckboxRef.current;
+    if (!el) return;
+    el.indeterminate =
+      importPrepDuplicateSkipHeader.someSkipped && !importPrepDuplicateSkipHeader.allSkipped;
+  }, [importPrepDuplicateSkipHeader]);
+
   const sourceFileNames = React.useMemo(() => {
     if (!supportImportWizardModel?.rows.length) return [] as string[];
     return [...new Set(supportImportWizardModel.rows.map((r) => r.sourceFile))];
   }, [supportImportWizardModel]);
+
+  const alertRowCount = useMemo(() => {
+    if (!mappingWizardActive || !supportImportWizardModel?.rows.length) return 0;
+    let n = 0;
+    for (const row of supportImportWizardModel.rows) {
+      if (rowStatusByRowId.get(row.id)?.showDanger) n += 1;
+    }
+    return n;
+  }, [mappingWizardActive, supportImportWizardModel?.rows, rowStatusByRowId]);
 
   const [alertTooltip, setAlertTooltip] = useState<{
     text: string;
@@ -136,6 +184,20 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
     return values[colIndex] ?? '';
   };
 
+  const titleSuggestionsFor = useCallback(
+    (raw: string) => {
+      if (!titleHeaderForSuggestions || sourceRowsForSuggestions.length === 0) return [];
+      return getSuggestions(sourceRowsForSuggestions, titleHeaderForSuggestions, raw, 10);
+    },
+    [sourceRowsForSuggestions, titleHeaderForSuggestions]
+  );
+
+  const handleCreateProjet = useCallback(() => {
+    const name = window.prompt(t('support.importPrep.createProjetPrompt'));
+    if (name == null) return;
+    createProjectAndAssignBatch(name);
+  }, [createProjectAndAssignBatch, t]);
+
   return (
     <>
       <div>
@@ -149,60 +211,13 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
             }}
           />
         </p>
-        <div className="mb-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 max-w-3xl">
-          <p className="text-xs font-medium text-gray-700 mb-1">{t('transactions.importPrep.pasteTitle')}</p>
-          <p className="text-[11px] text-gray-500 mb-2">
-            {t('support.importPrep.pasteDescription')}
-          </p>
-          <textarea
-            value={clipboardDraft}
-            onChange={(e) => setClipboardDraft(e.target.value)}
-            spellCheck={false}
-            rows={4}
-            placeholder={t('transactions.importPrep.pastePlaceholder')}
-            className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-400"
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-700 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={pasteFirstLineAsData}
-                onChange={(e) => setPasteFirstLineAsData(e.target.checked)}
-                className="rounded border-gray-400"
-              />
-              {t('transactions.importPrep.pasteNoHeader')}
-            </label>
-            <button
-              type="button"
-              disabled={!clipboardDraft.trim()}
-              onClick={() => {
-                applySupportWizardClipboardPaste(clipboardDraft, {
-                  firstLineAsData: pasteFirstLineAsData,
-                });
-                setClipboardDraft('');
-              }}
-              className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {t('transactions.importPrep.pasteAdd')}
-            </button>
-            {supportImportWizardModel?.rows.length ? (
-              <button
-                type="button"
-                onClick={() => clearWizardBatch()}
-                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
-              >
-                {t('support.importPrep.clearBatch')}
-              </button>
-            ) : null}
-          </div>
-        </div>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <button
             type="button"
             role="switch"
             aria-checked={mappingWizardActive}
             onClick={() => setMappingWizardActive((v) => !v)}
-            disabled={!supportImportWizardModel?.rows.length}
+            disabled={importWizardLoading || !supportImportWizardModel?.rows.length}
             title={
               mappingWizardActive
                 ? t('support.importPrep.mappingOnTitle')
@@ -233,6 +248,48 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
               {mappingWizardActive ? t('transactions.importPrep.mappingOn') : t('transactions.importPrep.mappingOff')}
             </span>
           </button>
+          <label
+            className="inline-flex items-center gap-1.5 text-[11px] text-gray-700 cursor-pointer select-none"
+            title={t('support.importPrep.keepBatchHint')}
+          >
+            <input
+              type="checkbox"
+              checked={keepBatchAfterImport}
+              onChange={(e) => setKeepBatchAfterImport(e.target.checked)}
+              className="rounded border-gray-400"
+            />
+            {t('support.importPrep.keepBatch')}
+          </label>
+          <label
+            className="inline-flex items-center gap-1.5 text-[11px] text-gray-700 cursor-pointer select-none"
+            title={t('support.importPrep.requireProjetHint')}
+          >
+            <input
+              type="checkbox"
+              checked={requireProjet}
+              onChange={(e) => setRequireProjet(e.target.checked)}
+              className="rounded border-gray-400"
+            />
+            {t('support.importPrep.requireProjet')}
+          </label>
+          <button
+            type="button"
+            onClick={handleCreateProjet}
+            className="rounded border border-teal-300 bg-teal-50 px-2 py-1 text-[11px] font-medium text-teal-900 hover:bg-teal-100"
+            title={t('support.importPrep.createProjetHint')}
+          >
+            {t('support.importPrep.createProjet')}
+          </button>
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={diskImportFirstLineAsData}
+              onChange={(e) => setDiskImportFirstLineAsData(e.target.checked)}
+              disabled={importWizardLoading}
+              className="rounded border-gray-400"
+            />
+            {t('transactions.importPrep.diskFirstLine')}
+          </label>
         </div>
         {importWizardMessage && (
           <p className={`text-sm rounded border px-2 py-1 mb-2 ${uiMessageClass(getUiMessageTone(importWizardMessage))}`}>
@@ -289,11 +346,81 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
                     )}
                   </label>
                 )}
+                {mappingWizardActive && (
+                  <label
+                    className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
+                    title={
+                      importPrepDuplicateSkipHeader.count === 0
+                        ? t('support.importPrep.skipDuplicatesNone')
+                        : t('support.importPrep.skipDuplicatesHint')
+                    }
+                  >
+                    <input
+                      ref={prepDuplicateIgnHeaderCheckboxRef}
+                      type="checkbox"
+                      className="shrink-0"
+                      checked={importPrepDuplicateSkipHeader.allSkipped}
+                      disabled={importPrepDuplicateSkipHeader.count === 0}
+                      onChange={toggleSkipAllDuplicates}
+                      aria-label={t('transactions.importPrep.skipDuplicatesAria')}
+                    />
+                    {t('transactions.importPrep.skipDuplicates')}
+                    {importPrepDuplicateSkipHeader.count > 0 && (
+                      <span className="text-gray-500">({importPrepDuplicateSkipHeader.count})</span>
+                    )}
+                  </label>
+                )}
               </div>
             </div>
+            {mappingWizardActive && (
+              <div className="px-2 py-1.5 border-b border-gray-200 bg-white flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="font-semibold text-gray-700 shrink-0">
+                  {t('support.importPrep.bulkActionsLabel')}
+                </span>
+                <button
+                  type="button"
+                  onClick={forceBatchCurrencyOnAllRows}
+                  disabled={!batchCurrency.trim()}
+                  title={t('support.importPrep.forceCurrencyHint')}
+                  className="rounded border border-gray-300 bg-white px-2 py-0.5 font-medium text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {t('support.importPrep.forceCurrency')}
+                </button>
+                <button
+                  type="button"
+                  onClick={forceBatchProjetOnAllRows}
+                  disabled={!batchProjet.trim()}
+                  title={t('support.importPrep.forceProjetHint')}
+                  className="rounded border border-gray-300 bg-white px-2 py-0.5 font-medium text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {t('support.importPrep.forceProjet')}
+                </button>
+                <button
+                  type="button"
+                  onClick={skipAllAlertRows}
+                  disabled={alertRowCount === 0}
+                  title={t('support.importPrep.skipAllAlertsHint')}
+                  className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {t('support.importPrep.skipAllAlerts')}
+                  {alertRowCount > 0 ? ` (${alertRowCount})` : ''}
+                </button>
+              </div>
+            )}
             {mappingWizardActive && supportImportWizardModel.columns.length > 0 && (
               <div className="px-2 py-2 border-b border-indigo-100 bg-indigo-50/50 text-xs text-gray-800">
-                <p className="font-semibold text-gray-900 mb-0.5">{t('transactions.importPrep.columnMappingTitle')}</p>
+                <div className="flex flex-wrap items-start justify-between gap-2 mb-0.5">
+                  <p className="font-semibold text-gray-900">
+                    {t('transactions.importPrep.columnMappingTitle')}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void saveLearnedMappingProfile()}
+                    className="rounded border border-indigo-400 bg-white px-2 py-0.5 text-[11px] font-medium text-indigo-800 hover:bg-indigo-50"
+                  >
+                    {t('transactions.importPrep.saveMappingProfile')}
+                  </button>
+                </div>
                 <p className="text-[11px] text-gray-600 mb-2">
                   {t('support.importPrep.columnMappingHint')}
                 </p>
@@ -395,6 +522,10 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
                         const messages = status?.messages ?? [];
                         const showDanger = status?.showDanger ?? false;
                         const display = mappedPreviewByRowId.get(row.id)?.display ?? {};
+                        const titleVal = display.TITLE ?? '';
+                        const titleSuggestions = titleSuggestionsFor(titleVal);
+                        const titleListId = `support-wizard-title-${row.id}`;
+                        const currencyVal = (display.CURRENCY ?? '').trim().toUpperCase();
                         return (
                           <tr key={row.id} className={`border-b border-gray-100 ${skipped ? 'opacity-50' : ''}`}>
                             <td className="px-1 py-0.5 align-middle">
@@ -414,17 +545,84 @@ const SupportImportPrepSection: React.FC<SupportImportPrepSectionProps> = (props
                             </td>
                             <td className="px-1 py-0.5 text-right text-gray-600 tabular-nums">{row.lineNumber}</td>
                             {renderAlertCell(messages, showDanger)}
-                            {outputHeaderKeys.map((h) => (
-                              <td key={h} className="px-0.5 py-0.5 align-top">
-                                <input
-                                  type="text"
-                                  value={display[h] ?? ''}
-                                  onChange={(e) => updateMappedCell(row.id, h, e.target.value)}
-                                  className="w-full min-w-0 rounded border border-gray-200 bg-white px-1 py-0.5 text-[11px] text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-400/40"
-                                  aria-label={h}
-                                />
-                              </td>
-                            ))}
+                            {outputHeaderKeys.map((h) => {
+                              if (h === TRANSACTION_PROJET_COLUMN) {
+                                return (
+                                  <td key={h} className="px-0.5 py-0.5 align-top min-w-[8rem]">
+                                    <ProjetSelectCell
+                                      rawId={display[h] ?? ''}
+                                      projects={projects}
+                                      disabled={skipped}
+                                      onChange={(projectId) => updateMappedCell(row.id, h, projectId)}
+                                      className="border-gray-200"
+                                    />
+                                  </td>
+                                );
+                              }
+                              if (h === 'CURRENCY') {
+                                const known = (CURRENCY_OPTIONS as readonly string[]).includes(currencyVal);
+                                return (
+                                  <td key={h} className="px-0.5 py-0.5 align-top min-w-[5rem]">
+                                    <select
+                                      value={known ? currencyVal : currencyVal ? '__other__' : ''}
+                                      disabled={skipped}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        if (v === '__other__') return;
+                                        updateMappedCell(row.id, h, v);
+                                      }}
+                                      className="w-full min-w-0 rounded border border-gray-200 bg-white px-1 py-0.5 text-[11px] text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-400/40 disabled:opacity-50"
+                                      aria-label={h}
+                                    >
+                                      <option value="">—</option>
+                                      {CURRENCY_OPTIONS.map((c) => (
+                                        <option key={c} value={c}>
+                                          {c}
+                                        </option>
+                                      ))}
+                                      {!known && currencyVal ? (
+                                        <option value="__other__">{currencyVal}</option>
+                                      ) : null}
+                                    </select>
+                                  </td>
+                                );
+                              }
+                              if (h === 'TITLE') {
+                                return (
+                                  <td key={h} className="px-0.5 py-0.5 align-top">
+                                    <input
+                                      type="text"
+                                      value={titleVal}
+                                      list={titleSuggestions.length > 0 ? titleListId : undefined}
+                                      onChange={(e) => updateMappedCell(row.id, h, e.target.value)}
+                                      disabled={skipped}
+                                      className="w-full min-w-0 rounded border border-gray-200 bg-white px-1 py-0.5 text-[11px] text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-400/40 disabled:opacity-50"
+                                      aria-label={h}
+                                      autoComplete="off"
+                                    />
+                                    {titleSuggestions.length > 0 && (
+                                      <datalist id={titleListId}>
+                                        {titleSuggestions.map((s) => (
+                                          <option key={`${s.value}-${s.count}`} value={s.value} />
+                                        ))}
+                                      </datalist>
+                                    )}
+                                  </td>
+                                );
+                              }
+                              return (
+                                <td key={h} className="px-0.5 py-0.5 align-top">
+                                  <input
+                                    type="text"
+                                    value={display[h] ?? ''}
+                                    onChange={(e) => updateMappedCell(row.id, h, e.target.value)}
+                                    disabled={skipped}
+                                    className="w-full min-w-0 rounded border border-gray-200 bg-white px-1 py-0.5 text-[11px] text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-400/40 disabled:opacity-50"
+                                    aria-label={h}
+                                  />
+                                </td>
+                              );
+                            })}
                           </tr>
                         );
                       })

@@ -97,6 +97,13 @@ const MESSAGES: Record<AppLocale, Record<string, string>> = {
     'workingCurrencies.unknownSecondary': 'Devise secondaire inconnue : {{code}}',
     'workingCurrencies.distinct': 'Les devises doivent être distinctes.',
     'workingCurrencies.maxSecondaries': 'Au plus deux devises secondaires.',
+    'mappingProfiles.errors.nameRequired': 'Le nom du profil de mapping est obligatoire.',
+    'mappingProfiles.errors.headersRequired': 'Aucun en-tête de colonnes à enregistrer.',
+    'mappingProfiles.errors.emptyHeader': 'Un en-tête de colonne est vide.',
+    'mappingProfiles.errors.invalidStandard': 'Champ standard de mapping invalide.',
+    'mappingProfiles.errors.duplicateSignature':
+      'Un profil avec les mêmes en-têtes existe déjà (« {{name}} »).',
+    'mappingProfiles.errors.notFound': 'Profil de mapping introuvable.',
 
     'merge.duplicateRow': 'Doublon (ligne déjà présente dans src_transaction_data.csv)',
   },
@@ -180,6 +187,13 @@ const MESSAGES: Record<AppLocale, Record<string, string>> = {
     'workingCurrencies.unknownSecondary': 'Unknown secondary currency: {{code}}',
     'workingCurrencies.distinct': 'Currencies must be distinct.',
     'workingCurrencies.maxSecondaries': 'At most two secondary currencies.',
+    'mappingProfiles.errors.nameRequired': 'The mapping profile name is required.',
+    'mappingProfiles.errors.headersRequired': 'No column headers to save.',
+    'mappingProfiles.errors.emptyHeader': 'A column header is empty.',
+    'mappingProfiles.errors.invalidStandard': 'Invalid mapping standard field.',
+    'mappingProfiles.errors.duplicateSignature':
+      'A profile with the same headers already exists (“{{name}}”).',
+    'mappingProfiles.errors.notFound': 'Mapping profile not found.',
 
     'merge.duplicateRow': 'Duplicate (row already present in src_transaction_data.csv)',
   },

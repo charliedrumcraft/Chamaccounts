@@ -1,3 +1,27 @@
+# Chamaccounts v1.3.0
+
+Profils enrichis (AppState / SQLite), réglages profil dédiés, onboarding (checklist + visite), suivi budget annuel / mensuel, et wizards d’import renforcés.
+
+### Changements par rapport à v1.2.1
+- **Réglages profil** : page dédiée (devises, projets, comptes/types reconnus, profils de mapping CSV) — données stockées dans le profil (AppState / SQLite), plus seulement dans le navigateur
+- **Onboarding** : checklist « premiers pas », offre de visite au premier lancement, menu d’aide / visite guidée
+- **Budget** : suivi de consommation annuelle (prévu vs réel, avancement dans l’année) et barre de progression budgétaire sur la comptabilité mensuelle
+- **Import** : collage CSV unifié, bannières de succès, wizards transactions / soldes / soutien améliorés (Support notamment)
+- **Data Template** : fichiers AppState versionnés (projets, données reconnues, bilan, devises) pour la démo
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.3.0-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.3.0-mac-x64.dmg` / `.zip` |
+| macOS Apple Silicon | `Chamaccounts-1.3.0-mac-arm64.dmg` / `.zip` |
+| Linux (AppImage) | `Chamaccounts-1.3.0-linux-x64.AppImage` |
+
+[Télécharger v1.3.0](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.3.0)
+
+---
+
 # Chamaccounts v1.2.1
 
 Import CSV (wizard) : auto-catégorisation TYPE améliorée, revue des confiances, règles fixes TITLE→TYPE, et suggestions enrichies.

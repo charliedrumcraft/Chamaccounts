@@ -81,6 +81,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     secondaries?: Array<string | '' | null | undefined>;
   }) => ipcRenderer.invoke('working-currencies-save', payload),
   workingCurrenciesUsedInData: () => ipcRenderer.invoke('working-currencies-used-in-data'),
+  projectsGet: () => ipcRenderer.invoke('projects-get'),
+  projectsSave: (payload: { projects: import('../shared/projects').ProjectEntry[] }) =>
+    ipcRenderer.invoke('projects-save', payload),
+  projectsOrphans: () => ipcRenderer.invoke('projects-orphans'),
+  annualBudgetGet: () => ipcRenderer.invoke('annual-budget-get'),
+  annualBudgetSave: (payload: {
+    snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile;
+  }) => ipcRenderer.invoke('annual-budget-save', payload),
+  annualBudgetMergeCache: (payload: {
+    snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile;
+  }) => ipcRenderer.invoke('annual-budget-merge-cache', payload),
+  recognisedDataGet: () => ipcRenderer.invoke('recognised-data-get'),
+  recognisedDataSave: (payload: {
+    data: import('../shared/recognisedData').RecognisedDataFile;
+  }) => ipcRenderer.invoke('recognised-data-save', payload),
+  recognisedDataMergeCache: (payload: {
+    data: import('../shared/recognisedData').RecognisedDataFile;
+  }) => ipcRenderer.invoke('recognised-data-merge-cache', payload),
+  mappingWizardProfilesList: () => ipcRenderer.invoke('mapping-wizard-profiles-list'),
+  mappingWizardProfilesUpsert: (payload: import('../shared/mappingWizardProfiles').MappingWizardProfileInput) =>
+    ipcRenderer.invoke('mapping-wizard-profiles-upsert', payload),
+  mappingWizardProfilesRemove: (profileId: string) =>
+    ipcRenderer.invoke('mapping-wizard-profiles-remove', profileId),
   transactionsMergeMonthEdit: (payload: {
     monthKey: string;
     rows: Record<string, string>[];
@@ -130,9 +153,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openImportFolder: () => ipcRenderer.invoke('open-import-folder'),
   openAccountBalanceImportFolder: () =>
     ipcRenderer.invoke('open-account-balance-import-folder'),
+  openSupportImportFolder: () => ipcRenderer.invoke('open-support-import-folder'),
   trashTransactionsImportFiles: () => ipcRenderer.invoke('trash-transactions-import-files'),
   trashAccountBalanceImportFiles: () =>
     ipcRenderer.invoke('trash-account-balance-import-files'),
+  trashSupportImportFiles: () => ipcRenderer.invoke('trash-support-import-files'),
   downloadImportReport: () =>
     ipcRenderer.invoke('download-import-report'),
   saveFile: (options?: { defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) =>
@@ -299,6 +324,81 @@ export interface ElectronAPI {
     data?: string[];
     error?: string;
   }>;
+  projectsGet: () => Promise<{
+    success: boolean;
+    data?: { projects: import('../shared/projects').ProjectEntry[] } | null;
+    error?: string;
+  }>;
+  projectsSave: (payload: {
+    projects: import('../shared/projects').ProjectEntry[];
+  }) => Promise<{
+    success: boolean;
+    data?: { projects: import('../shared/projects').ProjectEntry[] } | null;
+    error?: string;
+  }>;
+  projectsOrphans: () => Promise<{
+    success: boolean;
+    data?: { orphans: import('../shared/projects').ProjectOrphanInfo[] } | null;
+    error?: string;
+  }>;
+  annualBudgetGet: () => Promise<{
+    success: boolean;
+    data?: { snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile } | null;
+    error?: string;
+  }>;
+  annualBudgetSave: (payload: {
+    snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile;
+  }) => Promise<{
+    success: boolean;
+    data?: { snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile } | null;
+    error?: string;
+  }>;
+  annualBudgetMergeCache: (payload: {
+    snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile;
+  }) => Promise<{
+    success: boolean;
+    data?: { snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile } | null;
+    error?: string;
+  }>;
+  recognisedDataGet: () => Promise<{
+    success: boolean;
+    data?: import('../shared/recognisedData').RecognisedDataFile | null;
+    error?: string;
+  }>;
+  recognisedDataSave: (payload: {
+    data: import('../shared/recognisedData').RecognisedDataFile;
+  }) => Promise<{
+    success: boolean;
+    data?: import('../shared/recognisedData').RecognisedDataFile | null;
+    error?: string;
+  }>;
+  recognisedDataMergeCache: (payload: {
+    data: import('../shared/recognisedData').RecognisedDataFile;
+  }) => Promise<{
+    success: boolean;
+    data?: import('../shared/recognisedData').RecognisedDataFile | null;
+    error?: string;
+  }>;
+  mappingWizardProfilesList: () => Promise<{
+    success: boolean;
+    data?: import('../shared/mappingWizardProfiles').MappingWizardProfile[];
+    error?: string;
+  }>;
+  mappingWizardProfilesUpsert: (
+    payload: import('../shared/mappingWizardProfiles').MappingWizardProfileInput
+  ) => Promise<{
+    success: boolean;
+    data?: {
+      profile: import('../shared/mappingWizardProfiles').MappingWizardProfile;
+      profiles: import('../shared/mappingWizardProfiles').MappingWizardProfile[];
+    } | null;
+    error?: string;
+  }>;
+  mappingWizardProfilesRemove: (profileId: string) => Promise<{
+    success: boolean;
+    data?: { profiles: import('../shared/mappingWizardProfiles').MappingWizardProfile[] } | null;
+    error?: string;
+  }>;
   transactionsMergeMonthEdit: (payload: {
     monthKey: string;
     rows: Record<string, string>[];
@@ -363,9 +463,12 @@ export interface ElectronAPI {
     Promise<{ success: boolean; error?: string }>;
   openImportFolder: () => Promise<{ success: boolean; error?: string }>;
   openAccountBalanceImportFolder: () => Promise<{ success: boolean; error?: string }>;
+  openSupportImportFolder: () => Promise<{ success: boolean; error?: string }>;
   trashTransactionsImportFiles: () =>
     Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }>;
   trashAccountBalanceImportFiles: () =>
+    Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }>;
+  trashSupportImportFiles: () =>
     Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }>;
   downloadImportReport: () =>
     Promise<{ success: boolean; error?: string; canceled?: boolean; path?: string }>;

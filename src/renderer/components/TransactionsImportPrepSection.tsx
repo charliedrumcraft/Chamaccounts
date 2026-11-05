@@ -1,9 +1,8 @@
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Trans, useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
 import { useTransactionsImportPrepWizard } from '../hooks/useTransactionsImportPrepWizard';
 import {
-  buildDefaultColumnMapping,
   getPrepSourceCellDisplayValue,
   getSrcMappedFieldInputValue,
   isImportWizardSrcMappedFieldDirectRawMatch,
@@ -152,14 +151,15 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
     sourceHeadersForSuggestions = [],
     importWizardModel,
     importWizardLoading,
-    applyImportWizardClipboardPaste,
     diskImportFirstLineAsData,
     setDiskImportFirstLineAsData,
     mappingWizardActive,
     setMappingWizardActive,
+    defaultColumnMapping,
     importColumnMapping,
     importColumnMappingUser,
     updateImportColumnMappingUser,
+    saveLearnedMappingProfile,
     importWizardCellOverrides,
     importMappedOutputOverrides,
     importRowSkip,
@@ -194,8 +194,6 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
   } = props;
 
   const prepTableScrollRef = useRef<HTMLDivElement>(null);
-  const [clipboardDraft, setClipboardDraft] = useState('');
-  const [pasteFirstLineAsData, setPasteFirstLineAsData] = useState(false);
 
   const recognisedAccountsForSuggestions = useMemo(
     () => loadRecognisedAccountsFromStorage(),
@@ -205,11 +203,6 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
   const recognisedTypesForSuggestions = useMemo(
     () => loadAllRecognisedTypesFromStorage(),
     []
-  );
-
-  const defaultColumnMapping = useMemo(
-    () => (importWizardModel ? buildDefaultColumnMapping(importWizardModel.columns) : {}),
-    [importWizardModel]
   );
 
   const columnSamplePreviewByKey = useMemo(() => {
@@ -318,55 +311,6 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
     <>
       <div>
         <h2 className="text-sm font-semibold text-gray-700 mb-2">{t('transactions.importPrep.title')}</h2>
-        <p className="text-xs text-gray-600 mb-2 max-w-3xl">
-          <Trans
-            i18nKey="transactions.importPrep.description"
-            components={{
-              raw: <strong className="font-semibold text-gray-800" />,
-              mw: <strong className="font-semibold text-gray-800" />,
-              code: <code className="text-gray-800" />,
-            }}
-          />
-        </p>
-        <div className="mb-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 max-w-3xl">
-          <p className="text-xs font-medium text-gray-700 mb-1">{t('transactions.importPrep.pasteTitle')}</p>
-          <p className="text-[11px] text-gray-500 mb-2">
-            {t('transactions.importPrep.pasteDescription')}
-          </p>
-          <textarea
-            value={clipboardDraft}
-            onChange={(e) => setClipboardDraft(e.target.value)}
-            spellCheck={false}
-            rows={4}
-            placeholder={t('transactions.importPrep.pastePlaceholder')}
-            disabled={importWizardLoading}
-            className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-400 disabled:opacity-50"
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-700 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={pasteFirstLineAsData}
-                onChange={(e) => setPasteFirstLineAsData(e.target.checked)}
-                className="rounded border-gray-400"
-              />
-              {t('transactions.importPrep.pasteNoHeader')}
-            </label>
-            <button
-              type="button"
-              disabled={importWizardLoading || !clipboardDraft.trim()}
-              onClick={() => {
-                applyImportWizardClipboardPaste(clipboardDraft, {
-                  firstLineAsData: pasteFirstLineAsData,
-                });
-                setClipboardDraft('');
-              }}
-              className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {t('transactions.importPrep.pasteAdd')}
-            </button>
-          </div>
-        </div>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <button
             type="button"
@@ -398,7 +342,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                   : 'relative'
               }
             >
-              Mapping wizard
+              {t('transactions.importPrep.mappingWizardLabel')}
             </span>
             <span className={`relative ml-2 text-xs font-normal ${mappingWizardActive ? 'text-slate-300' : 'text-gray-600'}`}>
               {mappingWizardActive ? t('transactions.importPrep.mappingOn') : t('transactions.importPrep.mappingOff')}
@@ -516,7 +460,16 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
             </div>
             {mappingWizardActive && importWizardModel.columns.length > 0 && (
               <div className="px-2 py-2 border-b border-indigo-100 bg-indigo-50/50 text-xs text-gray-800">
-                <p className="font-semibold text-gray-900 mb-0.5">{t('transactions.importPrep.columnMappingTitle')}</p>
+                <div className="flex flex-wrap items-start justify-between gap-2 mb-0.5">
+                  <p className="font-semibold text-gray-900">{t('transactions.importPrep.columnMappingTitle')}</p>
+                  <button
+                    type="button"
+                    onClick={() => void saveLearnedMappingProfile()}
+                    className="rounded border border-indigo-400 bg-white px-2 py-0.5 text-[11px] font-medium text-indigo-800 hover:bg-indigo-50"
+                  >
+                    {t('transactions.importPrep.saveMappingProfile')}
+                  </button>
+                </div>
                 <p className="text-[11px] text-gray-600 mb-2">
                   {t('transactions.importPrep.columnMappingHint')}
                 </p>

@@ -1,6 +1,7 @@
 /// <reference path="../vite-env.d.ts" />
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import {
   SourceDataCSVService,
   type SourceDataResult,
@@ -59,8 +60,14 @@ import {
   completeDateForMonth,
 } from '../services/SuggestInputService';
 import SupportImportPrepSection from '../components/SupportImportPrepSection';
+import ImportWizardPastePanel from '../components/ImportWizardPastePanel';
+import HelpInfoDialog, { HelpInfoButton } from '../components/HelpInfoDialog';
 import { useSupportImportPrepWizard } from '../hooks/useSupportImportPrepWizard';
-import type { SupportImportDraft } from '../services/supportImportWizardService';
+import {
+  buildSupportExistingSignatures,
+  type SupportImportDraft,
+} from '../services/supportImportWizardService';
+import { supportImportFile } from '@/shared/dataPaths';
 
 type DraftFields = {
   date: string;
@@ -638,6 +645,12 @@ const Support: React.FC = () => {
   const [csvWriteLoading, setCsvWriteLoading] = useState(false);
   const [addMessage, setAddMessage] = useState<string | null>(null);
   const [importModuleExpanded, setImportModuleExpanded] = useState(() => readSupportImportModuleExpanded());
+  const [importHelpOpen, setImportHelpOpen] = useState(false);
+  const [importFolderReloadToken, setImportFolderReloadToken] = useState(0);
+  const [importFileLoading, setImportFileLoading] = useState(false);
+  const [importFileMessage, setImportFileMessage] = useState<string | null>(null);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [emptyImportConfirmOpen, setEmptyImportConfirmOpen] = useState(false);
   const [draftDate, setDraftDate] = useState('');
   const [draftTitle, setDraftTitle] = useState('');
   const [draftAmount, setDraftAmount] = useState('');
@@ -1283,7 +1296,13 @@ const Support: React.FC = () => {
         const newRows: Record<string, string>[] = [];
         for (const d of drafts) {
           const built = buildManualSupportRow(
-            { date: d.date, title: d.title, amount: d.amount, currency: d.currency, projet: '' },
+            {
+              date: d.date,
+              title: d.title,
+              amount: d.amount,
+              currency: d.currency,
+              projet: d.projet ?? '',
+            },
             data,
             typeHeader,
             null
@@ -1308,9 +1327,115 @@ const Support: React.FC = () => {
     [data, typeHeader, buildManualSupportRow, persistMergedFiles, loadData, rowOrigins, t]
   );
 
+  const existingSupportSignatures = useMemo(
+    () =>
+      buildSupportExistingSignatures(supportRowsOnly, {
+        date: dateColumn,
+        title: titleColumnHeader,
+        amount: amountColumnHeader,
+        currency: currencyColumnHeader,
+      }),
+    [supportRowsOnly, dateColumn, titleColumnHeader, amountColumnHeader, currencyColumnHeader]
+  );
+
   const supportPrepWizard = useSupportImportPrepWizard({
     onImportLines: handleImportSupportWizardLines,
+    projects,
+    existingSignatures: existingSupportSignatures,
+    folderReloadToken: importFolderReloadToken,
   });
+
+  const handleImportCsvFile = useCallback(async () => {
+    const api = (window as unknown as {
+      electronAPI?: {
+        selectFile: (opts?: {
+          filters?: { name: string; extensions: string[] }[];
+          allowMultiple?: boolean;
+        }) => Promise<{ success: boolean; path?: string; paths?: string[]; canceled?: boolean; error?: string }>;
+        readExternalFile: (path: string) => Promise<{ success: boolean; data?: string; error?: string }>;
+        writeFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
+      };
+    }).electronAPI;
+    if (!api?.selectFile || !api?.readExternalFile || !api?.writeFile) return;
+    setImportFileLoading(true);
+    setImportFileMessage(null);
+    try {
+      const selectResult = await api.selectFile({
+        filters: [{ name: 'Fichiers CSV', extensions: ['csv'] }],
+        allowMultiple: true,
+      });
+      if (selectResult.canceled) {
+        setImportFileMessage(null);
+        return;
+      }
+      const paths =
+        selectResult.paths?.length ? selectResult.paths : selectResult.path ? [selectResult.path] : [];
+      if (paths.length === 0) {
+        setImportFileMessage(null);
+        return;
+      }
+      const copied: string[] = [];
+      for (const sourcePath of paths) {
+        const readResult = await api.readExternalFile(sourcePath);
+        if (!readResult.success || readResult.data === undefined) {
+          setImportFileMessage(readResult.error ?? t('support.importWizard.readFailed'));
+          return;
+        }
+        const fileName = sourcePath.replace(/^.*[/\\]/, '');
+        const destPath = supportImportFile(fileName);
+        const writeResult = await api.writeFile(destPath, readResult.data);
+        if (!writeResult.success) {
+          setImportFileMessage(writeResult.error ?? t('support.importWizard.copyFailed'));
+          return;
+        }
+        copied.push(fileName);
+      }
+      setImportFolderReloadToken((k) => k + 1);
+      setImportFileMessage(
+        copied.length === 1
+          ? t('transactions.importWizard.fileCopied', { name: copied[0] })
+          : t('transactions.importWizard.filesCopied', {
+              count: copied.length,
+              names: copied.join(', '),
+            })
+      );
+    } finally {
+      setImportFileLoading(false);
+    }
+  }, [t]);
+
+  const handleConfirmEmptySupportImport = useCallback(async () => {
+    setEmptyImportConfirmOpen(false);
+    const api = (window as unknown as {
+      electronAPI?: {
+        trashSupportImportFiles: () => Promise<{
+          success: boolean;
+          error?: string;
+          movedCount?: number;
+          message?: string;
+        }>;
+      };
+    }).electronAPI;
+    if (!api?.trashSupportImportFiles) return;
+    setImportFileMessage(null);
+    setArchiveLoading(true);
+    try {
+      const result = await api.trashSupportImportFiles();
+      if (result.success) {
+        setImportFileMessage(
+          result.message ??
+            (result.movedCount
+              ? t('transactions.importWizard.filesMoved', { count: result.movedCount })
+              : t('support.importWizard.noFiles'))
+        );
+        setImportFolderReloadToken((k) => k + 1);
+      } else {
+        setImportFileMessage(result.error ?? t('support.importWizard.emptyFailed'));
+      }
+    } finally {
+      setArchiveLoading(false);
+    }
+  }, [t]);
 
   const toggleImportModuleExpanded = useCallback(() => {
     setImportModuleExpanded((v) => {
@@ -1536,36 +1661,81 @@ const Support: React.FC = () => {
         </div>
 
         <div className="mb-4 bg-white rounded-lg shadow p-4 border border-gray-200">
-          <div
-            className="flex items-center justify-between gap-3 mb-0 cursor-pointer select-none"
-            onClick={toggleImportModuleExpanded}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                toggleImportModuleExpanded();
-              }
-            }}
-            aria-expanded={importModuleExpanded}
-            aria-controls="support-import-module"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className="inline-block transition-transform duration-200 text-gray-500 shrink-0"
-                style={{ transform: importModuleExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-                aria-hidden
-              >
-                ▼
-              </span>
-              <div className="min-w-0">
-                <h2 className="text-lg font-semibold text-gray-800">{t('transactions.importWizard.title')}</h2>
-                <p className="text-sm text-gray-500 mt-0.5">
-                  {importModuleExpanded ? t('support.importModule.close') : t('support.importModule.open')}
-                </p>
+          <div className="flex items-stretch gap-2 mb-0">
+            <div
+              className="flex flex-1 min-w-0 items-center justify-between gap-3 cursor-pointer select-none"
+              onClick={toggleImportModuleExpanded}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleImportModuleExpanded();
+                }
+              }}
+              aria-expanded={importModuleExpanded}
+              aria-controls="support-import-module"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="inline-block transition-transform duration-200 text-gray-500 shrink-0"
+                  style={{ transform: importModuleExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+                  aria-hidden
+                >
+                  ▼
+                </span>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-semibold text-gray-800">
+                    {t('transactions.importWizard.title')}
+                  </h2>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    {importModuleExpanded
+                      ? t('support.importModule.close')
+                      : t('support.importModule.open')}
+                  </p>
+                </div>
               </div>
             </div>
+            <div className="flex items-center shrink-0">
+              <HelpInfoButton
+                label={t('support.importPrep.helpToggle')}
+                onClick={() => setImportHelpOpen(true)}
+              />
+            </div>
           </div>
+          <HelpInfoDialog
+            open={importHelpOpen}
+            onClose={() => setImportHelpOpen(false)}
+            title={t('support.importPrep.stepsTitle')}
+          >
+            <ol className="list-decimal list-inside space-y-1.5">
+              <li>{t('support.importPrep.step1')}</li>
+              <li>{t('support.importPrep.step2')}</li>
+              <li>{t('support.importPrep.step3')}</li>
+              <li>{t('support.importPrep.step4')}</li>
+            </ol>
+            <p className="mt-3 text-[11px] text-gray-600">
+              <Trans
+                i18nKey="support.importPrep.description"
+                components={{
+                  mw: <strong className="font-semibold text-gray-800" />,
+                  code: <code className="text-gray-800" />,
+                }}
+              />
+            </p>
+            {projects.length === 0 && (
+              <p className="mt-3 text-[11px] text-amber-900 rounded border border-amber-200 bg-amber-50 px-2 py-1.5">
+                {t('support.importPrep.profileTip')}{' '}
+                <Link
+                  to="/profile"
+                  className="font-semibold underline hover:text-amber-950"
+                  onClick={() => setImportHelpOpen(false)}
+                >
+                  {t('support.importPrep.profileTipCta')}
+                </Link>
+              </p>
+            )}
+          </HelpInfoDialog>
           {importModuleExpanded && (
             <div id="support-import-module" className="mt-3">
               <div
@@ -1574,14 +1744,44 @@ const Support: React.FC = () => {
               >
                 <div className="space-y-4">
                   <div>
-                    <h3 className="text-sm font-semibold text-gray-700 mb-2">{t('transactions.importWizard.prepTitle')}</h3>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-2">
+                      {t('transactions.importWizard.prepTitle')}
+                    </h3>
                     <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleImportCsvFile()}
+                        disabled={importFileLoading}
+                        className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                      >
+                        {importFileLoading
+                          ? t('transactions.importWizard.importing')
+                          : t('transactions.importWizard.importFiles')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void supportPrepWizard.handleOpenImportFolder()}
+                        className="rounded border border-gray-400 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                      >
+                        {t('transactions.importWizard.openImportFolder')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEmptyImportConfirmOpen(true)}
+                        disabled={archiveLoading}
+                        className="rounded border border-red-600 bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {archiveLoading
+                          ? t('transactions.importWizard.emptying')
+                          : t('transactions.importWizard.emptyImport')}
+                      </button>
                       <button
                         type="button"
                         onClick={() => void supportPrepWizard.handleImportLinesToSupport()}
                         disabled={
                           csvWriteLoading ||
                           supportPrepWizard.importLinesLoading ||
+                          supportPrepWizard.importWizardLoading ||
                           !supportPrepWizard.mappingWizardActive ||
                           !supportPrepWizard.supportImportWizardModel?.rows.length ||
                           supportPrepWizard.importPreviewImportableRows.length === 0
@@ -1599,9 +1799,162 @@ const Support: React.FC = () => {
                           ? t('transactions.importWizard.importLinesShort')
                           : t('transactions.importWizard.importLines')}
                       </button>
+                      {supportPrepWizard.mappingWizardActive && (
+                        <label
+                          className="inline-flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer select-none"
+                          title={t('support.importWizard.removeImportedTitle')}
+                        >
+                          <input
+                            type="checkbox"
+                            className="shrink-0"
+                            checked={supportPrepWizard.removeImportedFromImportFolder}
+                            onChange={(e) =>
+                              supportPrepWizard.setRemoveImportedFromImportFolder(e.target.checked)
+                            }
+                            disabled={supportPrepWizard.importLinesLoading}
+                          />
+                          {t('transactions.importWizard.removeImported')}
+                        </label>
+                      )}
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-end gap-3">
+                      <label className="flex flex-col gap-1 text-sm min-w-[12rem] max-w-xs">
+                        <span className="font-medium text-gray-700">
+                          {t('support.importPrep.batchProjetLabel')}
+                        </span>
+                        <span className="text-[11px] text-gray-500 leading-snug">
+                          {t('support.importPrep.batchProjetHint')}
+                        </span>
+                        <ProjetSelectCell
+                          rawId={supportPrepWizard.batchProjet}
+                          projects={projects}
+                          disabled={
+                            csvWriteLoading ||
+                            supportPrepWizard.importLinesLoading ||
+                            !supportPrepWizard.supportImportWizardModel?.rows.length
+                          }
+                          onChange={supportPrepWizard.setBatchProjet}
+                          className="border-gray-300"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-sm min-w-[8rem]">
+                        <span className="font-medium text-gray-700">
+                          {t('support.importPrep.batchCurrencyLabel')}
+                        </span>
+                        <span className="text-[11px] text-gray-500 leading-snug">
+                          {t('support.importPrep.batchCurrencyHint')}
+                        </span>
+                        <select
+                          value={supportPrepWizard.batchCurrency}
+                          onChange={(e) => supportPrepWizard.setBatchCurrency(e.target.value)}
+                          disabled={
+                            csvWriteLoading ||
+                            supportPrepWizard.importLinesLoading ||
+                            !supportPrepWizard.supportImportWizardModel?.rows.length
+                          }
+                          className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                          aria-label={t('support.importPrep.batchCurrencyLabel')}
+                        >
+                          <option value="">—</option>
+                          <option value="EUR">EUR</option>
+                          <option value="GBP">GBP</option>
+                          <option value="CHF">CHF</option>
+                        </select>
+                      </label>
+                    </div>
+                    {supportPrepWizard.mappingWizardActive &&
+                      supportPrepWizard.importSummary.total > 0 && (
+                        <p className="mt-2 text-xs text-gray-600">
+                          {t('support.importPrep.summaryLine', {
+                            importable: supportPrepWizard.importSummary.importable,
+                            total: supportPrepWizard.importSummary.total,
+                            skipped: supportPrepWizard.importSummary.skipped,
+                            duplicates: supportPrepWizard.importSummary.duplicates,
+                            alerts: supportPrepWizard.importSummary.alerts,
+                            currencies:
+                              supportPrepWizard.importSummary.currencyParts.length > 0
+                                ? supportPrepWizard.importSummary.currencyParts
+                                    .map((c) => `${c.count} ${c.currency}`)
+                                    .join(' · ')
+                                : '—',
+                            projet: supportPrepWizard.importSummary.projetMixed
+                              ? t('support.importPrep.summaryProjetMixed')
+                              : supportPrepWizard.importSummary.projetLabel ||
+                                t('support.importPrep.summaryProjetNone'),
+                          })}
+                        </p>
+                      )}
+                    {importFileMessage && (
+                      <p
+                        className={`mt-2 text-sm rounded border px-2 py-1 ${uiMessageClass(
+                          getUiMessageTone(importFileMessage)
+                        )}`}
+                      >
+                        {importFileMessage}
+                      </p>
+                    )}
+                    <div className="mt-3">
+                      <ImportWizardPastePanel
+                        description={t('support.importPrep.pasteDescription')}
+                        disabled={supportPrepWizard.importWizardLoading}
+                        onPaste={(raw, opts) =>
+                          supportPrepWizard.applySupportWizardClipboardPaste(raw, opts)
+                        }
+                        footer={
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            {supportPrepWizard.supportImportWizardModel?.rows.length ? (
+                              <button
+                                type="button"
+                                onClick={() => supportPrepWizard.clearWizardBatch()}
+                                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                              >
+                                {t('support.importPrep.clearBatch')}
+                              </button>
+                            ) : null}
+                            {supportPrepWizard.supportImportWizardModel?.rows.length ? (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-[11px] font-medium text-gray-600">
+                                  {t('support.importPrep.sourcesLabel')}
+                                </span>
+                                {[
+                                  ...new Set(
+                                    supportPrepWizard.supportImportWizardModel.rows.map(
+                                      (r) => r.sourceFile
+                                    )
+                                  ),
+                                ].map((name) => (
+                                  <span
+                                    key={name}
+                                    className="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white pl-2 pr-1 py-0.5 text-[11px] text-gray-800"
+                                    title={name}
+                                  >
+                                    <span className="max-w-[10rem] truncate">{name}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => supportPrepWizard.removeSourceFromBatch(name)}
+                                      className="rounded-full px-1.5 text-gray-500 hover:bg-red-50 hover:text-red-700"
+                                      aria-label={t('support.importPrep.sourceRemoveAria', { name })}
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        }
+                      />
                     </div>
                   </div>
-                  <SupportImportPrepSection {...supportPrepWizard} />
+
+                  <hr className="border-gray-200" />
+
+                  <SupportImportPrepSection
+                    {...supportPrepWizard}
+                    sourceRowsForSuggestions={supportRowsOnly}
+                    titleHeaderForSuggestions={titleColumnHeader}
+                  />
+                  <hr className="border-gray-200" />
                 </div>
               </div>
             </div>
@@ -2891,6 +3244,41 @@ const Support: React.FC = () => {
                 className="rounded border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {csvWriteLoading ? t('common.saving') : t('support.actions.save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {emptyImportConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="support-empty-import-title"
+          onClick={() => setEmptyImportConfirmOpen(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="support-empty-import-title" className="text-lg font-semibold text-gray-900">
+              {t('transactions.importWizard.emptyConfirmTitle')}
+            </h2>
+            <p className="text-sm text-gray-600">{t('support.importWizard.emptyConfirmBody')}</p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEmptyImportConfirmOpen(false)}
+                className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                {t('transactions.cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmEmptySupportImport()}
+                className="rounded border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+              >
+                {t('transactions.confirm')}
               </button>
             </div>
           </div>

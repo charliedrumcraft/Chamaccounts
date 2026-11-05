@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, type SetStateAction } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   loadAccountBalanceImportWizardModel,
@@ -21,6 +21,11 @@ import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
 import type { AnomalyReason } from '@/shared/anomalyReasons';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { AccountBalanceCSVService } from '../services/AccountBalanceCSVService';
+import {
+  AB_MAPPING_PREFER_ACTIVE_KEY,
+  readMappingPreferActive,
+  writeMappingPreferActive,
+} from '../constants/mappingWizardPreferActiveStorage';
 import { format, startOfDay } from 'date-fns';
 
 function dateKeyForExistingRow(d: Date): string {
@@ -31,8 +36,10 @@ export function useAccountBalanceImportPrepWizard(options: {
   recognisedAccountsReloadKey?: string;
   /** Dates déjà présentes dans src_account_balance.csv (clé yyyy-MM-dd). */
   existingBalanceDateKeys: Set<string>;
-  onAfterSuccessfulAppend?: () => void;
+  onAfterSuccessfulAppend?: (info?: { count: number }) => void;
   folderReloadToken?: number;
+  /** Premier usage / focus import : activer le mapping dès qu’il passe à true. */
+  preferMappingActive?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const {
@@ -40,12 +47,23 @@ export function useAccountBalanceImportPrepWizard(options: {
     existingBalanceDateKeys,
     onAfterSuccessfulAppend,
     folderReloadToken = 0,
+    preferMappingActive = false,
   } = options;
 
   const [model, setModel] = useState<AbImportWizardModel | null>(null);
   const [loading, setLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const [mappingWizardActive, setMappingWizardActive] = useState(false);
+  const [mappingWizardActive, setMappingWizardActive] = useState(
+    () => preferMappingActive || readMappingPreferActive(AB_MAPPING_PREFER_ACTIVE_KEY)
+  );
+  const mappingPreferAppliedRef = useRef(preferMappingActive);
+
+  useEffect(() => {
+    if (preferMappingActive && !mappingPreferAppliedRef.current) {
+      mappingPreferAppliedRef.current = true;
+      setMappingWizardActive(true);
+    }
+  }, [preferMappingActive]);
   const [rawCellOverrides, setRawCellOverrides] = useState<Record<string, Record<string, string>>>({});
   const [mappedCellOverrides, setMappedCellOverrides] = useState<Record<string, Record<string, string>>>({});
   const [importRowSkip, setImportRowSkip] = useState<Set<string>>(() => new Set());
@@ -83,13 +101,16 @@ export function useAccountBalanceImportPrepWizard(options: {
         setMappedCellOverrides({});
         setImportRowSkip(new Set());
         setAbColumnTargetUser({});
+        if (readMappingPreferActive(AB_MAPPING_PREFER_ACTIVE_KEY) || preferMappingActive) {
+          setMappingWizardActive(true);
+        }
       } else {
         setAbColumnTargetUser({});
       }
     } finally {
       setLoading(false);
     }
-  }, [diskImportFirstLineAsData]);
+  }, [diskImportFirstLineAsData, preferMappingActive]);
 
   useEffect(() => {
     void loadWizard();
@@ -164,7 +185,7 @@ export function useAccountBalanceImportPrepWizard(options: {
   }, [mappingWizardActive, model, mappedPreviewByRowId, outputHeaderKeys, activeAccounts]);
 
   const rowStatusByRowId = useMemo(() => {
-    const map = new Map<string, { messages: string[]; showDanger: boolean }>();
+    const map = new Map<string, { messages: string[]; showDanger: boolean; isDuplicate: boolean }>();
     if (!model?.rows.length) return map;
 
     if (!mappingWizardActive) {
@@ -176,7 +197,7 @@ export function useAccountBalanceImportPrepWizard(options: {
           if (m === 'Aucun solde de compte reconnu sur cette ligne.') return t('accountBalance.importPrep.warnNoBalance');
           return m;
         });
-        map.set(row.id, { messages: msgs, showDanger: msgs.length > 0 });
+        map.set(row.id, { messages: msgs, showDanger: msgs.length > 0, isDuplicate: false });
       }
       return map;
     }
@@ -188,13 +209,17 @@ export function useAccountBalanceImportPrepWizard(options: {
       const aside: string[] = structured.length ? [formatAnomalyReasons(structured, t)] : [];
       const prev = mappedPreviewByRowId.get(row.id);
       const br = prev ? balanceRowFromMappedDisplayRecord(prev.display, recognised) : null;
+      let isDuplicate = false;
       if (br) {
         const k = dateKeyForExistingRow(br.date);
-        if (existingBalanceDateKeys.has(k)) aside.push(dupMsg);
+        if (existingBalanceDateKeys.has(k)) {
+          aside.push(dupMsg);
+          isDuplicate = true;
+        }
       } else {
         aside.push(t('accountBalance.importPrep.incompleteRow'));
       }
-      map.set(row.id, { messages: aside, showDanger: aside.length > 0 });
+      map.set(row.id, { messages: aside, showDanger: aside.length > 0, isDuplicate });
     }
     return map;
   }, [
@@ -211,11 +236,24 @@ export function useAccountBalanceImportPrepWizard(options: {
     i18n.language,
   ]);
 
+  /** Alertes hors simple doublon de date. */
   const anomalousRowIds = useMemo(() => {
     if (!mappingWizardActive || !model?.rows.length) return [] as string[];
     const ids: string[] = [];
     for (const row of model.rows) {
-      if (rowStatusByRowId.get(row.id)?.showDanger) ids.push(row.id);
+      const st = rowStatusByRowId.get(row.id);
+      if (!st?.showDanger) continue;
+      if (st.isDuplicate && st.messages.length === 1) continue;
+      ids.push(row.id);
+    }
+    return ids;
+  }, [mappingWizardActive, model?.rows, rowStatusByRowId]);
+
+  const duplicateRowIds = useMemo(() => {
+    if (!mappingWizardActive || !model?.rows.length) return [] as string[];
+    const ids: string[] = [];
+    for (const row of model.rows) {
+      if (rowStatusByRowId.get(row.id)?.isDuplicate) ids.push(row.id);
     }
     return ids;
   }, [mappingWizardActive, model?.rows, rowStatusByRowId]);
@@ -293,6 +331,20 @@ export function useAccountBalanceImportPrepWizard(options: {
     });
   }, [anomalousRowIds]);
 
+  const toggleSkipAllDuplicates = useCallback(() => {
+    setImportRowSkip((prev) => {
+      if (duplicateRowIds.length === 0) return prev;
+      const all = duplicateRowIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (all) {
+        for (const id of duplicateRowIds) next.delete(id);
+      } else {
+        for (const id of duplicateRowIds) next.add(id);
+      }
+      return next;
+    });
+  }, [duplicateRowIds]);
+
   const importPrepIgnSkipHeader = useMemo(() => {
     const ids = model?.rows.map((r) => r.id) ?? [];
     const total = ids.length;
@@ -325,6 +377,20 @@ export function useAccountBalanceImportPrepWizard(options: {
       count,
     };
   }, [anomalousRowIds, importRowSkip]);
+
+  const importPrepDuplicateSkipHeader = useMemo(() => {
+    const count = duplicateRowIds.length;
+    if (count === 0) return { allSkipped: false, someSkipped: false, count: 0 };
+    let skipped = 0;
+    for (const id of duplicateRowIds) {
+      if (importRowSkip.has(id)) skipped += 1;
+    }
+    return {
+      allSkipped: skipped === count,
+      someSkipped: skipped > 0,
+      count,
+    };
+  }, [duplicateRowIds, importRowSkip]);
 
   const handleImportLinesToSource = useCallback(async () => {
     if (!mappingWizardActive) {
@@ -388,7 +454,7 @@ export function useAccountBalanceImportPrepWizard(options: {
                   error: diskResult.error ?? t('accountBalance.importPrep.unknownError'),
                 })
               );
-              onAfterSuccessfulAppend?.();
+              onAfterSuccessfulAppend?.({ count: added });
               setReloadKey((k) => k + 1);
               return;
             }
@@ -407,7 +473,7 @@ export function useAccountBalanceImportPrepWizard(options: {
             }
           }
         }
-        onAfterSuccessfulAppend?.();
+        onAfterSuccessfulAppend?.({ count: added });
         setReloadKey((k) => k + 1);
         setImportWizardMessage(
           t('accountBalance.importPrep.appended', { count: added, disk: diskMsg })
@@ -431,7 +497,10 @@ export function useAccountBalanceImportPrepWizard(options: {
   const setMappingWizardActiveWrapped = useCallback((v: SetStateAction<boolean>) => {
     setMappingWizardActive((prev) => {
       const next = typeof v === 'function' ? (v as (b: boolean) => boolean)(prev) : v;
-      if (next !== prev) setMappedCellOverrides({});
+      if (next !== prev) {
+        setMappedCellOverrides({});
+        writeMappingPreferActive(AB_MAPPING_PREFER_ACTIVE_KEY, next);
+      }
       return next;
     });
   }, []);
@@ -456,6 +525,9 @@ export function useAccountBalanceImportPrepWizard(options: {
         return;
       }
       setModel((prev) => (prev ? mergeAbImportWizardModels(prev, pasted) : pasted));
+      if (readMappingPreferActive(AB_MAPPING_PREFER_ACTIVE_KEY)) {
+        setMappingWizardActive(true);
+      }
       const src = pasted.rows[0]?.sourceFile ?? t('accountBalance.importPrep.clipboardSource');
       setImportWizardMessage(
         t('accountBalance.importPrep.pasteAdded', { count: pasted.rows.length, source: src })
@@ -492,8 +564,10 @@ export function useAccountBalanceImportPrepWizard(options: {
     importPreviewImportableRows,
     importPrepIgnSkipHeader,
     importPrepAnomalySkipHeader,
+    importPrepDuplicateSkipHeader,
     toggleImportPrepSkipAll,
     toggleSkipAllAnomalous,
+    toggleSkipAllDuplicates,
     handleImportLinesToSource,
     recognised,
   };

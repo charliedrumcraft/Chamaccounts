@@ -8,6 +8,7 @@ import {
   defaultFiatForSettingsAccountName,
   type AccountFiatCurrency,
 } from '../services/AccountBalanceCSVService';
+import { persistRecognisedListsBundle } from '../services/recognisedDataProfileService';
 
 export const RECOGNISED_ACCOUNTS_STORAGE_KEY = 'settings-recognised-accounts';
 
@@ -179,9 +180,16 @@ export function migrateRecognisedAccountEntriesIfNeeded(
 }
 
 export function saveRecognisedAccountsToStorage(entries: RecognisedAccountEntry[]): void {
+  let entryTypes: unknown = [];
+  let outputTypes: unknown = [];
   try {
-    localStorage.setItem(RECOGNISED_ACCOUNTS_STORAGE_KEY, JSON.stringify(entries));
-  } catch {}
+    entryTypes = JSON.parse(localStorage.getItem('settings-recognised-entry-types') ?? '[]');
+    outputTypes = JSON.parse(localStorage.getItem('settings-recognised-output-types') ?? '[]');
+  } catch {
+    /* ignore */
+  }
+  // LS + AppState/recognised_data.json
+  persistRecognisedListsBundle(entries, entryTypes, outputTypes);
 }
 
 export function loadRecognisedAccountsFromStorage(): RecognisedAccountEntry[] {

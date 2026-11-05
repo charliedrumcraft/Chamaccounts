@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "primary": "GBP",
+  "secondaries": [
+    "EUR",
+    "CHF"
+  ],
+  "configuredAt": "2026-10-05T21:32:40.722Z"
+}

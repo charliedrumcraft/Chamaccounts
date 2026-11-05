@@ -1,3 +1,22 @@
+import {
+  cloneBilanStructure,
+  isBilanStructureSnapshot,
+  normalizeBilanSpecialRowOptions,
+  parseAnnualBudgetSnapshot,
+  type AnnualBudgetSnapshotFile,
+  type BilanActualMode,
+  type BilanSpecialRowOptions,
+  type BilanStructureSnapshot,
+  type BudgetCategory,
+  type BudgetLine,
+  type YearSnapshot,
+  DEFAULT_BILAN_SPECIAL_ROW_OPTIONS,
+} from '@/shared/annualBudget';
+import {
+  loadAnnualBudgetFromProfile,
+  saveAnnualBudgetToProfile,
+} from './annualBudgetProfileService';
+
 export const ANNUAL_BUDGET_SNAPSHOT_KEY = 'annual-budget-snapshot-v1';
 
 /**
@@ -6,127 +25,31 @@ export const ANNUAL_BUDGET_SNAPSHOT_KEY = 'annual-budget-snapshot-v1';
  */
 export const ANNUAL_BUDGET_BILAN_STRUCTURE_KEY = 'annual-budget-bilan-structure-v1';
 
-/** Données forecast / affectations / structure pour une année (Budget annuel). */
-export type YearSnapshot = {
-  budgetValues: Record<string, number>;
-  lineAssignedTypes: Record<string, string[]>;
-  /** Structure du bilan propre à cette année (lignes, catégories, libellés). */
-  bilanStructure?: BilanStructureSnapshot;
+export type {
+  AnnualBudgetSnapshotFile,
+  BilanActualMode,
+  BilanSpecialRowOptions,
+  BilanStructureSnapshot,
+  BudgetCategory,
+  BudgetLine,
+  YearSnapshot,
 };
 
-export type AnnualBudgetSnapshotFile = {
-  byYear: Record<string, YearSnapshot>;
+export {
+  cloneBilanStructure,
+  DEFAULT_BILAN_SPECIAL_ROW_OPTIONS,
+  isBilanStructureSnapshot,
+  normalizeBilanSpecialRowOptions,
 };
-
-/** Ligne / catégorie du bilan budgétisé (Budget annuel). */
-export type BudgetLine = { id: string; label: string };
-export type BudgetCategory = { id: string; label: string; lines: BudgetLine[] };
-
-/** Mode du réel pour une ligne/catégorie spéciale (Bank, Assets B/F). */
-export type BilanActualMode = 'auto' | 'manual';
-
-/** Options réglables d’une ligne/catégorie spéciale du bilan. */
-export type BilanSpecialRowOptions = {
-  /** Afficher la ligne/catégorie et l’inclure dans les totaux. */
-  enabled: boolean;
-  /** auto = calculé ; manual = saisie du réel. */
-  actualMode: BilanActualMode;
-  /** Réel saisi (GBP), utilisé si actualMode === 'manual'. */
-  manualActualGbp?: number;
-};
-
-export const DEFAULT_BILAN_SPECIAL_ROW_OPTIONS: BilanSpecialRowOptions = {
-  enabled: true,
-  actualMode: 'auto',
-};
-
-export function normalizeBilanSpecialRowOptions(raw: unknown): BilanSpecialRowOptions {
-  if (typeof raw !== 'object' || raw === null) {
-    return { ...DEFAULT_BILAN_SPECIAL_ROW_OPTIONS };
-  }
-  const o = raw as Record<string, unknown>;
-  const enabled = o.enabled !== false;
-  const actualMode: BilanActualMode = o.actualMode === 'manual' ? 'manual' : 'auto';
-  const manual =
-    typeof o.manualActualGbp === 'number' && Number.isFinite(o.manualActualGbp)
-      ? o.manualActualGbp
-      : undefined;
-  return {
-    enabled,
-    actualMode,
-    ...(manual !== undefined ? { manualActualGbp: manual } : {}),
-  };
-}
-
-/** Snapshot persistant de la structure éditable du bilan (actif / passif + libellés affichés). */
-export type BilanStructureSnapshot = {
-  version: 1;
-  assets: BudgetCategory[];
-  liabilities: BudgetCategory[];
-  categoryLabels: Record<string, string>;
-  lineLabels: Record<string, string>;
-  /** Options de la ligne Bank. Absent = actif, réel automatique (soldes au 1er janvier). */
-  bankLineOptions?: BilanSpecialRowOptions;
-};
-
-function isBudgetLine(x: unknown): x is BudgetLine {
-  return (
-    typeof x === 'object' &&
-    x !== null &&
-    typeof (x as BudgetLine).id === 'string' &&
-    typeof (x as BudgetLine).label === 'string'
-  );
-}
-
-function isBudgetCategory(x: unknown): x is BudgetCategory {
-  if (typeof x !== 'object' || x === null) return false;
-  const o = x as BudgetCategory;
-  if (typeof o.id !== 'string' || typeof o.label !== 'string') return false;
-  if (!Array.isArray(o.lines)) return false;
-  return o.lines.every(isBudgetLine);
-}
-
-export function isBilanStructureSnapshot(x: unknown): x is BilanStructureSnapshot {
-  if (typeof x !== 'object' || x === null) return false;
-  const o = x as BilanStructureSnapshot;
-  if (o.version !== 1) return false;
-  if (!Array.isArray(o.assets) || !Array.isArray(o.liabilities)) return false;
-  if (!o.assets.every(isBudgetCategory) || !o.liabilities.every(isBudgetCategory)) return false;
-  if (typeof o.categoryLabels !== 'object' || o.categoryLabels === null || Array.isArray(o.categoryLabels)) return false;
-  if (typeof o.lineLabels !== 'object' || o.lineLabels === null || Array.isArray(o.lineLabels)) return false;
-  return true;
-}
-
-export function cloneBilanStructure(data: BilanStructureSnapshot): BilanStructureSnapshot {
-  return {
-    version: 1,
-    assets: data.assets.map((cat) => ({
-      id: cat.id,
-      label: cat.label,
-      lines: cat.lines.map((l) => ({ id: l.id, label: l.label })),
-    })),
-    liabilities: data.liabilities.map((cat) => ({
-      id: cat.id,
-      label: cat.label,
-      lines: cat.lines.map((l) => ({ id: l.id, label: l.label })),
-    })),
-    categoryLabels: { ...data.categoryLabels },
-    lineLabels: { ...data.lineLabels },
-    bankLineOptions: data.bankLineOptions
-      ? normalizeBilanSpecialRowOptions(data.bankLineOptions)
-      : undefined,
-  };
-}
 
 export function loadAnnualBudgetSnapshot(): AnnualBudgetSnapshotFile {
   try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(ANNUAL_BUDGET_SNAPSHOT_KEY) : null;
-    if (!raw) return { byYear: {} };
-    const p = JSON.parse(raw) as unknown;
-    if (!p || typeof p !== 'object' || !('byYear' in (p as object))) return { byYear: {} };
-    return p as AnnualBudgetSnapshotFile;
+    const raw =
+      typeof localStorage !== 'undefined' ? localStorage.getItem(ANNUAL_BUDGET_SNAPSHOT_KEY) : null;
+    if (!raw) return { version: 1, byYear: {} };
+    return parseAnnualBudgetSnapshot(JSON.parse(raw) as unknown);
   } catch {
-    return { byYear: {} };
+    return { version: 1, byYear: {} };
   }
 }
 
@@ -145,10 +68,36 @@ export function listBudgetYears(): number[] {
 }
 
 function persistAnnualBudgetSnapshot(snap: AnnualBudgetSnapshotFile): void {
-  localStorage.setItem(ANNUAL_BUDGET_SNAPSHOT_KEY, JSON.stringify(snap));
+  const cleaned = parseAnnualBudgetSnapshot(snap);
+  try {
+    localStorage.setItem(ANNUAL_BUDGET_SNAPSHOT_KEY, JSON.stringify({ byYear: cleaned.byYear }));
+  } catch {
+    /* ignore */
+  }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('annual-budget-snapshot-changed'));
   }
+  void saveAnnualBudgetToProfile(cleaned);
+}
+
+/**
+ * Charge AppState/annual_budget.json → cache localStorage.
+ * @returns true si le cache a changé.
+ */
+export async function hydrateAnnualBudgetFromProfileFile(): Promise<boolean> {
+  const before = localStorage.getItem(ANNUAL_BUDGET_SNAPSHOT_KEY) ?? '';
+  const fromProfile = await loadAnnualBudgetFromProfile();
+  const afterPayload = JSON.stringify({ byYear: fromProfile.byYear });
+  try {
+    localStorage.setItem(ANNUAL_BUDGET_SNAPSHOT_KEY, afterPayload);
+  } catch {
+    return false;
+  }
+  if (before === afterPayload) return false;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('annual-budget-snapshot-changed'));
+  }
+  return true;
 }
 
 /**
@@ -177,7 +126,9 @@ export function saveYearSnapshot(year: number, data: YearSnapshot): void {
 export function loadBilanStructureSnapshot(): BilanStructureSnapshot | null {
   try {
     const raw =
-      typeof localStorage !== 'undefined' ? localStorage.getItem(ANNUAL_BUDGET_BILAN_STRUCTURE_KEY) : null;
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem(ANNUAL_BUDGET_BILAN_STRUCTURE_KEY)
+        : null;
     if (!raw) return null;
     const p = JSON.parse(raw) as unknown;
     if (!isBilanStructureSnapshot(p)) return null;

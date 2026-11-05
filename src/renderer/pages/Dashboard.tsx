@@ -1,11 +1,14 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import GettingStartedChecklist from '../components/GettingStartedChecklist';
+import HelpInfoDialog, { HelpInfoButton } from '../components/HelpInfoDialog';
 import AccountBalanceLineChart, {
   linearRegression,
 } from '../components/Dashboard/AccountBalanceLineChart';
 import AccountBalanceStockChart from '../components/Dashboard/AccountBalanceStockChart';
 import DateRangeSlider from '../components/Common/DateRangeSlider';
+import SettingsGearIcon from '../components/Common/SettingsGearIcon';
 import { ACCOUNT_BALANCE_PROCESSED_DIR } from '@/shared/dataPaths';
 import { AccountBalanceCSVService } from '../services/AccountBalanceCSVService';
 import { SourceDataCSVService } from '../services/SourceDataCSVService';
@@ -207,6 +210,15 @@ const SECTION_IDS = {
 } as const;
 
 type SectionId = keyof typeof SECTION_IDS;
+
+/** Clés i18n `dashboard.help.*` pour chaque bloc. */
+const SECTION_HELP_I18N: Record<SectionId, 'balances' | 'movements' | 'compare' | 'tables' | 'yearly'> = {
+  evolutionSoldes: 'balances',
+  suiviMouvements: 'movements',
+  evolutionComparee: 'compare',
+  tableauxFiltres: 'tables',
+  vueGlobale: 'yearly',
+};
 
 function loadDashboardPref<T>(key: string, parse: (s: string) => T | null, fallback: T): T {
   try {
@@ -656,6 +668,8 @@ const Dashboard: React.FC = () => {
       return next;
     });
   }, []);
+  /** Fenêtre d’info (HelpInfoDialog) ouverte pour un bloc du dashboard. */
+  const [sectionHelpOpen, setSectionHelpOpen] = useState<SectionId | null>(null);
   /** Courbes de tendance par code compte (défaut: toutes désactivées) */
   const [trendLinesByAccount, setTrendLinesByAccount] = useState<Record<string, boolean>>(() =>
     loadDashboardPref(DASHBOARD_STORAGE_KEYS.trendLines, (s) => {
@@ -1945,11 +1959,34 @@ const Dashboard: React.FC = () => {
     [dashboardDates]
   );
 
+  const showFirstRunEmptyHero =
+    !chartLoading &&
+    !movementsDataLoading &&
+    !hasChartData &&
+    Boolean(movementsDataError);
+
   return (
     <main className="flex-1 flex flex-col min-w-0 p-4">
         <div className="mb-4">
           <h1 className="text-2xl font-bold text-gray-800">{t('nav.dashboard')}</h1>
         </div>
+
+      <GettingStartedChecklist />
+
+      {showFirstRunEmptyHero && (
+        <section className="mb-6 rounded-xl border border-dashed border-gray-300 bg-white px-5 py-6 text-center shadow-sm">
+          <h2 className="text-lg font-semibold text-gray-900">{t('gettingStarted.emptyDashboardTitle')}</h2>
+          <p className="mt-1 text-sm text-gray-600 max-w-xl mx-auto">
+            {t('gettingStarted.emptyDashboardBody')}
+          </p>
+          <Link
+            to="/transactions?focus=import"
+            className="mt-4 inline-flex rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800"
+          >
+            {t('gettingStarted.emptyDashboardCta')}
+          </Link>
+        </section>
+      )}
 
       {/* Graphique évolution des soldes (données = début de chaque mois depuis account_balance.csv) */}
       <section
@@ -1982,7 +2019,11 @@ const Dashboard: React.FC = () => {
                 </span>
               </span>
             </button>
-            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+            <div className="flex items-center gap-2 shrink-0 pr-3 sm:pr-4">
+              <HelpInfoButton
+                label={t('dashboard.help.open')}
+                onClick={() => setSectionHelpOpen('evolutionSoldes')}
+              />
               <button
                 type="button"
                 onClick={() => {
@@ -1999,20 +2040,7 @@ const Dashboard: React.FC = () => {
                     : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                 }`}
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
+                <SettingsGearIcon className="w-5 h-5" />
               </button>
             </div>
           </div>
@@ -2422,8 +2450,14 @@ const Dashboard: React.FC = () => {
           </div>
           </div>
         ) : (
-          <div className="flex items-center justify-center h-64 text-gray-500">
-            {t('dashboard.empty.noBalanceFile', { dir: ACCOUNT_BALANCE_PROCESSED_DIR })}
+          <div className="flex flex-col items-center justify-center gap-3 h-64 text-gray-500 px-4 text-center">
+            <p>{t('dashboard.empty.noBalanceFile', { dir: ACCOUNT_BALANCE_PROCESSED_DIR })}</p>
+            <Link
+              to="/account-balance?focus=import"
+              className="rounded-md border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100"
+            >
+              {t('dashboard.empty.noBalanceFileCta')}
+            </Link>
           </div>
         )}
         </>
@@ -2459,7 +2493,11 @@ const Dashboard: React.FC = () => {
                 </span>
               </span>
             </button>
-            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+            <div className="flex items-center gap-2 shrink-0 pr-3 sm:pr-4">
+              <HelpInfoButton
+                label={t('dashboard.help.open')}
+                onClick={() => setSectionHelpOpen('suiviMouvements')}
+              />
               <button
                 type="button"
                 onClick={() => {
@@ -2476,20 +2514,7 @@ const Dashboard: React.FC = () => {
                     : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                 }`}
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
+                <SettingsGearIcon className="w-5 h-5" />
               </button>
             </div>
           </div>
@@ -2721,7 +2746,11 @@ const Dashboard: React.FC = () => {
                 </span>
               </span>
             </button>
-            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+            <div className="flex items-center gap-2 shrink-0 pr-3 sm:pr-4">
+              <HelpInfoButton
+                label={t('dashboard.help.open')}
+                onClick={() => setSectionHelpOpen('evolutionComparee')}
+              />
               <button
                 type="button"
                 onClick={() => {
@@ -2738,20 +2767,7 @@ const Dashboard: React.FC = () => {
                     : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                 }`}
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
+                <SettingsGearIcon className="w-5 h-5" />
               </button>
             </div>
           </div>
@@ -3350,7 +3366,11 @@ const Dashboard: React.FC = () => {
                 </span>
               </span>
             </button>
-            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+            <div className="flex items-center gap-2 shrink-0 pr-3 sm:pr-4">
+              <HelpInfoButton
+                label={t('dashboard.help.open')}
+                onClick={() => setSectionHelpOpen('tableauxFiltres')}
+              />
               <button
                 type="button"
                 onClick={() => {
@@ -3367,14 +3387,7 @@ const Dashboard: React.FC = () => {
                     : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                 }`}
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
+                <SettingsGearIcon className="w-5 h-5" />
               </button>
             </div>
           </div>
@@ -4348,7 +4361,11 @@ const Dashboard: React.FC = () => {
                 </span>
               </span>
             </button>
-            <div className="flex items-center shrink-0 pr-3 sm:pr-4">
+            <div className="flex items-center gap-2 shrink-0 pr-3 sm:pr-4">
+              <HelpInfoButton
+                label={t('dashboard.help.open')}
+                onClick={() => setSectionHelpOpen('vueGlobale')}
+              />
               <button
                 type="button"
                 onClick={() => {
@@ -4365,20 +4382,7 @@ const Dashboard: React.FC = () => {
                     : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                 }`}
               >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
+                <SettingsGearIcon className="w-5 h-5" />
               </button>
             </div>
           </div>
@@ -4913,6 +4917,26 @@ const Dashboard: React.FC = () => {
           {t('dashboard.footer')}
         </p>
       </div>
+
+      <HelpInfoDialog
+        open={sectionHelpOpen != null}
+        onClose={() => setSectionHelpOpen(null)}
+        title={
+          sectionHelpOpen
+            ? t(`dashboard.help.${SECTION_HELP_I18N[sectionHelpOpen]}.title`)
+            : ''
+        }
+      >
+        {sectionHelpOpen ? (
+          <div className="space-y-2">
+            <p>{t(`dashboard.help.${SECTION_HELP_I18N[sectionHelpOpen]}.p1`)}</p>
+            <p>{t(`dashboard.help.${SECTION_HELP_I18N[sectionHelpOpen]}.p2`)}</p>
+            <p className="text-[11px] text-gray-500">
+              {t(`dashboard.help.${SECTION_HELP_I18N[sectionHelpOpen]}.p3`)}
+            </p>
+          </div>
+        ) : null}
+      </HelpInfoDialog>
     </main>
   );
 };

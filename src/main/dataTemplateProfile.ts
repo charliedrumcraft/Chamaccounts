@@ -9,11 +9,15 @@ import {
 import {
   ACCOUNT_BALANCE_CSV_PATH,
   ACCOUNT_BALANCE_DB_PATH,
+  ANNUAL_BUDGET_JSON_PATH,
   LOCAL_STORAGE_SNAPSHOT_CSV_PATH,
+  PROJECTS_JSON_PATH,
+  RECOGNISED_DATA_JSON_PATH,
   SOURCE_DATA_PATH,
   SUPPORT_DATA_CSV_PATH,
   SUPPORT_DB_PATH,
   TRANSACTIONS_DB_PATH,
+  WORKING_CURRENCIES_PATH,
 } from '../shared/dataPaths';
 import type { Profile } from '../shared/profiles';
 import { addProfile, ensureConfigLoaded, saveConfig } from './appConfig';
@@ -40,6 +44,14 @@ const TEMPLATE_DEMO_DB_PATHS = [
   TRANSACTIONS_DB_PATH,
   ACCOUNT_BALANCE_DB_PATH,
   SUPPORT_DB_PATH,
+] as const;
+
+/** Fichiers métier AppState à aligner sur le bundle (source de vérité démo). */
+const TEMPLATE_BUSINESS_JSON_PATHS = [
+  PROJECTS_JSON_PATH,
+  ANNUAL_BUDGET_JSON_PATH,
+  RECOGNISED_DATA_JSON_PATH,
+  WORKING_CURRENCIES_PATH,
 ] as const;
 
 /** Chemin du bundle versionné (données fictives + AppState). */
@@ -162,6 +174,55 @@ function serializeAppStateSnapshot(entries: Map<string, string>): string {
 }
 
 /**
+ * Copie les JSON métier manquants (ou vides) depuis le bundle vers le profil runtime.
+ * Ne remplace pas un fichier runtime déjà non vide (évite d’écraser une démo locale enrichie).
+ */
+async function syncBusinessJsonFromBundleIfMissing(dataRoot: string): Promise<void> {
+  const bundle = getDataTemplateProfileBundlePath();
+  if (!existsSync(bundle)) return;
+
+  for (const rel of TEMPLATE_BUSINESS_JSON_PATHS) {
+    const bundleFile = path.join(bundle, rel);
+    const runtimeFile = path.join(dataRoot, rel);
+    if (!existsSync(bundleFile)) continue;
+
+    let needCopy = !existsSync(runtimeFile);
+    if (!needCopy) {
+      try {
+        const raw = readFileSync(runtimeFile, 'utf8').trim();
+        if (!raw) {
+          needCopy = true;
+        } else {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === 'object') {
+            const o = parsed as Record<string, unknown>;
+            if (Array.isArray(o.projects) && o.projects.length === 0) needCopy = true;
+            if (o.byYear && typeof o.byYear === 'object' && Object.keys(o.byYear as object).length === 0) {
+              needCopy = true;
+            }
+            if (
+              Array.isArray(o.accounts) &&
+              o.accounts.length === 0 &&
+              Array.isArray(o.entryTypes) &&
+              o.entryTypes.length === 0 &&
+              Array.isArray(o.outputTypes) &&
+              o.outputTypes.length === 0
+            ) {
+              needCopy = true;
+            }
+          }
+        }
+      } catch {
+        needCopy = true;
+      }
+    }
+    if (!needCopy) continue;
+    await fs.mkdir(path.dirname(runtimeFile), { recursive: true });
+    await fs.copyFile(bundleFile, runtimeFile);
+  }
+}
+
+/**
  * Si le snapshot runtime a des listes Settings vides, les remplace par celles du bundle
  * (évite un profil Data Template « vidé » après un flush localStorage).
  */
@@ -201,6 +262,7 @@ export async function ensureDataTemplateProfile(): Promise<Profile> {
     await syncBundleToDataRoot(dataRoot);
   } else {
     await syncDemoDataFromBundleIfStale(dataRoot);
+    await syncBusinessJsonFromBundleIfMissing(dataRoot);
     seedEmptyTemplateSettingsFromBundle(dataRoot);
   }
 

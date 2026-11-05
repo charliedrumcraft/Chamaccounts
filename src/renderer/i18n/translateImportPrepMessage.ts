@@ -18,6 +18,8 @@ const IMPORT_REASON_FR_TO_KEY: Record<string, string> = {
   'Montant invalide (nul ou non numérique)': 'support.importPrep.reasonAmountInvalid',
   'Devise manquante (EUR, GBP ou CHF)': 'support.importPrep.reasonCurrencyMissing',
   'Devise : EUR, GBP ou CHF': 'support.importPrep.reasonCurrencyInvalid',
+  'Projet manquant': 'support.importPrep.reasonMissingProjet',
+  'Projet inconnu — réassigner': 'support.importPrep.reasonUnknownProjet',
   'Date antérieure au mois passé par rapport au lot (avant le 1er jour du mois le plus récent dans l’import).':
     'transactions.importPrep.dateBeforeRefMonth',
   'Date non chronologique : antérieure à la ligne valide précédente dans le fichier.':

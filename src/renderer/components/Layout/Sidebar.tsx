@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { GITHUB_REPO_NAME } from '@/shared/githubApp';
 import { useSidebarAppInfo } from '../../hooks/useSidebarAppInfo';
 import { useGuidedTour } from '../../guidedTour/GuidedTourContext';
+import GuidedTourMenu from '../GuidedTourMenu';
+import SettingsGearIcon from '../Common/SettingsGearIcon';
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -51,11 +53,14 @@ function BudgetIcon({ className }: { className?: string }) {
   );
 }
 
-function SettingsIcon({ className }: { className?: string }) {
+function ProfileIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+      />
     </svg>
   );
 }
@@ -102,14 +107,16 @@ function SidebarFooter({
   collapsed,
   appVersion,
   activeProfileName,
-  onStartTour,
+  settingsActive,
+  onOpenTourMenu,
   tourActive,
   onExpand,
 }: {
   collapsed: boolean;
   appVersion: string | null;
   activeProfileName: string | null;
-  onStartTour: () => void;
+  settingsActive: boolean;
+  onOpenTourMenu: () => void;
   tourActive: boolean;
   onExpand: () => void;
 }) {
@@ -117,13 +124,27 @@ function SidebarFooter({
   const versionLabel = appVersion ? `v${appVersion}` : null;
   const profileLabel = activeProfileName ?? t('nav.profileNotConfigured');
   const tooltip = [profileLabel, versionLabel].filter(Boolean).join(' · ');
+  const settingsLabel = t('nav.settings');
 
   if (collapsed) {
     return (
       <div className="shrink-0 border-t border-gray-100 py-2 flex flex-col items-center gap-1">
+        <Link
+          to="/settings"
+          data-tour="nav-/settings"
+          className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+            settingsActive
+              ? 'bg-gray-100 text-gray-900'
+              : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+          }`}
+          title={settingsLabel}
+          aria-label={settingsLabel}
+        >
+          <SettingsGearIcon className="w-4 h-4" />
+        </Link>
         <button
           type="button"
-          onClick={onStartTour}
+          onClick={onOpenTourMenu}
           disabled={tourActive}
           className="flex h-8 w-8 items-center justify-center rounded-md text-blue-600 hover:bg-blue-50 disabled:opacity-50"
           title={t('nav.guidedTour')}
@@ -152,9 +173,21 @@ function SidebarFooter({
 
   return (
     <div className="shrink-0 border-t border-gray-100 px-3 py-3 space-y-2">
+      <Link
+        to="/settings"
+        data-tour="nav-/settings"
+        className={`w-full flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
+          settingsActive
+            ? 'bg-gray-100 text-gray-900'
+            : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
+        }`}
+      >
+        <SettingsGearIcon className="w-4 h-4 shrink-0 text-gray-500" />
+        {settingsLabel}
+      </Link>
       <button
         type="button"
-        onClick={onStartTour}
+        onClick={onOpenTourMenu}
         disabled={tourActive}
         className="w-full flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-2 py-2 text-xs font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50 transition-colors"
       >
@@ -180,7 +213,8 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
   const location = useLocation();
   const { t } = useTranslation();
   const { appVersion, activeProfileName } = useSidebarAppInfo();
-  const { startTour, active: tourActive } = useGuidedTour();
+  const { active: tourActive } = useGuidedTour();
+  const [tourMenuOpen, setTourMenuOpen] = useState(false);
 
   const navItems = [
     { to: '/', label: t('nav.dashboard'), icon: ChartIcon },
@@ -189,7 +223,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
     { to: '/monthly-accounting', label: t('nav.monthlyAccounting'), icon: CalendarIcon },
     { to: '/annual-budget', label: t('nav.annualBudget'), icon: BudgetIcon },
     { to: '/soutien', label: t('nav.support'), icon: HeartIcon },
-    { to: '/settings', label: t('nav.settings'), icon: SettingsIcon },
+    { to: '/profile', label: t('nav.profile'), icon: ProfileIcon },
   ];
 
   return (
@@ -248,10 +282,12 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapsedPreferenceToggl
         collapsed={collapsed}
         appVersion={appVersion}
         activeProfileName={activeProfileName}
-        onStartTour={startTour}
+        settingsActive={location.pathname === '/settings' || location.pathname.startsWith('/settings')}
+        onOpenTourMenu={() => setTourMenuOpen(true)}
         tourActive={tourActive}
         onExpand={onCollapsedPreferenceToggle}
       />
+      <GuidedTourMenu open={tourMenuOpen} onClose={() => setTourMenuOpen(false)} />
     </aside>
   );
 };

@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import UpdateAvailableBanner from './UpdateAvailableBanner';
+import FirstRunTourOffer from '../FirstRunTourOffer';
 import { GuidedTourProvider } from '../../guidedTour/GuidedTourContext';
 import GuidedTourOverlay from '../../guidedTour/GuidedTourOverlay';
 import {
@@ -35,6 +36,7 @@ const AppShell: React.FC = () => {
           </div>
         </div>
       </div>
+      <FirstRunTourOffer />
       <GuidedTourOverlay />
     </GuidedTourProvider>
   );

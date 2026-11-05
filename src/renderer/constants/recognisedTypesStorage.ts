@@ -1,6 +1,9 @@
 /**
- * Types d’entrées / sorties reconnus (Paramètres) — localStorage.
+ * Types d’entrées / sorties reconnus (Paramètres) — cache LS + fichier métier profil.
  */
+
+import { persistRecognisedListsBundle } from '../services/recognisedDataProfileService';
+import { loadRecognisedAccountsFromStorage } from './recognisedAccountsStorage';
 
 export const RECOGNISED_ENTRY_TYPES_STORAGE_KEY = 'settings-recognised-entry-types';
 export const RECOGNISED_OUTPUT_TYPES_STORAGE_KEY = 'settings-recognised-output-types';
@@ -11,9 +14,7 @@ function loadRecognisedStringArray(key: string): string[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((v) => String(v ?? '').trim())
-      .filter(Boolean);
+    return parsed.map((v) => String(v ?? '').trim()).filter(Boolean);
   } catch {
     return [];
   }
@@ -27,6 +28,19 @@ export function loadRecognisedEntryTypesFromStorage(): string[] {
 /** Types de sorties (dépenses) définis dans Paramètres. */
 export function loadRecognisedOutputTypesFromStorage(): string[] {
   return loadRecognisedStringArray(RECOGNISED_OUTPUT_TYPES_STORAGE_KEY);
+}
+
+function persistTypes(entryTypes: string[], outputTypes: string[]): void {
+  const accounts = loadRecognisedAccountsFromStorage();
+  persistRecognisedListsBundle(accounts, entryTypes, outputTypes);
+}
+
+export function saveRecognisedEntryTypesToStorage(types: string[]): void {
+  persistTypes(types, loadRecognisedOutputTypesFromStorage());
+}
+
+export function saveRecognisedOutputTypesToStorage(types: string[]): void {
+  persistTypes(loadRecognisedEntryTypesFromStorage(), types);
 }
 
 /**

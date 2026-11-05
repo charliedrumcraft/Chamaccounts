@@ -8,11 +8,11 @@ export const GUIDED_TOUR_STEPS: GuidedTourStep[] = [
   { id: 'welcome', i18nKey: 'welcome', path: '/' },
   { id: 'navigation', i18nKey: 'navigation', highlight: 'sidebar-nav' },
   { id: 'profiles', i18nKey: 'profiles', path: '/settings', highlight: 'settings-profiles' },
-  { id: 'accounts', i18nKey: 'accounts', path: '/settings', highlight: 'settings-accounts' },
-  { id: 'entry-types', i18nKey: 'entryTypes', path: '/settings', highlight: 'settings-entry-types' },
-  { id: 'output-types', i18nKey: 'outputTypes', path: '/settings', highlight: 'settings-output-types' },
-  { id: 'projects', i18nKey: 'projects', path: '/settings', highlight: 'settings-projects' },
-  { id: 'data-format', i18nKey: 'dataFormat', path: '/settings' },
+  { id: 'accounts', i18nKey: 'accounts', path: '/profile', highlight: 'settings-accounts' },
+  { id: 'entry-types', i18nKey: 'entryTypes', path: '/profile', highlight: 'settings-entry-types' },
+  { id: 'output-types', i18nKey: 'outputTypes', path: '/profile', highlight: 'settings-output-types' },
+  { id: 'projects', i18nKey: 'projects', path: '/profile', highlight: 'settings-projects' },
+  { id: 'data-format', i18nKey: 'dataFormat', path: '/profile' },
   { id: 'dashboard', i18nKey: 'dashboard', path: '/', highlight: 'nav-/' },
   { id: 'transactions', i18nKey: 'transactions', path: '/transactions', highlight: 'nav-/transactions' },
   {
@@ -30,6 +30,23 @@ export const GUIDED_TOUR_STEPS: GuidedTourStep[] = [
   { id: 'annual-budget', i18nKey: 'annualBudget', path: '/annual-budget', highlight: 'nav-/annual-budget' },
   { id: 'support', i18nKey: 'support', path: '/soutien', highlight: 'nav-/soutien' },
   { id: 'finish', i18nKey: 'finish', path: '/' },
+];
+
+/**
+ * Visite rapide (~2 min) sur le profil courant — parcours critique seulement.
+ * Pas de bascule vers le Data Template.
+ */
+export const GUIDED_TOUR_QUICK_STEPS: GuidedTourStep[] = [
+  { id: 'quick-welcome', i18nKey: 'quickWelcome', path: '/' },
+  { id: 'quick-profile', i18nKey: 'quickProfile', path: '/profile', highlight: 'settings-accounts' },
+  {
+    id: 'quick-import',
+    i18nKey: 'quickImport',
+    path: '/transactions?focus=import',
+    highlight: 'transactions-import-module',
+  },
+  { id: 'quick-dashboard', i18nKey: 'quickDashboard', path: '/', highlight: 'nav-/' },
+  { id: 'quick-finish', i18nKey: 'quickFinish', path: '/' },
 ];
 
 const CODE_CLASS = 'text-xs bg-slate-100 px-1 rounded';
@@ -126,6 +143,11 @@ const STEP_PARAGRAPHS: Record<string, ParagraphSpec[]> = {
   annualBudget: [{ key: 'p1' }],
   support: [{ key: 'p1' }],
   finish: [{ key: 'p1' }, { key: 'p2', className: 'mt-2 text-sm text-gray-600' }],
+  quickWelcome: [{ key: 'p1' }, { key: 'p2', className: 'mt-2' }],
+  quickProfile: [{ key: 'p1' }, { key: 'p2', className: 'mt-2 text-sm text-gray-600' }],
+  quickImport: [{ key: 'p1' }, { key: 'p2', className: 'mt-2 text-sm text-gray-600' }],
+  quickDashboard: [{ key: 'p1' }],
+  quickFinish: [{ key: 'p1' }, { key: 'p2', className: 'mt-2 text-sm text-gray-600' }],
 };
 
 /** Corps traduit d’une étape. */

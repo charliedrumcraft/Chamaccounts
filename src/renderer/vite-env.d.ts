@@ -143,6 +143,81 @@ interface ElectronAPI {
     data?: string[];
     error?: string;
   }>;
+  projectsGet?: () => Promise<{
+    success: boolean;
+    data?: { projects: import('../shared/projects').ProjectEntry[] } | null;
+    error?: string;
+  }>;
+  projectsSave?: (payload: {
+    projects: import('../shared/projects').ProjectEntry[];
+  }) => Promise<{
+    success: boolean;
+    data?: { projects: import('../shared/projects').ProjectEntry[] } | null;
+    error?: string;
+  }>;
+  projectsOrphans?: () => Promise<{
+    success: boolean;
+    data?: { orphans: import('../shared/projects').ProjectOrphanInfo[] } | null;
+    error?: string;
+  }>;
+  annualBudgetGet?: () => Promise<{
+    success: boolean;
+    data?: { snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile } | null;
+    error?: string;
+  }>;
+  annualBudgetSave?: (payload: {
+    snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile;
+  }) => Promise<{
+    success: boolean;
+    data?: { snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile } | null;
+    error?: string;
+  }>;
+  annualBudgetMergeCache?: (payload: {
+    snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile;
+  }) => Promise<{
+    success: boolean;
+    data?: { snapshot: import('../shared/annualBudget').AnnualBudgetSnapshotFile } | null;
+    error?: string;
+  }>;
+  recognisedDataGet?: () => Promise<{
+    success: boolean;
+    data?: import('../shared/recognisedData').RecognisedDataFile | null;
+    error?: string;
+  }>;
+  recognisedDataSave?: (payload: {
+    data: import('../shared/recognisedData').RecognisedDataFile;
+  }) => Promise<{
+    success: boolean;
+    data?: import('../shared/recognisedData').RecognisedDataFile | null;
+    error?: string;
+  }>;
+  recognisedDataMergeCache?: (payload: {
+    data: import('../shared/recognisedData').RecognisedDataFile;
+  }) => Promise<{
+    success: boolean;
+    data?: import('../shared/recognisedData').RecognisedDataFile | null;
+    error?: string;
+  }>;
+  mappingWizardProfilesList?: () => Promise<{
+    success: boolean;
+    data?: import('../shared/mappingWizardProfiles').MappingWizardProfile[];
+    error?: string;
+  }>;
+  mappingWizardProfilesUpsert?: (
+    payload: import('../shared/mappingWizardProfiles').MappingWizardProfileInput
+  ) => Promise<{
+    success: boolean;
+    data?: {
+      profile: import('../shared/mappingWizardProfiles').MappingWizardProfile;
+      profiles: import('../shared/mappingWizardProfiles').MappingWizardProfile[];
+    } | null;
+    error?: string;
+  }>;
+  mappingWizardProfilesRemove?: (profileId: string) => Promise<{
+    success: boolean;
+    data?: { profiles: import('../shared/mappingWizardProfiles').MappingWizardProfile[] } | null;
+    error?: string;
+  }>;
   transactionsMergeMonthEdit?: (payload: {
     monthKey: string;
     rows: Record<string, string>[];
@@ -218,8 +293,11 @@ interface ElectronAPI {
   getLastImportReportPath?: () => Promise<{ success: boolean; path?: string | null; error?: string }>;
   openImportReport?: () => Promise<{ success: boolean; error?: string }>;
   openImportFolder?: () => Promise<{ success: boolean; error?: string }>;
+  openAccountBalanceImportFolder?: () => Promise<{ success: boolean; error?: string }>;
+  openSupportImportFolder?: () => Promise<{ success: boolean; error?: string }>;
   trashTransactionsImportFiles?: () => Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }>;
   trashAccountBalanceImportFiles?: () => Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }>;
+  trashSupportImportFiles?: () => Promise<{ success: boolean; error?: string; movedCount?: number; message?: string }>;
   downloadImportReport?: () => Promise<{ success: boolean; error?: string; canceled?: boolean; path?: string }>;
   selectFile?: (options?: {
     filters?: { name: string; extensions: string[] }[];

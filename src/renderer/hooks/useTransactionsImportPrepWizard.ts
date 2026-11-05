@@ -40,19 +40,42 @@ import { removeImportedRowsFromImportFolder } from '../services/importWizardRemo
 import { translateImportPrepMessage } from '../i18n/translateImportPrepMessage';
 import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
 import type { AnomalyReason } from '@/shared/anomalyReasons';
+import type { MappingWizardProfile } from '@/shared/mappingWizardProfiles';
+import {
+  listMappingWizardProfiles,
+  upsertMappingWizardProfile,
+} from '../services/mappingWizardProfilesService';
+import { findMatchingMappingProfile } from '@/shared/mappingWizardProfiles';
+import {
+  TX_MAPPING_PREFER_ACTIVE_KEY,
+  readMappingPreferActive,
+  writeMappingPreferActive,
+} from '../constants/mappingWizardPreferActiveStorage';
 
 export type { ImportWizardResultField, PrepTableColDef };
 
 export function useTransactionsImportPrepWizard(options: {
   existingTransactionSignatures: Set<string>;
   accountAliasLookup?: ReadonlyMap<string, string>;
-  onAfterSuccessfulAppend?: () => void;
+  onAfterSuccessfulAppend?: (info?: { count: number }) => void;
   /** Incrémenter depuis la page (ex. après vidage du dossier Import) pour forcer un rechargement du wizard. */
   folderReloadToken?: number;
+  /**
+   * Premier usage / focus import : activer le mapping dès qu’il passe à true
+   * (l’utilisateur peut toujours le désactiver ensuite).
+   */
+  preferMappingActive?: boolean;
 }) {
   const { t, i18n } = useTranslation();
-  const { existingTransactionSignatures, accountAliasLookup, onAfterSuccessfulAppend, folderReloadToken = 0 } = options;
+  const {
+    existingTransactionSignatures,
+    accountAliasLookup,
+    onAfterSuccessfulAppend,
+    folderReloadToken = 0,
+    preferMappingActive = false,
+  } = options;
 
+  const [learnedMappingProfiles, setLearnedMappingProfiles] = useState<MappingWizardProfile[]>([]);
   const [importWizardModel, setImportWizardModel] = useState<ImportWizardModel | null>(null);
   const [importWizardLoading, setImportWizardLoading] = useState(false);
   const [importWizardReloadKey, setImportWizardReloadKey] = useState(0);
@@ -74,8 +97,21 @@ export function useTransactionsImportPrepWizard(options: {
   >({});
   /** Fichiers CSV dossier Import : traiter la 1re ligne comme donnée (pas en-tête). */
   const [diskImportFirstLineAsData, setDiskImportFirstLineAsData] = useState(false);
-  /** Désactivé par défaut : affichage des données brutes sans mapping automatique. */
-  const [mappingWizardActive, setMappingWizardActive] = useState(false);
+  const [storedMappingPrefer, setStoredMappingPrefer] = useState(() =>
+    readMappingPreferActive(TX_MAPPING_PREFER_ACTIVE_KEY)
+  );
+  /** Activé si préférence stockée, ou forcé par premier usage / deep-link. */
+  const [mappingWizardActive, setMappingWizardActive] = useState(
+    () => preferMappingActive || readMappingPreferActive(TX_MAPPING_PREFER_ACTIVE_KEY)
+  );
+  const mappingPreferAppliedRef = useRef(preferMappingActive);
+
+  useEffect(() => {
+    if (preferMappingActive && !mappingPreferAppliedRef.current) {
+      mappingPreferAppliedRef.current = true;
+      setMappingWizardActive(true);
+    }
+  }, [preferMappingActive]);
   /** Après import réussi : retirer les lignes importées des CSV du dossier Import. */
   const [removeImportedFromImportFolder, setRemoveImportedFromImportFolder] = useState(false);
   /** Modèle d’auto-catégorisation TYPE (TITLE→TYPE depuis la DB). */
@@ -86,6 +122,16 @@ export function useTransactionsImportPrepWizard(options: {
   );
   const [autoCatReviewOpen, setAutoCatReviewOpen] = useState(false);
   const [knownOutputTypes, setKnownOutputTypes] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listMappingWizardProfiles().then((profiles) => {
+      if (!cancelled) setLearnedMappingProfiles(profiles);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderReloadToken, importWizardReloadKey]);
 
   useEffect(() => {
     if (!mappingWizardActive) return;
@@ -151,34 +197,56 @@ export function useTransactionsImportPrepWizard(options: {
         setImportWizardManualCellValues({});
         setImportMappedOutputOverrides({});
         setImportColumnMappingUser({});
+        if (readMappingPreferActive(TX_MAPPING_PREFER_ACTIVE_KEY) || preferMappingActive) {
+          setMappingWizardActive(true);
+        }
       } else {
         setImportColumnMappingUser({});
       }
     } finally {
       setImportWizardLoading(false);
     }
-  }, [diskImportFirstLineAsData]);
+  }, [diskImportFirstLineAsData, preferMappingActive]);
 
   useEffect(() => {
     void loadImportWizard();
   }, [loadImportWizard, importWizardReloadKey, folderReloadToken, diskImportFirstLineAsData]);
 
+  const defaultColumnMapping = useMemo((): Record<string, WizardStandardKey> => {
+    if (!importWizardModel) return {};
+    return buildDefaultColumnMapping(importWizardModel.columns, learnedMappingProfiles);
+  }, [importWizardModel, learnedMappingProfiles]);
+
   const importColumnMapping = useMemo((): Record<string, WizardStandardKey> => {
     if (!importWizardModel || !mappingWizardActive) return {};
-    const defaults = buildDefaultColumnMapping(importWizardModel.columns);
-    const out: Record<string, WizardStandardKey> = { ...defaults };
+    const out: Record<string, WizardStandardKey> = { ...defaultColumnMapping };
     for (const [k, v] of Object.entries(importColumnMappingUser)) {
       if (v === ('' as WizardStandardKey)) delete out[k];
       else out[k] = v;
     }
     return out;
-  }, [importWizardModel, mappingWizardActive, importColumnMappingUser]);
+  }, [importWizardModel, mappingWizardActive, importColumnMappingUser, defaultColumnMapping]);
+
+  /** Devise implicite : détection fichier, sinon profil de mapping matché. */
+  const effectiveDefaultCurrency = useMemo(() => {
+    const fromModel = (importWizardModel?.defaultCurrency ?? '').trim();
+    if (fromModel) return fromModel;
+    if (!importWizardModel?.columns.length) return undefined;
+    const matched = findMatchingMappingProfile(
+      learnedMappingProfiles,
+      importWizardModel.columns.map((c) => c.label)
+    );
+    return (matched?.defaultCurrency ?? '').trim() || undefined;
+  }, [importWizardModel, learnedMappingProfiles]);
 
   const importWizardPreview = useMemo(
     () =>
       importWizardModel && mappingWizardActive
         ? computeTransactionsImportWizardPreview({
-            model: importWizardModel,
+            model: {
+              ...importWizardModel,
+              defaultCurrency: effectiveDefaultCurrency,
+            },
             importColumnMapping,
             existingTransactionSignatures,
             accountAliasLookup,
@@ -200,6 +268,7 @@ export function useTransactionsImportPrepWizard(options: {
       importMappedOutputOverrides,
       autoCategorisationModel,
       fixedAutoCatRules,
+      effectiveDefaultCurrency,
     ]
   );
 
@@ -240,7 +309,7 @@ export function useTransactionsImportPrepWizard(options: {
     const uncoveredRecommendedManual = getUncoveredManualFieldsRecommendedToFill(
       importWizardModel.columns,
       importColumnMapping,
-      { defaultCurrency: importWizardModel.defaultCurrency }
+      { defaultCurrency: effectiveDefaultCurrency }
     );
     const validRows: Record<string, string>[] = [];
     const rowIdAtValidIndex: string[] = [];
@@ -310,7 +379,7 @@ export function useTransactionsImportPrepWizard(options: {
       });
     }
     return map;
-  }, [importWizardPreview, importWizardModel, importColumnMapping, t, i18n.language]);
+  }, [importWizardPreview, importWizardModel, importColumnMapping, effectiveDefaultCurrency, t, i18n.language]);
 
   const anomalousRowIds = useMemo(() => {
     if (!mappingWizardActive || !importWizardPreview?.list.length) return [] as string[];
@@ -399,10 +468,10 @@ export function useTransactionsImportPrepWizard(options: {
         ? buildPrepTableColDefs({
             columns: importWizardModel?.columns,
             importColumnMapping,
-            defaultCurrency: importWizardModel?.defaultCurrency,
+            defaultCurrency: effectiveDefaultCurrency,
           })
         : buildPrepTableColDefsRaw({ columns: importWizardModel?.columns }),
-    [mappingWizardActive, importWizardModel, importColumnMapping]
+    [mappingWizardActive, importWizardModel, importColumnMapping, effectiveDefaultCurrency]
   );
 
   /** En mode mapping wizard, les colonnes CSV brutes ne sont pas affichées (Ign., ligne, alertes, champs manuels, colonnes mappées vers src). */
@@ -647,7 +716,7 @@ export function useTransactionsImportPrepWizard(options: {
           p.valueMap,
           {},
           undefined,
-          importWizardModel?.defaultCurrency
+          effectiveDefaultCurrency
         );
         if (fiat !== 'EUR' && fiat !== 'GBP' && fiat !== 'CHF') {
           setImportWizardMessage(t('transactions.importPrep.currencyRequired'));
@@ -688,7 +757,8 @@ export function useTransactionsImportPrepWizard(options: {
                   error: diskResult.error ?? t('transactions.importPrep.unknownError'),
                 })
               );
-              onAfterSuccessfulAppend?.();
+              const appended = result.appendedCount ?? toAppend.length;
+              onAfterSuccessfulAppend?.({ count: appended });
               setImportWizardReloadKey((k) => k + 1);
               return;
             }
@@ -707,14 +777,17 @@ export function useTransactionsImportPrepWizard(options: {
             }
           }
         }
-        onAfterSuccessfulAppend?.();
-        setImportWizardReloadKey((k) => k + 1);
-        setImportWizardMessage(
-          t('transactions.importPrep.appended', {
-            count: result.appendedCount ?? toAppend.length,
-            disk: diskMsg,
-          })
-        );
+        {
+          const appended = result.appendedCount ?? toAppend.length;
+          onAfterSuccessfulAppend?.({ count: appended });
+          setImportWizardReloadKey((k) => k + 1);
+          setImportWizardMessage(
+            t('transactions.importPrep.appended', {
+              count: appended,
+              disk: diskMsg,
+            })
+          );
+        }
       } else {
         setImportWizardMessage(result.error ?? t('transactions.importPrep.importFailed'));
       }
@@ -727,8 +800,23 @@ export function useTransactionsImportPrepWizard(options: {
     importRowSkip,
     onAfterSuccessfulAppend,
     removeImportedFromImportFolder,
+    effectiveDefaultCurrency,
     t,
   ]);
+
+  const setMappingWizardActiveFromUser = useCallback(
+    (v: boolean | ((prev: boolean) => boolean)) => {
+      setMappingWizardActive((prev) => {
+        const next = typeof v === 'function' ? v(prev) : v;
+        if (next !== prev) {
+          setStoredMappingPrefer(next);
+          writeMappingPreferActive(TX_MAPPING_PREFER_ACTIVE_KEY, next);
+        }
+        return next;
+      });
+    },
+    []
+  );
 
   const applyImportWizardClipboardPaste = useCallback(
     (raw: string, parseOptions?: ImportWizardParseOptions) => {
@@ -738,6 +826,9 @@ export function useTransactionsImportPrepWizard(options: {
         return;
       }
       setImportWizardModel((prev) => (prev ? mergeImportWizardModels(prev, pasted) : pasted));
+      const prefer = readMappingPreferActive(TX_MAPPING_PREFER_ACTIVE_KEY);
+      setStoredMappingPrefer(prefer);
+      if (prefer) setMappingWizardActive(true);
       const src = pasted.rows[0]?.sourceFile ?? t('transactions.importPrep.clipboardSource');
       setImportWizardMessage(
         t('transactions.importPrep.pasteAdded', { count: pasted.rows.length, source: src })
@@ -757,6 +848,59 @@ export function useTransactionsImportPrepWizard(options: {
     }
   }, []);
 
+  /** Enregistre le mapping effectif du premier fichier du wizard comme profil appris. */
+  const saveLearnedMappingProfile = useCallback(async () => {
+    if (!importWizardModel?.columns.length) {
+      setImportWizardMessage(t('transactions.importPrep.saveMappingProfileNoColumns'));
+      return;
+    }
+    const fileNames = [...new Set(importWizardModel.columns.map((c) => c.fileName))];
+    const fileName = fileNames[0]!;
+    if (fileNames.length > 1) {
+      setImportWizardMessage(
+        t('transactions.importPrep.saveMappingProfileMultiFile', { file: fileName })
+      );
+    }
+    const name = window.prompt(t('transactions.importPrep.saveMappingProfilePrompt'));
+    if (name == null) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setImportWizardMessage(t('transactions.importPrep.saveMappingProfileNameRequired'));
+      return;
+    }
+    const fileCols = importWizardModel.columns.filter((c) => c.fileName === fileName);
+    const headerLabels = fileCols.map((c) => c.label);
+    const effective = { ...defaultColumnMapping };
+    for (const [k, v] of Object.entries(importColumnMappingUser)) {
+      if (v === ('' as WizardStandardKey)) effective[k] = '';
+      else effective[k] = v;
+    }
+    const columnMap: Record<string, string> = {};
+    for (const col of fileCols) {
+      columnMap[col.label] = effective[col.key] ?? '';
+    }
+    const r = await upsertMappingWizardProfile({
+      name: trimmed,
+      headerLabels,
+      columnMap,
+      firstLineAsData: diskImportFirstLineAsData || undefined,
+      defaultCurrency: effectiveDefaultCurrency,
+    });
+    if (!r.ok) {
+      setImportWizardMessage(r.error);
+      return;
+    }
+    setLearnedMappingProfiles(r.profiles);
+    setImportWizardMessage(t('transactions.importPrep.saveMappingProfileDone', { name: r.profile.name }));
+  }, [
+    importWizardModel,
+    defaultColumnMapping,
+    importColumnMappingUser,
+    diskImportFirstLineAsData,
+    effectiveDefaultCurrency,
+    t,
+  ]);
+
   return {
     importWizardModel,
     importWizardLoading,
@@ -765,12 +909,15 @@ export function useTransactionsImportPrepWizard(options: {
     diskImportFirstLineAsData,
     setDiskImportFirstLineAsData,
     mappingWizardActive,
-    setMappingWizardActive,
+    setMappingWizardActive: setMappingWizardActiveFromUser,
+    preferMappingActiveStored: storedMappingPrefer,
     removeImportedFromImportFolder,
     setRemoveImportedFromImportFolder,
+    defaultColumnMapping,
     importColumnMapping,
     importColumnMappingUser,
     updateImportColumnMappingUser,
+    saveLearnedMappingProfile,
     importRowSkip,
     setImportRowSkip,
     importWizardCellOverrides,

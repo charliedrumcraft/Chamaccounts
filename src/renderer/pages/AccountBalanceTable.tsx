@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
 import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { format, startOfDay } from 'date-fns';
 import {
   ACCOUNT_BALANCE_PROCESSED_DIR,
@@ -17,9 +17,12 @@ import {
   type BalanceRow,
 } from '../services/AccountBalanceCSVService';
 import AccountBalanceImportPrepSection from '../components/AccountBalanceImportPrepSection';
+import ImportWizardPastePanel from '../components/ImportWizardPastePanel';
 import { useAccountBalanceImportPrepWizard } from '../hooks/useAccountBalanceImportPrepWizard';
 import { detectAccountBalanceAnomalies } from '../services/AnomalyDetectionService';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
+import { TRANSACTIONS_FOCUS_IMPORT_QUERY } from '../constants/gettingStartedStorage';
+import ImportSuccessBanner from '../components/ImportSuccessBanner';
 import { formatBalanceAmountForUi } from '../utils/format';
 import { ResizableTableHeadCell } from '../components/Common/ResizableTableHeadCell';
 import {
@@ -154,6 +157,7 @@ function isAccountBalanceEditSessionDirty(
 const AccountBalanceTable: React.FC = () => {
   const { t, i18n } = useTranslation();
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [rows, setRows] = useState<BalanceRow[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -169,6 +173,9 @@ const AccountBalanceTable: React.FC = () => {
   const [emptyAbImportConfirmOpen, setEmptyAbImportConfirmOpen] = useState(false);
   /** Incrémenté après copie de fichiers vers Import ou vidage du dossier (rechargement du rapport / état aligné sur TransactionsTable). */
   const [importFolderReloadToken, setImportFolderReloadToken] = useState(0);
+  /** Premier usage / deep-link checklist : mapping ON + module ouvert. */
+  const [preferMappingActive, setPreferMappingActive] = useState(false);
+  const [importSuccessCount, setImportSuccessCount] = useState<number | null>(null);
   /** Affiche ou masque préparation d’import + wizard (sous le titre). */
   const [importModuleExpanded, setImportModuleExpanded] = useState(() =>
     readModuleExpandedFromStorage(AB_IMPORT_MODULE_EXPANDED_KEY)
@@ -240,11 +247,51 @@ const AccountBalanceTable: React.FC = () => {
     return s;
   }, [rows]);
 
+  const emptyImportAssistAppliedRef = useRef(false);
+  useEffect(() => {
+    if (emptyImportAssistAppliedRef.current) return;
+    if (loading) return;
+    if (rows && rows.length > 0) return;
+    emptyImportAssistAppliedRef.current = true;
+    setPreferMappingActive(true);
+    setImportModuleExpanded(true);
+    try {
+      localStorage.setItem(AB_IMPORT_MODULE_EXPANDED_KEY, 'true');
+    } catch {
+      /* ignore */
+    }
+  }, [loading, rows]);
+
+  useEffect(() => {
+    if (searchParams.get('focus') !== TRANSACTIONS_FOCUS_IMPORT_QUERY) return;
+    setPreferMappingActive(true);
+    setImportModuleExpanded(true);
+    try {
+      localStorage.setItem(AB_IMPORT_MODULE_EXPANDED_KEY, 'true');
+    } catch {
+      /* ignore */
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete('focus');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const handleAfterBalanceImport = useCallback(
+    (info?: { count: number }) => {
+      loadData();
+      if (info?.count != null && info.count > 0) {
+        setImportSuccessCount(info.count);
+      }
+    },
+    [loadData]
+  );
+
   const abPrepWizard = useAccountBalanceImportPrepWizard({
     existingBalanceDateKeys: existingBalanceDateKeysForWizard,
-    onAfterSuccessfulAppend: loadData,
+    onAfterSuccessfulAppend: handleAfterBalanceImport,
     folderReloadToken: importFolderReloadToken,
     recognisedAccountsReloadKey: location.pathname,
+    preferMappingActive,
   });
 
   const recognisedAccounts = useMemo(
@@ -919,6 +966,14 @@ const AccountBalanceTable: React.FC = () => {
         <div className="mb-4 space-y-4">
           <h1 className="text-2xl font-bold text-gray-800">{t('accountBalance.title')}</h1>
 
+          {importSuccessCount != null && (
+            <ImportSuccessBanner
+              count={importSuccessCount}
+              onDismiss={() => setImportSuccessCount(null)}
+              kind="balances"
+            />
+          )}
+
           <div className="bg-white rounded-lg shadow p-4 border border-gray-200">
             <div
               className="flex items-center justify-between gap-3 mb-0 cursor-pointer select-none"
@@ -1023,11 +1078,25 @@ const AccountBalanceTable: React.FC = () => {
                           </label>
                         )}
                       </div>
+                      <div className="mt-3">
+                        <ImportWizardPastePanel
+                          description={t('accountBalance.importPrep.pasteDescription')}
+                          pasteTitle={t('accountBalance.importPrep.pasteTitle')}
+                          pastePlaceholder={t('accountBalance.importPrep.pastePlaceholder')}
+                          pasteNoHeaderLabel={t('accountBalance.importPrep.pasteNoHeader')}
+                          pasteAddLabel={t('accountBalance.importPrep.pasteAdd')}
+                          disabled={abPrepWizard.abImportWizardLoading}
+                          onPaste={(raw, opts) =>
+                            abPrepWizard.applyAccountBalanceWizardClipboardPaste(raw, opts)
+                          }
+                        />
+                      </div>
                     </div>
 
                     <hr className="border-gray-200" />
 
                     <AccountBalanceImportPrepSection {...abPrepWizard} />
+                    <hr className="border-gray-200" />
 
                   </div>
                 </div>

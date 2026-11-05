@@ -15,7 +15,13 @@
     "active": "Active",
     "remove": "Remove",
     "activate": "Activate",
+    "edit": "Edit",
+    "cancel": "Cancel",
     "defaultProfileName": "Profile"
+  },
+  "helpInfo": {
+    "gotIt": "Got it",
+    "close": "Close"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -25,12 +31,57 @@
     "annualBudget": "Annual budget",
     "support": "Support",
     "settings": "Settings",
+    "profile": "Profile",
     "openMenu": "Open menu",
     "collapseMenu": "Collapse menu",
     "guidedTour": "Guided tour",
     "activeProfile": "Active profile",
     "profileNotConfigured": "Profile not configured",
     "version": "Version {{version}}"
+  },
+  "gettingStarted": {
+    "title": "Getting started",
+    "subtitle": "{{done}} of {{total}} steps done — follow the list to see your first charts.",
+    "dismiss": "Hide this checklist",
+    "go": "Go",
+    "nextCta": "Next: {{step}}",
+    "steps": {
+      "currencies": "Choose working currencies",
+      "accounts": "Add your accounts",
+      "types": "Add income and expense types",
+      "importTransactions": "Import your first transactions",
+      "importBalances": "Import account balances (optional)"
+    },
+    "hints": {
+      "currencies": "Primary currency is the conversion reference used in reports.",
+      "accounts": "Open Profile and list the bank accounts you use (with currency).",
+      "types": "Income and expense types help categorise imports and catch anomalies.",
+      "importTransactions": "Open the import module, add a CSV or paste rows, map columns, then import.",
+      "importBalances": "Import monthly balances so the Dashboard balance chart can fill in."
+    },
+    "emptyDashboardTitle": "No data to show yet",
+    "emptyDashboardBody": "Configure your profile, then import a bank CSV. The checklist above walks you through it.",
+    "emptyDashboardCta": "Import transactions",
+    "startQuickTour": "Quick tour (2 min)"
+  },
+  "profileSettings": {
+    "title": "Profile",
+    "mappingProfiles": {
+      "title": "Train the mapping wizard",
+      "description": "Save the shape of your bank CSVs (headers → DATE, TITLE, AMOUNT…). On a later import with the same headers, the mapping wizard reapplies this profile automatically.",
+      "empty": "No mapping profiles yet — pick a sample CSV below to create one.",
+      "trainTitle": "New profile from a CSV",
+      "editTitle": "Edit profile",
+      "nameLabel": "Name (e.g. bank)",
+      "namePlaceholder": "e.g. N26",
+      "pickCsv": "Choose a sample CSV…",
+      "save": "Save profile",
+      "needCsv": "Choose a sample CSV first.",
+      "unreadableCsv": "Could not read headers from this CSV.",
+      "saved": "Profile “{{name}}” saved.",
+      "removed": "Profile removed.",
+      "removeConfirm": "Delete this mapping profile?"
+    }
   },
   "settings": {
     "title": "Settings",
@@ -111,14 +162,23 @@
     },
     "projects": {
       "title": "Projects",
-      "description": "Define projects and a colour for each. They appear as a dropdown in the PROJECT column (transactions, Support, monthly accounting); the file stores the project identifier, which stays stable even if you rename the label here.",
+      "description": "Profile business catalogue (AppState/projects.json). They appear as a dropdown in the PROJECT column (transactions, Support, monthly accounting); rows store the project identifier, which stays stable even if you rename the label here.",
       "empty": "No projects — add one to get started.",
       "name": "Name",
       "color": "Colour",
       "colorTitle": "Project colour",
       "delete": "Delete",
       "add": "Add a project",
-      "defaultName": "New project"
+      "defaultName": "New project",
+      "confirmDelete": "Delete project “{{name}}”? Rows still linked to it will become orphans until reassigned.",
+      "confirmDeleteWithLinks": "Delete “{{name}}”? {{count}} row(s) are still linked and will become orphans.",
+      "orphansTitle": "Orphan projects detected",
+      "orphansHint": "PROJECT identifiers exist in your data but are missing from the catalogue. Restore them to recover the label, or reassign the rows.",
+      "orphansCount": "{{count}} row(s) (support {{support}}, transactions {{transactions}})",
+      "orphansChecking": "Checking for orphans…",
+      "restoreOrphan": "Restore to catalogue",
+      "restoredName": "Restored project ({{short}})",
+      "restoreFailed": "Could not restore this project."
     },
     "recognised": {
       "title": "Recognised data",
@@ -262,7 +322,17 @@
     },
     "importPrep": {
       "title": "Edit data before import",
-      "description": "By default, only the <raw>raw data</raw> from CSVs in the Import folder is shown (no mapping). Turn on the <mw>mapping wizard</mw> to apply automatic column rules and prepare import into <code>src_transaction_data.csv</code>. All fields from that file are then visible: those inferred from the CSV appear as editable columns, the others as manual entry. Anomaly detection (business rules + duplicates + dates outside the batch reference month or non-chronological order) → amber ⚠️; still-empty manual fields → red “recommended entry” panel (import still allowed). Hover the status cell for details (shown immediately).",
+      "stepsTitle": "How to import",
+      "step1": "Add CSV files to the Import folder, or paste rows from a spreadsheet below.",
+      "step2": "Turn on the mapping wizard (required to import).",
+      "step3": "Check column mapping, fix cells, skip anomalies or duplicates if needed.",
+      "step4": "Click “Import rows” at the top of this module.",
+      "description": "With the <mw>mapping wizard</mw> on, columns are aligned for import into your transaction file. Raw CSV view (wizard off) is for inspection only. Anomalies → amber ⚠️; empty recommended fields → red panel (import still allowed). Hover the status cell for details.",
+      "profileTip": "Tip: define your accounts and types in Profile first — unknown values are flagged as anomalies.",
+      "profileTipCta": "Open Profile",
+      "mappingWizardLabel": "Mapping wizard",
+      "helpToggle": "How this import works",
+      "helpToggleHide": "Hide import help",
       "pasteTitle": "Paste from a spreadsheet",
       "pasteDescription": "Copy cells from Excel, Numbers, or Google Sheets (tab-separated), or CSV text, then paste here. Rows are added to the current batch (in addition to files in the Import folder).",
       "pastePlaceholder": "Paste here (Ctrl+V / Cmd+V)…",
@@ -289,7 +359,13 @@
       "skipDuplicatesNone": "No duplicates detected",
       "skipDuplicatesHint": "Check to skip all rows already present in src_transaction_data.csv; uncheck to restore them",
       "columnMappingTitle": "Source column mapping",
-      "columnMappingHint": "“Auto” = inferred from the data. Number = column position in the file; on the right, first non-empty values (preview).",
+      "columnMappingHint": "“Auto” = learned profile (same headers) or inference. Number = column position in the file; on the right, first non-empty values (preview).",
+      "saveMappingProfile": "Save as profile…",
+      "saveMappingProfilePrompt": "Mapping profile name (e.g. bank):",
+      "saveMappingProfileNameRequired": "Enter a name for the profile.",
+      "saveMappingProfileNoColumns": "No columns to save.",
+      "saveMappingProfileMultiFile": "Several files loaded: saving based on “{{file}}”.",
+      "saveMappingProfileDone": "Mapping profile “{{name}}” saved.",
       "sourceFile": "Source file: {{name}}",
       "mapColumnAria": "Column mapping {{n}}",
       "autoOption": "Auto ({{inferred}})",
@@ -493,6 +569,10 @@
       "skipAnomaliesAria": "Skip all anomaly rows",
       "skipAnomaliesNone": "No anomaly rows (⚠️)",
       "skipAnomaliesHint": "Check to skip all rows showing a ⚠️ alert; uncheck to restore them",
+      "skipDuplicates": "Skip duplicates",
+      "skipDuplicatesAria": "Skip all date-duplicate rows",
+      "skipDuplicatesNone": "No date duplicates detected",
+      "skipDuplicatesHint": "Check to skip all dates already present in src_account_balance.csv; uncheck to restore them",
       "columnMappingTitle": "Source column mapping",
       "columnMappingHint": "“Auto” = from the header label. Number = position in the file; on the right, value preview.",
       "sourceFile": "Source file: {{name}}",
@@ -549,6 +629,39 @@
       "compare": "Movements comparison",
       "tables": "Tables and filters",
       "yearly": "Yearly overview"
+    },
+    "help": {
+      "open": "About this section",
+      "balances": {
+        "title": "Balance evolution",
+        "p1": "Shows how your account balances change over time, from monthly balance data (start of each month).",
+        "p2": "You can view a multi-account line chart, an optional stock-style chart for one account, trend lines, and start/end variation cards.",
+        "p3": "Use the settings gear to pick the axis currency, visible accounts, chart height and trend options. The date range can sync with Movements tracking."
+      },
+      "movements": {
+        "title": "Movements tracking",
+        "p1": "Summarises income and expenses over a chosen period, from your imported transactions.",
+        "p2": "You can explore pie charts by type, a monthly bar chart, and a horizontal balance bar (income vs expenses).",
+        "p3": "Settings let you choose display currency, which income/expense types to show, chart height, and whether to sync the date range with Balance evolution."
+      },
+      "compare": {
+        "title": "Movements comparison",
+        "p1": "Compares two date ranges side by side so you can see how income and expenses differ between periods.",
+        "p2": "Each range has its own charts and totals; you can optionally show comparative percentages relative to the other range.",
+        "p3": "Useful to contrast months, quarters or years without leaving the Dashboard."
+      },
+      "tables": {
+        "title": "Tables and filters",
+        "p1": "Lists the underlying transactions for the selected period, with filters on title, type and account (several lines combined with OR).",
+        "p2": "You can also show summary tables by income/expense type and by account, and limit the height of the transactions table.",
+        "p3": "The date range can sync with Balance evolution and/or Movements tracking so all blocks stay aligned."
+      },
+      "yearly": {
+        "title": "Yearly overview",
+        "p1": "Gives a multi-year view of income and expenses aggregated by type.",
+        "p2": "You can show a yearly chart, a types-by-year table, and analysis tools (averages, trends) for the years you tick in settings.",
+        "p3": "Ideal for spotting recurring patterns and long-term shifts across years."
+      }
     },
     "series": {
       "entries": "Income",
@@ -676,7 +789,8 @@
     },
     "empty": {
       "noDataForFilters": "No data for the selected filters.",
-      "noBalanceFile": "No data (file {{dir}}/src_account_balance.csv or account_balance.csv missing or empty)",
+      "noBalanceFile": "No balance data yet. Import monthly balances from Account balances, or add files under {{dir}}.",
+      "noBalanceFileCta": "Import balances",
       "noDateOrExpenseIncome": "Source data without a Date or Expense/Income column, or range without data.",
       "noDateOrAmountGbp": "Source data without a Date or AMOUNT GBP column, or empty range.",
       "noDateOrAmount": "Source data without a Date or amount column, or no data."
@@ -730,6 +844,18 @@
       "period": "Period",
       "average": "Average",
       "monthlyForecast": "Monthly fcst."
+    },
+    "budgetProgress": {
+      "title": "Budget progress",
+      "subtitle": "Month actuals vs monthly forecast from the {{year}} annual budget",
+      "legend": "Each bar runs from 0 (left) to the monthly budget target (right). When exceeded: red for expenses, green for income.",
+      "percent": "{{value}}%",
+      "actualVsBudget": "{{actual}} / {{budget}}",
+      "noBudgetTarget": "—",
+      "noSnapshot": "No annual budget for this year. Enter it under Annual budget (balance sheet) to see progress.",
+      "noMappedTypes": "No budgeted lines for this year. Enter forecast amounts in Annual budget (balance sheet).",
+      "emptyExpenses": "No budgeted expenses.",
+      "emptyIncome": "No budgeted income."
     },
     "period": {
       "options": {
@@ -807,6 +933,22 @@
       "expenses": "Expenses",
       "balance": "Annual balance"
     },
+    "tracking": {
+      "title": "Annual budget tracking",
+      "subtitle": "Income and expenses vs budget · {{year}}",
+      "income": "Income",
+      "expenses": "Expenses",
+      "vsBudget": "vs budget",
+      "vsPace": "Gap vs year pace",
+      "yearProgress": "Year progress",
+      "yearProgressHint": "Compare budget consumption % with how far the year has progressed.",
+      "delta": "Variance",
+      "consumed": "Used",
+      "line": "Line / category",
+      "showBreakdown": "Breakdown by balance-sheet line",
+      "broughtForward": "brought forward",
+      "loading": "Loading budget tracking…"
+    },
     "errors": {
       "noSourceData": "No source data (src_transaction_data.csv).",
       "loadFailed": "Error while loading."
@@ -862,7 +1004,17 @@
       "actualBankTitle": "Total of all accounts on 1 January of the year (balances)",
       "bankAutoHint": "Actual = total of all accounts on 1 January",
       "deltaForecastTitle": "Difference: Total Fund C/F (forecast) − total Assets B/F (forecast)",
-      "deltaActualTitle": "Difference: Total Fund C/F (actual) − total Assets B/F (actual)"
+      "deltaActualTitle": "Difference: Total Fund C/F (actual) − total Assets B/F (actual)",
+      "helpToggle": "How to edit the balance sheet",
+      "helpToggleHide": "Hide help",
+      "helpTitle": "Editing the balance sheet",
+      "helpStep1": "Click “Edit mode” to rename categories and lines, reorder them (↑ ↓), change level (Level + / −), add or delete them.",
+      "helpStep2": "Forecast column: enter an amount, or a formula such as =100*12 then Enter.",
+      "helpStep3": "Actual column: usually calculated automatically from the transaction types linked to the line.",
+      "helpStep4": "Use “Assign” on a line to link income or expense types: their yearly amounts feed the Actual column.",
+      "helpStep5": "The Bank line is special: Actual can come from balances on 1 January, or be entered manually depending on the chosen mode.",
+      "helpStep6": "Leave edit mode when you’re done: structure and forecasts are saved for the displayed year.",
+      "helpNote": "Tip: the “Type assignment” block below lists movements not yet linked to a balance-sheet line."
     },
     "types": {
       "title": "Movements by type and month",
@@ -951,10 +1103,18 @@
     "outsideCurrentFilter": "— outside current filter",
     "grandTotal": "Grand total",
     "importModule": {
-      "open": "Open the import module for Support_data.csv (spreadsheet paste)",
-      "close": "Close the import module for Support_data.csv (spreadsheet paste)",
+      "open": "Open the import module for Support_data.csv",
+      "close": "Close the import module for Support_data.csv",
       "needMapping": "Enable the mapping wizard to prepare import into Support_data.csv",
       "noImportableRows": "No importable rows (ignored or invalid) with the current settings"
+    },
+    "importWizard": {
+      "emptyConfirmBody": "All files in the Support Import folder will be moved to the system trash. You can restore them from the trash if needed.",
+      "removeImportedTitle": "After a successful import, removes from the Import folder the rows that were just added to Support_data.csv (pasted clipboard rows are not affected).",
+      "readFailed": "Could not read a file.",
+      "copyFailed": "Error while copying.",
+      "emptyFailed": "Could not empty the folder.",
+      "noFiles": "No files in the Import folder."
     },
     "addLine": {
       "title": "Add a Support row",
@@ -1078,28 +1238,77 @@
       "title": "Edit row (manual entry)"
     },
     "importPrep": {
-      "description": "Paste rows from a spreadsheet, turn on the <mw>mapping wizard</mw> to align columns with <code>Support_data.csv</code> (DATE, TITLE, AMOUNT, CURRENCY), then import. The “Support” type and the manual source are applied automatically. The alert column (⚠️) summarises issues: hover for details.",
-      "pasteDescription": "Copy cells from Excel, Numbers, or Google Sheets (tab-separated), or CSV text, then paste here. Rows are added to the current batch.",
-      "clearBatch": "Clear batch",
+      "stepsTitle": "How to import",
+      "step1": "Add CSVs to the Import folder, or paste rows from a spreadsheet below.",
+      "step2": "Turn on the mapping wizard (required to import).",
+      "step3": "Check column mapping, project and currency, fix cells, skip anomalies or duplicates if needed.",
+      "step4": "Click “Import rows” at the top of this module.",
+      "helpToggle": "How this import works",
+      "profileTip": "Tip: define your projects in Profile first — an unknown project blocks import (unless “Require a project” is unchecked).",
+      "profileTipCta": "Open Profile",
+      "description": "Add CSVs to the Import folder, or paste from a spreadsheet above. Turn on the <mw>mapping wizard</mw> to align columns with <code>Support_data.csv</code> (DATE, TITLE, AMOUNT, CURRENCY, PROJET), choose the batch project (or per row), then import. The “Support” type and the manual source are applied automatically. The alert column (⚠️) summarises issues: hover for details.",
+      "pasteDescription": "Copy cells from Excel, Numbers, or Google Sheets (tab-separated), or CSV text, then paste here. Rows are added to the current batch (in addition to files in the Import folder).",
+      "clearBatch": "Reload from Import folder",
       "mappingOnTitle": "Turn off: return to raw data",
       "mappingOffTitle": "Turn on: table aligned with Support_data.csv",
-      "emptyState": "No rows to show: use the “Paste from a spreadsheet” area above.",
+      "emptyState": "No rows to show: import CSVs into the Import folder or use “Paste from a spreadsheet” above.",
       "statsMapped_one": "{{total}} rows total · {{count}} not skipped",
       "statsMapped_other": "{{total}} rows total · {{count}} not skipped",
       "modeMapped": " — preview aligned with Support_data.csv",
-      "columnMappingHint": "Number = position in the paste. “Auto” uses header inference. On the right: preview of the first values.",
+      "columnMappingHint": "Number = position in the paste. Header inference and saved profiles apply automatically. On the right: preview of the first values. You can also map a column to PROJET.",
+      "batchProjetLabel": "Batch project",
+      "batchProjetHint": "Applied to rows without a mapped project. Can also be set per row in the preview.",
+      "batchCurrencyLabel": "Batch currency",
+      "batchCurrencyHint": "Applied to rows without a mapped currency or a currency hint in the amount.",
+      "duplicateRow": "Duplicate (row already present in Support_data.csv)",
+      "skipDuplicatesNone": "No duplicates detected",
+      "skipDuplicatesHint": "Check to skip all rows already present in Support_data.csv; uncheck to restore them",
+      "bulkActionsLabel": "Bulk actions:",
+      "forceCurrency": "Apply batch currency",
+      "forceCurrencyHint": "Writes the batch currency onto every row (including already mapped ones).",
+      "forceCurrencyNeedBatch": "Choose a batch currency first.",
+      "forceCurrencyDone": "Currency {{currency}} applied to {{count}} row(s).",
+      "forceProjet": "Force batch project",
+      "forceProjetHint": "Writes the batch project onto every row (including already mapped ones).",
+      "forceProjetNeedBatch": "Choose a batch project first.",
+      "forceProjetDone": "Project “{{projet}}” applied to {{count}} row(s).",
+      "skipAllAlerts": "Skip all alerts",
+      "skipAllAlertsHint": "Skip (or restore) every row with a ⚠️ alert.",
+      "summaryLine": "To import: {{importable}} / {{total}} · skipped {{skipped}} · duplicates {{duplicates}} · alerts {{alerts}} · {{currencies}} · project: {{projet}}",
+      "summaryProjetMixed": "several",
+      "summaryProjetNone": "none",
+      "fileAdd": "Add CSV file…",
+      "fileLoading": "Reading…",
+      "fileEmpty": "No usable content in the file(s).",
+      "fileAdded": "{{count}} row(s) added from {{source}}.",
+      "sourcesLabel": "Batch sources:",
+      "sourceRemoveAria": "Remove {{name}} from the batch",
+      "sourceRemoved": "Source “{{name}}” removed from the batch.",
+      "sourceRemovedEmpty": "Source “{{name}}” removed — batch is empty.",
+      "keepBatch": "Keep batch after import",
+      "keepBatchHint": "If checked, the batch stays after a successful import (useful to retry or review).",
+      "requireProjet": "Require a project",
+      "requireProjetHint": "If unchecked, rows without a project remain importable.",
+      "createProjet": "New project…",
+      "createProjetHint": "Creates a project and assigns it as the batch project.",
+      "createProjetPrompt": "Name of the new project:",
+      "createProjetDone": "Project “{{name}}” created and selected for the batch.",
+      "createProjetFailed": "Could not create the project (empty name?).",
+      "appendedKeepBatch": "{{count}} row(s) added to Support_data.csv. Batch kept.",
       "sourceFile": "Source: {{name}}",
       "targetColumnAria": "Target for column {{n}}",
       "alertsAria": "Alerts",
       "batchCleared": "Import batch cleared.",
       "enableMappingFirst": "Turn on the mapping wizard to prepare and import rows into Support_data.csv.",
-      "noValidRows": "No valid rows to add (check alerts or skipped rows).",
+      "noValidRows": "No valid rows to add (check alerts, project, duplicates, or skipped rows).",
       "appended": "{{count}} row(s) added to Support_data.csv.",
       "reasonMissingAmount": "Missing amount",
       "reasonAmountNaN": "Amount is not numeric",
       "reasonAmountInvalid": "Invalid amount (zero or not numeric)",
       "reasonCurrencyMissing": "Missing currency (EUR, GBP or CHF)",
-      "reasonCurrencyInvalid": "Currency: EUR, GBP or CHF"
+      "reasonCurrencyInvalid": "Currency: EUR, GBP or CHF",
+      "reasonMissingProjet": "Missing project",
+      "reasonUnknownProjet": "Unknown project — reassign"
     }
   },
   "system": {
@@ -1168,15 +1377,65 @@
     "empty": "No exceptions recorded.",
     "removeException": "Remove exception"
   },
+  "importSuccess": {
+    "transactionsMessage": "{{count}} transaction row(s) imported successfully.",
+    "balancesMessage": "{{count}} balance row(s) imported successfully.",
+    "viewDashboard": "View Dashboard",
+    "dismiss": "Dismiss"
+  },
   "guidedTour": {
     "overlay": {
       "label": "Guided tour",
+      "quickLabel": "Quick tour",
       "quit": "Quit",
       "previous": "Previous",
       "next": "Next",
       "finish": "Finish"
     },
+    "menu": {
+      "title": "Help & onboarding",
+      "subtitle": "Replay the introduction or show the getting-started checklist again.",
+      "quickTour": "Quick tour (2 min)",
+      "quickTourHint": "Profile → Import → Dashboard on your current data.",
+      "fullTour": "Full guided tour",
+      "fullTourHint": "All pages with the sample Data Template profile.",
+      "showChecklist": "Show getting-started checklist",
+      "showChecklistHint": "Reopens the checklist on the Dashboard (even if you hid it).",
+      "close": "Close"
+    },
+    "offer": {
+      "eyebrow": "First launch",
+      "title": "Take a 2-minute quick tour?",
+      "body": "We’ll walk through Profile → Import → Dashboard on your current data. You can also follow the Getting started checklist on the Dashboard on your own.",
+      "startQuick": "Start quick tour",
+      "checklistOnly": "I’ll use the checklist",
+      "later": "Not now"
+    },
     "steps": {
+      "quickWelcome": {
+        "title": "Welcome — the essential path",
+        "p1": "To see charts, you need three things: <strong>accounts & types</strong> in Profile, then an <strong>import</strong> of transactions, then the <strong>Dashboard</strong>.",
+        "p2": "This short tour stays on your profile (no sample data switch)."
+      },
+      "quickProfile": {
+        "title": "Profile: accounts first",
+        "p1": "Add the bank accounts you use (with currency). Income and expense types help categorise imports and catch unknown values.",
+        "p2": "Save the lists before importing so anomalies stay meaningful."
+      },
+      "quickImport": {
+        "title": "Import your bank CSV",
+        "p1": "Open the import module, add files or paste rows, turn on the <strong>mapping wizard</strong>, check columns, then click Import rows.",
+        "p2": "The Getting started checklist also links here with the module already open."
+      },
+      "quickDashboard": {
+        "title": "Dashboard",
+        "p1": "Once data is imported, balances and movements appear here. Filters let you drill into types and accounts."
+      },
+      "quickFinish": {
+        "title": "You’re set",
+        "p1": "Follow the checklist on the Dashboard if anything is still missing. The full guided tour (with sample data) remains available from the sidebar.",
+        "p2": "Tip: export a project ZIP from Settings before moving machines."
+      },
       "welcome": {
         "title": "Welcome to Chamaccounts",
         "p1": "This app brings together your transactions, account balances, monthly accounting and budget. Your data lives in a <strong>folder on your disk</strong> (the active profile), not in the Git repository.",
@@ -1210,7 +1469,7 @@
       "projects": {
         "title": "Projects (labels)",
         "p1": "<strong>Projects</strong> are coloured labels (<code>PROJET</code> column) to segment your rows: renovation, holidays, business activity, etc.",
-        "p2": "The file stores the project <strong>identifier</strong>: you can rename the display here without breaking history."
+        "p2": "The catalogue is profile business data (<code>AppState/projects.json</code>). Rows store the project <strong>identifier</strong>: you can rename the display without breaking history."
       },
       "dataFormat": {
         "title": "Expected data format",
@@ -1220,7 +1479,7 @@
         "importHeading": "Bank import (Import folder)",
         "importCaption": "recognised columns; can be mapped to the processed file",
         "balanceHeading": "Monthly balances",
-        "balanceCaption": "one column per active account (order = Settings)",
+        "balanceCaption": "one column per active account (order = Profile)",
         "rates": "EUR/CHF → GBP rates are configured in Settings to compute <strong>AMOUNT GBP</strong> at import.",
         "sample": {
           "groceries": "Market groceries",

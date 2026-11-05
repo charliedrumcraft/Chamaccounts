@@ -43,6 +43,10 @@ import {
   type CategorySuggestion,
   type FixedAutoCatRule,
 } from '@/shared/autoCategorisation';
+import {
+  applyMappingProfileToColumns,
+  type MappingWizardProfile,
+} from '@/shared/mappingWizardProfiles';
 
 export { WIZARD_STANDARD_KEYS };
 export type { WizardStandardKey };
@@ -187,10 +191,42 @@ export function buildImportWizardModelFromClipboardText(
   return model.rows.length > 0 ? model : null;
 }
 
-export function buildDefaultColumnMapping(columns: ImportWizardColumn[]): Record<string, WizardStandardKey> {
+/** Aperçu des en-têtes d’un CSV pour entraîner un profil de mapping (page Profil). */
+export function peekCsvHeadersForMappingTraining(content: string): {
+  labels: string[];
+  suggested: WizardStandardKey[];
+  defaultCurrency?: string;
+} | null {
+  const text = content.replace(/^\uFEFF/, '').trim();
+  if (!text) return null;
+  const firstLine = text.split(/\r?\n/)[0] ?? '';
+  const delim = detectDelimiterForWizardFirstLine(firstLine);
+  const model = parseFileForWizard(text, 'training.csv', delim);
+  if (model.columns.length === 0) return null;
+  return {
+    labels: model.columns.map((c) => c.label),
+    suggested: model.columns.map((c) => c.suggestedStandard),
+    defaultCurrency: model.defaultCurrency,
+  };
+}
+
+export function buildDefaultColumnMapping(
+  columns: ImportWizardColumn[],
+  learnedProfiles?: MappingWizardProfile[]
+): Record<string, WizardStandardKey> {
   const m: Record<string, WizardStandardKey> = {};
   for (const c of columns) {
     m[c.key] = c.suggestedStandard;
+  }
+  if (!learnedProfiles?.length || columns.length === 0) return m;
+
+  const fileNames = [...new Set(columns.map((c) => c.fileName))];
+  for (const fileName of fileNames) {
+    const learned = applyMappingProfileToColumns(columns, fileName, learnedProfiles);
+    if (!learned) continue;
+    for (const [key, std] of Object.entries(learned)) {
+      m[key] = std;
+    }
   }
   return m;
 }

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "maison-01",
+      "name": "Maison",
+      "color": "#6366f1"
+    }
+  ]
+}

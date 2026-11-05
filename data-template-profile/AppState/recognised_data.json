@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "accounts": [
+    {
+      "name": "Revolut Perso",
+      "currency": "EUR"
+    },
+    {
+      "name": "HSBC Joint",
+      "currency": "GBP"
+    }
+  ],
+  "entryTypes": [
+    "Firm",
+    "Other Inc",
+    "Refund",
+    "Support"
+  ],
+  "outputTypes": [
+    "Rent",
+    "Food",
+    "Leisure",
+    "Donation",
+    "Misc"
+  ]
+}

@@ -47,6 +47,7 @@ import {
   MONTHLY_ANOMALY_REPORT_PATH,
   ACCOUNT_BALANCE_IMPORT_DIR,
   ACCOUNT_BALANCE_ANOMALY_REPORT_PATH,
+  SUPPORT_IMPORT_DIR,
 } from '../shared/dataPaths';
 import type { BalanceAccountColumn, BalanceRowDto } from '../shared/accountBalanceCodes';
 import {
@@ -67,6 +68,31 @@ import {
   ensureWorkingCurrencies,
   saveWorkingCurrenciesFromInput,
 } from './db/workingCurrenciesStore';
+import {
+  ensureProjects,
+  findOrphanProjectIds,
+  saveProjectsList,
+} from './db/projectsStore';
+import type { ProjectEntry } from '../shared/projects';
+import {
+  ensureAnnualBudget,
+  mergeAnnualBudgetFromCache,
+  saveAnnualBudget,
+} from './db/annualBudgetStore';
+import type { AnnualBudgetSnapshotFile } from '../shared/annualBudget';
+import {
+  ensureRecognisedData,
+  mergeRecognisedDataFromCache,
+  recognisedDataToLocalStorageMap,
+  saveRecognisedData,
+} from './db/recognisedDataStore';
+import type { RecognisedDataFile } from '../shared/recognisedData';
+import {
+  listMappingWizardProfiles,
+  removeMappingWizardProfile,
+  upsertMappingWizardProfile,
+} from './db/mappingWizardProfilesStore';
+import type { MappingWizardProfileInput } from '../shared/mappingWizardProfiles';
 import { workingCurrencyCodes, isWorkingCurrencyConfigured } from '../shared/workingCurrencies';
 import type { PrimaryMappingRates } from '../shared/transactionsImportMappingPolicy';
 import type { AccountAliasEntry } from '../shared/accountAliasForDuplicates';
@@ -326,17 +352,29 @@ function isEmptyRecognisedJson(raw: string | null): boolean {
 /**
  * Si le renderer a perdu les listes reconnues mais que AppState/ les a encore,
  * les réinjecte dans localStorage (partition active).
+ * Préfère recognised_data.json, sinon snapshot CSV.
  */
 async function restoreRecognisedListsInRendererIfNeeded(
   win: BrowserWindow
 ): Promise<void> {
   const root = getActiveDataRoot();
   if (!root) return;
+  let fromFile: Record<string, string> = {};
+  try {
+    const data = ensureRecognisedData(root);
+    fromFile = recognisedDataToLocalStorageMap(data);
+  } catch {
+    fromFile = {};
+  }
   const csvPath = path.join(root, LOCAL_STORAGE_SNAPSHOT_CSV_PATH);
   const fromCsv = readRecognisedListsFromAppStateCsv(csvPath);
-  if (Object.keys(fromCsv).length === 0) return;
+  const merged: Record<string, string> = { ...fromCsv };
+  for (const [k, v] of Object.entries(fromFile)) {
+    if (!isEmptyRecognisedJson(v)) merged[k] = v;
+  }
+  if (Object.keys(merged).length === 0) return;
 
-  const payload = JSON.stringify(fromCsv);
+  const payload = JSON.stringify(merged);
   try {
     const restored = (await win.webContents.executeJavaScript(
       `(() => {
@@ -744,6 +782,163 @@ ipcMain.handle('working-currencies-used-in-data', async () => {
   }
 });
 
+ipcMain.handle('projects-get', async () => {
+  try {
+    const root = getDataRoot();
+    const projects = ensureProjects(root);
+    return { success: true, data: { projects } };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: null };
+  }
+});
+
+ipcMain.handle('projects-save', async (_, payload: { projects?: ProjectEntry[] }) => {
+  try {
+    const root = getDataRoot();
+    const projects = saveProjectsList(root, Array.isArray(payload?.projects) ? payload.projects : []);
+    return { success: true, data: { projects } };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: null };
+  }
+});
+
+ipcMain.handle('projects-orphans', async () => {
+  try {
+    const root = getDataRoot();
+    const orphans = await findOrphanProjectIds(root);
+    return { success: true, data: { orphans } };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: null };
+  }
+});
+
+ipcMain.handle('annual-budget-get', async () => {
+  try {
+    const root = getDataRoot();
+    const snapshot = ensureAnnualBudget(root);
+    return { success: true, data: { snapshot } };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: null };
+  }
+});
+
+ipcMain.handle(
+  'annual-budget-save',
+  async (_, payload: { snapshot?: AnnualBudgetSnapshotFile }) => {
+    try {
+      const root = getDataRoot();
+      const snapshot = saveAnnualBudget(
+        root,
+        payload?.snapshot ?? { version: 1, byYear: {} }
+      );
+      return { success: true, data: { snapshot } };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, data: null };
+    }
+  }
+);
+
+ipcMain.handle(
+  'annual-budget-merge-cache',
+  async (_, payload: { snapshot?: AnnualBudgetSnapshotFile }) => {
+    try {
+      const root = getDataRoot();
+      const snapshot = mergeAnnualBudgetFromCache(
+        root,
+        payload?.snapshot ?? { version: 1, byYear: {} }
+      );
+      return { success: true, data: { snapshot } };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, data: null };
+    }
+  }
+);
+
+ipcMain.handle('recognised-data-get', async () => {
+  try {
+    const root = getDataRoot();
+    const data = ensureRecognisedData(root);
+    return { success: true, data };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: null };
+  }
+});
+
+ipcMain.handle(
+  'recognised-data-save',
+  async (_, payload: { data?: RecognisedDataFile }) => {
+    try {
+      const root = getDataRoot();
+      const data = saveRecognisedData(
+        root,
+        payload?.data ?? { version: 1, accounts: [], entryTypes: [], outputTypes: [] }
+      );
+      return { success: true, data };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, data: null };
+    }
+  }
+);
+
+ipcMain.handle(
+  'recognised-data-merge-cache',
+  async (_, payload: { data?: RecognisedDataFile }) => {
+    try {
+      const root = getDataRoot();
+      const data = mergeRecognisedDataFromCache(
+        root,
+        payload?.data ?? { version: 1, accounts: [], entryTypes: [], outputTypes: [] }
+      );
+      return { success: true, data };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, data: null };
+    }
+  }
+);
+
+ipcMain.handle('mapping-wizard-profiles-list', async () => {
+  try {
+    const root = getDataRoot();
+    return { success: true, data: listMappingWizardProfiles(root) };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: [] as ReturnType<typeof listMappingWizardProfiles> };
+  }
+});
+
+ipcMain.handle('mapping-wizard-profiles-upsert', async (_, payload: MappingWizardProfileInput) => {
+  try {
+    const root = getDataRoot();
+    const result = upsertMappingWizardProfile(root, payload);
+    if (!result.ok) return { success: false, error: result.error, data: null };
+    return { success: true, data: { profile: result.profile, profiles: result.profiles } };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: null };
+  }
+});
+
+ipcMain.handle('mapping-wizard-profiles-remove', async (_, profileId: string) => {
+  try {
+    const root = getDataRoot();
+    const result = removeMappingWizardProfile(root, profileId);
+    if (!result.ok) return { success: false, error: result.error, data: null };
+    return { success: true, data: { profiles: result.profiles } };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, data: null };
+  }
+});
+
 ipcMain.handle(
   'transactions-merge-month-edit',
   async (_, payload: { monthKey: string; rows: Record<string, string>[] }) => {
@@ -1110,6 +1305,48 @@ ipcMain.handle('open-account-balance-import-folder', async () => {
 ipcMain.handle('trash-account-balance-import-files', async () => {
   try {
     const importDir = resolveDataPath(ACCOUNT_BALANCE_IMPORT_DIR);
+    if (!existsSync(importDir)) {
+      return { success: true, movedCount: 0, message: tm('error.noImportFolder') };
+    }
+    const entries = await fs.readdir(importDir, { withFileTypes: true });
+    const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+    if (files.length === 0) {
+      return { success: true, movedCount: 0, message: tm('error.noImportFiles') };
+    }
+    let movedCount = 0;
+    for (const name of files) {
+      const src = path.join(importDir, name);
+      await shell.trashItem(src);
+      movedCount++;
+    }
+    return {
+      success: true,
+      movedCount,
+      message: tm('error.filesMovedTrash', { count: movedCount }),
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message, movedCount: 0 };
+  }
+});
+
+ipcMain.handle('open-support-import-folder', async () => {
+  try {
+    const fullPath = resolveDataPath(SUPPORT_IMPORT_DIR);
+    if (!existsSync(fullPath)) {
+      await fs.mkdir(fullPath, { recursive: true });
+    }
+    await shell.openPath(fullPath);
+    return { success: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+});
+
+ipcMain.handle('trash-support-import-files', async () => {
+  try {
+    const importDir = resolveDataPath(SUPPORT_IMPORT_DIR);
     if (!existsSync(importDir)) {
       return { success: true, movedCount: 0, message: tm('error.noImportFolder') };
     }

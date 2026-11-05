@@ -4,6 +4,9 @@ import {
   syncAppStateOnProfileEnter,
   syncAppStateOnProfileLeave,
 } from '../services/profileAppStateSync';
+import { hydrateProjectsFromProfileFile } from '../constants/projectsStorage';
+import { hydrateAnnualBudgetFromProfileFile } from '../services/annualBudgetStorage';
+import { hydrateRecognisedDataFromProfileFile } from '../services/recognisedDataProfileService';
 
 function dispatchPersistPendingAppState(): void {
   try {
@@ -40,6 +43,18 @@ export function useProfileAppStateLifecycle(enabled: boolean): boolean {
             console.warn('[AppState] import au démarrage:', r.error);
           } else if (r.restoredKeys && r.restoredKeys.length > 0) {
             console.info('[AppState] listes reconnues restaurées depuis CSV:', r.restoredKeys.join(', '));
+          }
+          const projectsHydrated = await hydrateProjectsFromProfileFile();
+          if (projectsHydrated) {
+            console.info('[AppState] projets fusionnés depuis AppState/projects.json');
+          }
+          const budgetHydrated = await hydrateAnnualBudgetFromProfileFile();
+          if (budgetHydrated) {
+            console.info('[AppState] budget annuel fusionné depuis AppState/annual_budget.json');
+          }
+          const recognisedHydrated = await hydrateRecognisedDataFromProfileFile();
+          if (recognisedHydrated) {
+            console.info('[AppState] listes reconnues fusionnées depuis AppState/recognised_data.json');
           }
         }
       }

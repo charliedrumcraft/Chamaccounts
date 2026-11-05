@@ -1,5 +1,9 @@
 import { useState, useEffect } from 'react';
-import { loadProjectsFromStorage, type ProjectEntry } from '../constants/projectsStorage';
+import {
+  hydrateProjectsFromProfileFile,
+  loadProjectsFromStorage,
+  type ProjectEntry,
+} from '../constants/projectsStorage';
 
 export function useProjectsFromStorage(): ProjectEntry[] {
   const [projects, setProjects] = useState<ProjectEntry[]>(() => loadProjectsFromStorage());
@@ -7,6 +11,9 @@ export function useProjectsFromStorage(): ProjectEntry[] {
   useEffect(() => {
     const refresh = () => setProjects(loadProjectsFromStorage());
     setProjects(loadProjectsFromStorage());
+    void hydrateProjectsFromProfileFile().then((changed) => {
+      if (changed) refresh();
+    });
     window.addEventListener('focus', refresh);
     window.addEventListener('chamaccounts-projects-changed', refresh);
     window.addEventListener('storage', refresh);

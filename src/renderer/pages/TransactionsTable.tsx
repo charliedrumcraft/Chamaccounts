@@ -1,8 +1,13 @@
 /// <reference path="../vite-env.d.ts" />
 import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { transactionsImportFile } from '@/shared/dataPaths';
+import { TRANSACTIONS_FOCUS_IMPORT_QUERY } from '../constants/gettingStartedStorage';
+import { loadWorkingCurrencies } from '../services/workingCurrenciesService';
+import ImportSuccessBanner from '../components/ImportSuccessBanner';
+import HelpInfoDialog, { HelpInfoButton } from '../components/HelpInfoDialog';
 import {
   SourceDataCSVService,
   type SourceDataResult,
@@ -27,10 +32,12 @@ import { isAmountIndicatorHeader, currencyDisplaySymbol } from '@/shared/working
 
 import { AnomalyExceptionsModal } from '../components/AnomalyExceptionsModal';
 import TransactionsImportPrepSection from '../components/TransactionsImportPrepSection';
+import ImportWizardPastePanel from '../components/ImportWizardPastePanel';
 import { useTransactionsImportPrepWizard } from '../hooks/useTransactionsImportPrepWizard';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
 import { buildAccountAliasLookup } from '@/shared/transactionsImportCore';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
+import { loadAllRecognisedTypesFromStorage } from '../constants/recognisedTypesStorage';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
 import { ProjetDisplayCell, ProjetSelectCell } from '../components/ProjetColumnCells';
 import { ResizableTableHeadCell } from '../components/Common/ResizableTableHeadCell';
@@ -172,6 +179,7 @@ function isTransactionsEditSessionDirty(
 
 const TransactionsTable: React.FC = () => {
   const { t, i18n } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const projects = useProjectsFromStorage();
   const [data, setData] = useState<SourceDataResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -188,6 +196,12 @@ const TransactionsTable: React.FC = () => {
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveMessage, setArchiveMessage] = useState<string | null>(null);
   const [emptyImportConfirmOpen, setEmptyImportConfirmOpen] = useState(false);
+  /** Premier usage / deep-link checklist : mapping ON + module ouvert. */
+  const [preferMappingActive, setPreferMappingActive] = useState(false);
+  /** Nombre de lignes du dernier import réussi (bandeau succès). */
+  const [importSuccessCount, setImportSuccessCount] = useState<number | null>(null);
+  /** Panneau d’aide du bloc Import (bouton info en en-tête). */
+  const [importHelpOpen, setImportHelpOpen] = useState(false);
   /** Affiche ou masque préparation d’import + wizard (sous le titre). */
   const [importModuleExpanded, setImportModuleExpanded] = useState(() =>
     readModuleExpandedFromStorage(TX_IMPORT_MODULE_EXPANDED_KEY)
@@ -330,17 +344,57 @@ const TransactionsTable: React.FC = () => {
     [availableMonthKeys]
   );
 
-  const reloadAfterImport = useCallback(() => {
-    void loadViewScope(selectedMonth);
-    void refreshSlimAnomalies(false);
-    void refreshRowSignatures();
-  }, [loadViewScope, selectedMonth, refreshSlimAnomalies, refreshRowSignatures]);
+  const reloadAfterImport = useCallback(
+    (info?: { count: number }) => {
+      void loadViewScope(selectedMonth);
+      void refreshSlimAnomalies(false);
+      void refreshRowSignatures();
+      if (info?.count != null && info.count > 0) {
+        setImportSuccessCount(info.count);
+      }
+    },
+    [loadViewScope, selectedMonth, refreshSlimAnomalies, refreshRowSignatures]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadWorkingCurrencies().then((wc) => {
+      if (cancelled) return;
+      if ((wc.transactionCount ?? 0) === 0) {
+        setPreferMappingActive(true);
+        setImportModuleExpanded(true);
+        try {
+          localStorage.setItem(TX_IMPORT_MODULE_EXPANDED_KEY, 'true');
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (searchParams.get('focus') !== TRANSACTIONS_FOCUS_IMPORT_QUERY) return;
+    setPreferMappingActive(true);
+    setImportModuleExpanded(true);
+    try {
+      localStorage.setItem(TX_IMPORT_MODULE_EXPANDED_KEY, 'true');
+    } catch {
+      /* ignore */
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete('focus');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const prepWizard = useTransactionsImportPrepWizard({
     existingTransactionSignatures,
     accountAliasLookup,
     onAfterSuccessfulAppend: reloadAfterImport,
     folderReloadToken: importFolderReloadToken,
+    preferMappingActive,
   });
   /** Dérivé des lignes : seule source de vérité (évite toute perte au moindre setData sur une autre cellule). */
   const rowsExcludedFromAnomaly = useMemo(() => {
@@ -1107,39 +1161,93 @@ const TransactionsTable: React.FC = () => {
         <div className="mb-4 space-y-4">
           <h1 className="text-2xl font-bold text-gray-800">{t('transactions.title')}</h1>
 
-          <div className="bg-white rounded-lg shadow p-4 border border-gray-200">
-            <div
-              className="flex items-center justify-between gap-3 mb-0 cursor-pointer select-none"
-              onClick={toggleImportModuleExpanded}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  toggleImportModuleExpanded();
-                }
-              }}
-              aria-expanded={importModuleExpanded}
-              aria-controls="transactions-import-module"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className="inline-block transition-transform duration-200 text-gray-500 shrink-0"
-                  style={{ transform: importModuleExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-                  aria-hidden
-                >
-                  ▼
-                </span>
-                <div className="min-w-0">
-                  <h2 className="text-lg font-semibold text-gray-800">{t('transactions.importWizard.title')}</h2>
-                  <p className="text-sm text-gray-500 mt-0.5">
-                    {importModuleExpanded
-                      ? t('transactions.importWizard.closeModule')
-                      : t('transactions.importWizard.openModule')}
-                  </p>
+          {importSuccessCount != null && (
+            <ImportSuccessBanner
+              count={importSuccessCount}
+              onDismiss={() => setImportSuccessCount(null)}
+              kind="transactions"
+            />
+          )}
+
+          <div
+            className="bg-white rounded-lg shadow p-4 border border-gray-200"
+            data-tour="transactions-import-module"
+          >
+            <div className="flex items-stretch gap-2 mb-0">
+              <div
+                className="flex flex-1 min-w-0 items-center justify-between gap-3 cursor-pointer select-none"
+                onClick={toggleImportModuleExpanded}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggleImportModuleExpanded();
+                  }
+                }}
+                aria-expanded={importModuleExpanded}
+                aria-controls="transactions-import-module"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className="inline-block transition-transform duration-200 text-gray-500 shrink-0"
+                    style={{ transform: importModuleExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+                    aria-hidden
+                  >
+                    ▼
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-semibold text-gray-800">{t('transactions.importWizard.title')}</h2>
+                    <p className="text-sm text-gray-500 mt-0.5">
+                      {importModuleExpanded
+                        ? t('transactions.importWizard.closeModule')
+                        : t('transactions.importWizard.openModule')}
+                    </p>
+                  </div>
                 </div>
               </div>
+              <div className="flex items-center shrink-0">
+                <HelpInfoButton
+                  label={t('transactions.importPrep.helpToggle')}
+                  onClick={() => setImportHelpOpen(true)}
+                />
+              </div>
             </div>
+            <HelpInfoDialog
+              open={importHelpOpen}
+              onClose={() => setImportHelpOpen(false)}
+              title={t('transactions.importPrep.stepsTitle')}
+            >
+              <ol className="list-decimal list-inside space-y-1.5">
+                <li>{t('transactions.importPrep.step1')}</li>
+                <li>{t('transactions.importPrep.step2')}</li>
+                <li>{t('transactions.importPrep.step3')}</li>
+                <li>{t('transactions.importPrep.step4')}</li>
+              </ol>
+              <p className="mt-3 text-[11px] text-gray-600">
+                <Trans
+                  i18nKey="transactions.importPrep.description"
+                  components={{
+                    raw: <strong className="font-semibold text-gray-800" />,
+                    mw: <strong className="font-semibold text-gray-800" />,
+                    code: <code className="text-gray-800" />,
+                  }}
+                />
+              </p>
+              {(!loadRecognisedAccountsFromStorage().some((a) => a.name.trim()) ||
+                loadAllRecognisedTypesFromStorage().length === 0) && (
+                <p className="mt-3 text-[11px] text-amber-900 rounded border border-amber-200 bg-amber-50 px-2 py-1.5">
+                  {t('transactions.importPrep.profileTip')}{' '}
+                  <Link
+                    to="/profile"
+                    className="font-semibold underline hover:text-amber-950"
+                    onClick={() => setImportHelpOpen(false)}
+                  >
+                    {t('transactions.importPrep.profileTipCta')}
+                  </Link>
+                </p>
+              )}
+            </HelpInfoDialog>
           {importModuleExpanded && (
             <div id="transactions-import-module" className="mt-3">
               <div
@@ -1211,6 +1319,15 @@ const TransactionsTable: React.FC = () => {
                             {t('transactions.importWizard.removeImported')}
                           </label>
                         )}
+                      </div>
+                      <div className="mt-3">
+                        <ImportWizardPastePanel
+                          description={t('transactions.importPrep.pasteDescription')}
+                          disabled={prepWizard.importWizardLoading}
+                          onPaste={(raw, opts) =>
+                            prepWizard.applyImportWizardClipboardPaste(raw, opts)
+                          }
+                        />
                       </div>
                     </div>
 

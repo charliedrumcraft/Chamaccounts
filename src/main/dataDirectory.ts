@@ -170,6 +170,7 @@ export async function ensureDataTree(dataRoot: string): Promise<void> {
     'AccountBalanceData/Import',
     'AccountBalanceData/Processed',
     'SupportData',
+    'SupportData/Import',
     'AppState',
   ];
   for (const rel of dirs) {

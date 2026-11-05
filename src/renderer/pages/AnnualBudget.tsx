@@ -33,6 +33,8 @@ import {
 } from '../services/annualBudgetStorage';
 import { PERSIST_PENDING_APP_STATE_EVENT } from '../services/profileAppStateSync';
 import AnnualBudgetTypeCoverageSection from '../components/AnnualBudgetTypeCoverageSection';
+import AnnualBudgetTrackingSection from '../components/AnnualBudgetTrackingSection';
+import HelpInfoDialog from '../components/HelpInfoDialog';
 import type { TransactionsAnnualBudgetYearDto } from '@/shared/transactionQueryTypes';
 
 const YEAR_STORAGE_KEY = 'annual-budget-selected-year';
@@ -566,6 +568,9 @@ const AnnualBudget: React.FC = () => {
   const [affecterOpenLineId, setAffecterOpenLineId] = useState<string | null>(null);
 
   const [bilanBlockExpanded, setBilanBlockExpanded] = useState(true);
+  /** Panneau d’aide édition feuille de bilan (bouton info en en-tête). */
+  const [bilanHelpOpen, setBilanHelpOpen] = useState(false);
+  const [trackingBlockExpanded, setTrackingBlockExpanded] = useState(true);
   const [typeCoverageBlockExpanded, setTypeCoverageBlockExpanded] = useState(true);
   const [typesByMonthBlockExpanded, setTypesByMonthBlockExpanded] = useState(true);
   const [typesMonthTableFontRem, setTypesMonthTableFontRem] = useState(loadTypesMonthTableFontRem);
@@ -1455,9 +1460,40 @@ const AnnualBudget: React.FC = () => {
                   {bilanEditMode ? (
                     <span className="text-xs font-medium text-red-600 sm:text-sm">{t('transactions.edit.banner')}</span>
                   ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setBilanHelpOpen(true)}
+                    title={t('annualBudget.sheet.helpToggle')}
+                    aria-label={t('annualBudget.sheet.helpToggle')}
+                    aria-haspopup="dialog"
+                    className="flex-shrink-0 p-2 rounded-lg border border-gray-200 bg-gray-50 text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-800"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                  </button>
                 </div>
               </div>
             </header>
+            <HelpInfoDialog
+              open={bilanHelpOpen}
+              onClose={() => setBilanHelpOpen(false)}
+              title={t('annualBudget.sheet.helpTitle')}
+            >
+              <ol className="list-decimal list-inside space-y-1.5">
+                <li>{t('annualBudget.sheet.helpStep1')}</li>
+                <li>{t('annualBudget.sheet.helpStep2')}</li>
+                <li>{t('annualBudget.sheet.helpStep3')}</li>
+                <li>{t('annualBudget.sheet.helpStep4')}</li>
+                <li>{t('annualBudget.sheet.helpStep5')}</li>
+                <li>{t('annualBudget.sheet.helpStep6')}</li>
+              </ol>
+              <p className="mt-3 text-[11px] text-gray-500">{t('annualBudget.sheet.helpNote')}</p>
+            </HelpInfoDialog>
             {bilanBlockExpanded ? (
               <div
                 id="annual-budget-panel-bilan"
@@ -2151,6 +2187,23 @@ const AnnualBudget: React.FC = () => {
             fmtMoney={fmtMoney}
             expanded={typeCoverageBlockExpanded}
             onToggleExpanded={() => setTypeCoverageBlockExpanded((e) => !e)}
+          />
+
+          <AnnualBudgetTrackingSection
+            selectedYear={selectedYear}
+            byType={aggregation.byType}
+            bankBalanceJan1Gbp={bankBalanceJan1Gbp}
+            budgetValues={budgetValues}
+            lineAssignedTypes={lineAssignedTypes}
+            budgetedAssets={budgetedAssets}
+            budgetedLiabilities={budgetedLiabilities}
+            categoryLabels={bilanCategoryLabels}
+            lineLabels={bilanLineLabels}
+            bankLineOptions={bankLineOptions}
+            fmtMoney={fmtMoney}
+            loading={loading}
+            expanded={trackingBlockExpanded}
+            onToggleExpanded={() => setTrackingBlockExpanded((e) => !e)}
           />
 
           <section

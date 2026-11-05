@@ -6,6 +6,7 @@ import DataSetup from './pages/DataSetup';
 import WorkingCurrenciesWizard from './pages/WorkingCurrenciesWizard';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
+import ProfileSettings from './pages/ProfileSettings';
 import TransactionsTable from './pages/TransactionsTable';
 import AccountBalanceTable from './pages/AccountBalanceTable';
 import MonthlyAccounting from './pages/MonthlyAccounting';
@@ -96,6 +97,7 @@ const App: React.FC = () => {
           <Route path="/monthly-accounting" element={<MonthlyAccounting />} />
           <Route path="/annual-budget" element={<AnnualBudget />} />
           <Route path="/soutien" element={<Support />} />
+          <Route path="/profile" element={<ProfileSettings />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
       </Routes>

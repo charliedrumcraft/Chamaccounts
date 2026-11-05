@@ -27,7 +27,7 @@ function measureHighlight(selector: string | undefined): SpotlightRect | null {
 
 const GuidedTourOverlay: React.FC = () => {
   const { t } = useTranslation();
-  const { active, step, stepIndex, totalSteps, endTour, nextStep, prevStep } = useGuidedTour();
+  const { active, mode, step, stepIndex, totalSteps, endTour, nextStep, prevStep } = useGuidedTour();
   const [spotlight, setSpotlight] = useState<SpotlightRect | null>(null);
 
   const refreshSpotlight = useCallback(() => {
@@ -83,7 +83,8 @@ const GuidedTourOverlay: React.FC = () => {
       <div className="fixed inset-0 z-[10001] flex items-center justify-center p-4 pointer-events-none">
         <div className="pointer-events-auto w-full max-w-sm max-h-[min(85vh,calc(100%-2rem))] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-2xl p-4">
         <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600 mb-1">
-          {t('guidedTour.overlay.label')} · {stepIndex + 1} / {totalSteps}
+          {t(mode === 'quick' ? 'guidedTour.overlay.quickLabel' : 'guidedTour.overlay.label')} ·{' '}
+          {stepIndex + 1} / {totalSteps}
         </p>
         <h2 id="guided-tour-title" className="text-base font-bold text-gray-900">
           {t(`guidedTour.steps.${step.i18nKey}.title`)}
