@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import {
   loadRecognisedAccountsFromStorage,
@@ -21,6 +21,11 @@ import {
   hydrateRecognisedDataFromProfileFile,
   persistRecognisedListsBundle,
 } from '../../services/recognisedDataProfileService';
+import {
+  computeRecognisedListSuggestions,
+  type TransactionSuggestSnapshot,
+} from '../../services/recognisedDataSuggestions';
+import { SourceDataCSVService } from '../../services/SourceDataCSVService';
 import { PERSIST_PENDING_APP_STATE_EVENT } from '../../services/profileAppStateSync';
 import { getCachedWorkingCurrencies } from '../../services/EffectiveExchangeRates';
 import { currencyDisplaySymbol, workingCurrencyCodes } from '@/shared/workingCurrencies';
@@ -103,6 +108,9 @@ const RecognisedDataSection: React.FC = () => {
   const [balanceCsvAlignTick, setBalanceCsvAlignTick] = useState(0);
 
   const [newAliasDraft, setNewAliasDraft] = useState<Record<number, string>>({});
+  const [txSuggestSnapshot, setTxSuggestSnapshot] = useState<TransactionSuggestSnapshot | null>(
+    null
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +124,42 @@ const RecognisedDataSection: React.FC = () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void SourceDataCSVService.getSuggestValues().then((data) => {
+      if (cancelled || !data) return;
+      setTxSuggestSnapshot({
+        types: data.types,
+        accounts: data.accounts,
+        typeNetAmounts: data.typeNetAmounts,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const listSuggestions = useMemo(() => {
+    const accountsForDiff = recognisedDataEditMode ? draftAccounts : recognisedAccounts;
+    const entryForDiff = recognisedDataEditMode ? draftEntryTypes : recognisedEntryTypes;
+    const outputForDiff = recognisedDataEditMode ? draftOutputTypes : recognisedOutputTypes;
+    return computeRecognisedListSuggestions(
+      txSuggestSnapshot,
+      accountsForDiff,
+      entryForDiff,
+      outputForDiff
+    );
+  }, [
+    txSuggestSnapshot,
+    recognisedDataEditMode,
+    draftAccounts,
+    draftEntryTypes,
+    draftOutputTypes,
+    recognisedAccounts,
+    recognisedEntryTypes,
+    recognisedOutputTypes,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -425,6 +469,118 @@ const RecognisedDataSection: React.FC = () => {
     }
   };
 
+  /** Accepte une suggestion issue des transactions : passe en édition si besoin, puis ajoute au brouillon. */
+  const handleAcceptSuggestion = (
+    list: 'accounts' | 'entryTypes' | 'outputTypes',
+    rawValue: string
+  ) => {
+    const value = rawValue.trim();
+    if (!value) return;
+    setRecognisedDataSaveMessage(null);
+
+    if (!recognisedDataEditMode) {
+      const nextAccounts =
+        list === 'accounts' && !isRecognisedPrimaryNameTaken(recognisedAccounts, value)
+          ? [
+              ...cloneRecognisedAccountEntries(recognisedAccounts),
+              { name: value, currency: defaultFiatForSettingsAccountName(value) },
+            ]
+          : cloneRecognisedAccountEntries(recognisedAccounts);
+      const entryLo = new Set(recognisedEntryTypes.map((s) => s.trim().toLowerCase()));
+      const outputLo = new Set(recognisedOutputTypes.map((s) => s.trim().toLowerCase()));
+      const nextEntryTypes =
+        list === 'entryTypes' && !entryLo.has(value.toLowerCase())
+          ? [...recognisedEntryTypes, value]
+          : [...recognisedEntryTypes];
+      const nextOutputTypes =
+        list === 'outputTypes' && !outputLo.has(value.toLowerCase())
+          ? [...recognisedOutputTypes, value]
+          : [...recognisedOutputTypes];
+
+      recognisedEditBaselineRef.current = takeRecognisedEditBaseline(
+        recognisedAccounts,
+        recognisedEntryTypes,
+        recognisedOutputTypes,
+        {},
+        '',
+        '',
+        ''
+      );
+      setDraftAccounts(nextAccounts);
+      setDraftEntryTypes(nextEntryTypes);
+      setDraftOutputTypes(nextOutputTypes);
+      setNewAccountValue('');
+      setNewEntryTypeValue('');
+      setNewOutputTypeValue('');
+      setNewAliasDraft({});
+      setRecognisedDataEditMode(true);
+      return;
+    }
+
+    if (list === 'accounts') {
+      if (isRecognisedPrimaryNameTaken(draftAccounts, value)) return;
+      setDraftAccounts((prev) => [
+        ...prev,
+        { name: value, currency: defaultFiatForSettingsAccountName(value) },
+      ]);
+      return;
+    }
+    if (list === 'entryTypes') {
+      setDraftEntryTypes((prev) => {
+        if (prev.some((s) => s.trim().toLowerCase() === value.toLowerCase())) return prev;
+        return [...prev, value];
+      });
+      return;
+    }
+    setDraftOutputTypes((prev) => {
+      if (prev.some((s) => s.trim().toLowerCase() === value.toLowerCase())) return prev;
+      return [...prev, value];
+    });
+  };
+
+  const renderSuggestions = (
+    list: 'accounts' | 'entryTypes' | 'outputTypes',
+    values: string[],
+    tone: 'slate' | 'emerald' | 'red'
+  ) => {
+    if (values.length === 0) return null;
+    const toneClasses =
+      tone === 'emerald'
+        ? 'border-emerald-300 bg-emerald-50/90 text-emerald-950'
+        : tone === 'red'
+          ? 'border-red-300 bg-red-50/90 text-red-950'
+          : 'border-amber-300 bg-amber-50/90 text-amber-950';
+    const btnClasses =
+      tone === 'emerald'
+        ? 'bg-emerald-700 hover:bg-emerald-800'
+        : tone === 'red'
+          ? 'bg-red-700 hover:bg-red-800'
+          : 'bg-amber-700 hover:bg-amber-800';
+    return (
+      <div className={`mb-3 rounded-lg border p-2.5 ${toneClasses}`}>
+        <p className="text-xs font-semibold mb-0.5">{t('settings.recognised.suggestions.title')}</p>
+        <p className="text-[11px] opacity-80 mb-2">{t('settings.recognised.suggestions.description')}</p>
+        <ul className="flex flex-wrap gap-1.5">
+          {values.map((value) => (
+            <li
+              key={`${list}-${value}`}
+              className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-current/20 bg-white/80 pl-2.5 pr-1 py-0.5 text-xs shadow-sm"
+            >
+              <span className="truncate font-medium">{value}</span>
+              <button
+                type="button"
+                onClick={() => handleAcceptSuggestion(list, value)}
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white ${btnClasses}`}
+              >
+                {t('settings.recognised.suggestions.add')}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
   const handleRemoveFromList = (
     list: 'accounts' | 'entryTypes' | 'outputTypes',
     index: number
@@ -532,6 +688,7 @@ const RecognisedDataSection: React.FC = () => {
               <span className="flex h-8 w-1 shrink-0 rounded-full bg-slate-600" aria-hidden />
               {t('settings.recognised.accounts.title')}
             </h3>
+            {renderSuggestions('accounts', listSuggestions.accounts, 'slate')}
             {!recognisedDataEditMode && (
               <div className="text-xs text-slate-600 mb-3 space-y-2">
                 <p>
@@ -768,6 +925,7 @@ const RecognisedDataSection: React.FC = () => {
             <p className="text-xs text-emerald-800/80 mb-3">
               {t('settings.recognised.entryTypes.description')}
             </p>
+            {renderSuggestions('entryTypes', listSuggestions.entryTypes, 'emerald')}
             {recognisedDataEditMode ? (
               <>
                 <div className="flex gap-2 mb-2">
@@ -842,6 +1000,7 @@ const RecognisedDataSection: React.FC = () => {
             <p className="text-xs text-red-800/80 mb-3">
               {t('settings.recognised.outputTypes.description')}
             </p>
+            {renderSuggestions('outputTypes', listSuggestions.outputTypes, 'red')}
             {recognisedDataEditMode ? (
               <>
                 <div className="flex gap-2 mb-2">

@@ -1,3 +1,27 @@
+# Chamaccounts v1.3.1
+
+Import (devises, mapping, soutien) plus fiable, suggestions de listes reconnues, et outils d’édition du tableau des transactions.
+
+### Changements par rapport à v1.3.0
+- **Import transactions** : mapping Montant/Devise et « Amount EUR » corrigés ; détection auto de devise affichée dans le wizard ; signe montant / TYPE d’après les types reconnus
+- **Import soutien** : anomalies dédiées (doublons fichier/lot, projet inconnu)
+- **Données reconnues** : suggestions de types et comptes présents dans les transactions mais absents des listes
+- **Tableau des transactions** : marquer pour suppression les lignes de la dernière importation ; sélection de toutes les lignes visibles
+- **Comptabilité mensuelle** : filtre anomalies aligné sur les indices locaux du mois
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.3.1-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.3.1-mac-x64.dmg` / `.zip` |
+| macOS Apple Silicon | `Chamaccounts-1.3.1-mac-arm64.dmg` / `.zip` |
+| Linux (AppImage) | `Chamaccounts-1.3.1-linux-x64.AppImage` |
+
+[Télécharger v1.3.1](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.3.1)
+
+---
+
 # Chamaccounts v1.3.0
 
 Profils enrichis (AppState / SQLite), réglages profil dédiés, onboarding (checklist + visite), suivi budget annuel / mensuel, et wizards d’import renforcés.

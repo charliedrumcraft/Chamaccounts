@@ -11,3 +11,10 @@ backup/
 *.log
 .env
 .env.*
+
+# Artefacts locaux / one-shots perso (ne pas publier)
+.tmp-*/
+.tmp-*
+scripts/import-excel-transactions-to-profile.mts
+scripts/report-csv2026-vs-db.mts
+scripts/report-excel-import-duplicates.mts

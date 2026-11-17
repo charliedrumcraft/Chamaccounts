@@ -88,7 +88,12 @@ interface ElectronAPI {
   }>;
   transactionsGetSuggestValues?: () => Promise<{
     success: boolean;
-    data?: { titles: string[]; types: string[]; accounts: string[] } | null;
+    data?: {
+      titles: string[];
+      types: string[];
+      accounts: string[];
+      typeNetAmounts?: Record<string, number>;
+    } | null;
     error?: string;
   }>;
   transactionsAggregateAnnualBudgetYear?: (

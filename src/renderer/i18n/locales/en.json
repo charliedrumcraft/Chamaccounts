@@ -213,6 +213,12 @@
         "aligned": "src_account_balance.csv: columns (excluding date) match the active accounts list and the same order.",
         "mismatch": "Mismatch with src_account_balance.csv: the number or logical order of accounts (including legacy label matches) does not match the file. Save the lists to realign the CSV with the active accounts (columns reordered or added, amounts grouped per account)."
       },
+      "suggestions": {
+        "title": "Suggestions from transactions",
+        "description": "Values found in the transactions file but missing from this list. Add them, then save the lists.",
+        "add": "Add",
+        "empty": "No new values detected."
+      },
       "entryTypes": {
         "title": "Income types",
         "description": "Recognised income and credits.",
@@ -293,7 +299,10 @@
     "balanceDateNotFirstOfMonth": "Date must be the 1st of the month (e.g. 01.01.2022), not another day.",
     "balanceDuplicateDate": "Duplicate date (several rows for the same day).",
     "balanceWrongCurrency": "Wrong currency (column “{{column}}”, expected {{currency}}).",
-    "balanceFileMissing": "src_account_balance.csv missing or empty."
+    "balanceFileMissing": "src_account_balance.csv missing or empty.",
+    "supportDuplicateExisting": "Duplicate (row already present in Support_data.csv)",
+    "supportDuplicateInBatch": "Duplicate (row already present in the import batch)",
+    "supportUnknownProject": "Unknown project (“{{projet}}”) — reassign"
   },
   "transactions": {
     "title": "Transactions table",
@@ -381,6 +390,8 @@
       "manualBadgeLine2": "recommended",
       "manualBadgeLine3": "import allowed",
       "currencyAuto": "— Auto (€/£/CHF in AMOUNT)",
+      "currencyAutoDetected": "— Auto ({{currency}})",
+      "currencyAutoDetectedTitle": "Currency detected from amount / row: {{currency}}",
       "currencyAria": "CURRENCY (Mapping wizard)",
       "rawEqualsTitle": "Same value as the raw file cell (no interpretation)",
       "enableMappingFirst": "Turn on the mapping wizard to prepare and import rows into src_transaction_data.csv.",
@@ -410,6 +421,7 @@
       "reasonIncomeNaN": "Income (INCOME) is not numeric",
       "reasonAmountNaN": "AMOUNT is not numeric",
       "reasonCurrencyNaN": "CURRENCY is not numeric",
+      "reasonCurrencyInvalid": "CURRENCY invalid (currency code expected)",
       "reasonEmptyRow": "Empty row",
       "autoCatReviewBtn": "Auto-categorization review",
       "autoCatReviewTitle": "TYPE auto-categorization review",
@@ -482,7 +494,11 @@
       "periodChangeConfirmLeave": "Change period",
       "editCell": "Edit {{header}}",
       "computedCell": "{{header}} (computed)",
-      "computedTitle": "Computed from AMOUNT and CURRENCY (Settings rates)"
+      "computedTitle": "Computed from AMOUNT and CURRENCY (Settings rates)",
+      "deleteLastImport": "Delete rows from last import",
+      "deleteLastImportTitle": "Marks for deletion the rows added by the last successful wizard import",
+      "deleteLastImportNone": "No last import remembered.",
+      "deleteLastImportMarked": "{{count}} row(s) from the last import marked for deletion."
     },
     "refresh": {
       "button": "Refresh src_transaction_data.csv",
@@ -508,6 +524,8 @@
       "deleteColumn": "Delete",
       "deleteRow": "Delete row",
       "undoDelete": "Undo delete",
+      "selectAllVisibleTitle": "Select or deselect all visible rows",
+      "selectAllVisibleAria": "Select or deselect all visible rows for deletion",
       "sortAsc": "Ascending",
       "sortDesc": "Descending",
       "footerRows": "{{count}} rows",

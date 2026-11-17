@@ -11,6 +11,7 @@ const IMPORT_REASON_FR_TO_KEY: Record<string, string> = {
   'Revenu (INCOME) non numérique': 'transactions.importPrep.reasonIncomeNaN',
   'AMOUNT non numérique': 'transactions.importPrep.reasonAmountNaN',
   'CURRENCY non numérique': 'transactions.importPrep.reasonCurrencyNaN',
+  'CURRENCY invalide': 'transactions.importPrep.reasonCurrencyInvalid',
   'Ligne vide': 'transactions.importPrep.reasonEmptyRow',
   // Raisons de validateSupportImportDisplay (Support) — « Date manquante », « Date invalide » et « Libellé (TITLE) manquant » sont partagées ci-dessus.
   'Montant manquant': 'support.importPrep.reasonMissingAmount',

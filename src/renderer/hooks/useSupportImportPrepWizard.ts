@@ -1,6 +1,8 @@
 import { useState, useMemo, useCallback, useEffect, useRef, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { translateImportPrepMessage } from '../i18n/translateImportPrepMessage';
+import { formatAnomalyReasons } from '../i18n/formatAnomalyReason';
+import { detectSupportAnomalies } from '../services/AnomalyDetectionService';
 import {
   buildImportWizardModelFromClipboardText,
   buildImportWizardModelFromFileContent,
@@ -37,6 +39,7 @@ import {
   writeMappingPreferActive,
 } from '../constants/mappingWizardPreferActiveStorage';
 import { TRANSACTION_PROJET_COLUMN } from '@/shared/transactionsImportCore';
+import { ANOMALY_REASON_CODES, type AnomalyReason } from '@/shared/anomalyReasons';
 import { supportImportFile } from '@/shared/dataPaths';
 import { removeImportedRowsFromImportFolder } from '../services/importWizardRemoveFromDiskService';
 
@@ -73,7 +76,7 @@ export function useSupportImportPrepWizard(options: {
   folderReloadToken?: number;
 }) {
   const { onImportLines, projects, existingSignatures = new Set(), folderReloadToken = 0 } = options;
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const [model, setModel] = useState<ImportWizardModel | null>(null);
   const [importWizardLoading, setImportWizardLoading] = useState(false);
@@ -138,6 +141,17 @@ export function useSupportImportPrepWizard(options: {
 
   const outputHeaderKeys = SUPPORT_IMPORT_OUTPUT_FIELDS as unknown as SupportImportOutputField[];
 
+  const knownProjectKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of projects) {
+      const id = (p.id ?? '').trim();
+      const name = (p.name ?? '').trim();
+      if (id) set.add(id);
+      if (name) set.add(name);
+    }
+    return set;
+  }, [projects]);
+
   const mappedPreviewByRowId = useMemo(() => {
     const map = new Map<
       string,
@@ -187,6 +201,39 @@ export function useSupportImportPrepWizard(options: {
     requireProjet,
   ]);
 
+  /** Anomalies structurées (doublon existant / lot, chronologie, montant nul, fréquences, projet). */
+  const anomalyReasonsByRowId = useMemo(() => {
+    const map = new Map<string, AnomalyReason[]>();
+    if (!mappingWizardActive || !model?.rows.length) return map;
+    const stringRows: Record<string, string>[] = [];
+    const rowIdAtIndex: string[] = [];
+    for (const row of model.rows) {
+      const display = mappedPreviewByRowId.get(row.id)?.display ?? {};
+      const rec: Record<string, string> = {};
+      for (const k of outputHeaderKeys) {
+        rec[k] = display[k] ?? '';
+      }
+      stringRows.push(rec);
+      rowIdAtIndex.push(row.id);
+    }
+    const { rowAnomalies } = detectSupportAnomalies(outputHeaderKeys as unknown as string[], stringRows, {
+      existingSignatures,
+      knownProjectKeys,
+    });
+    for (const a of rowAnomalies) {
+      const id = rowIdAtIndex[a.rowIndex - 1];
+      if (id) map.set(id, [...a.reasons]);
+    }
+    return map;
+  }, [
+    mappingWizardActive,
+    model,
+    mappedPreviewByRowId,
+    outputHeaderKeys,
+    existingSignatures,
+    knownProjectKeys,
+  ]);
+
   const rowStatusByRowId = useMemo(() => {
     const map = new Map<string, { messages: string[]; showDanger: boolean; isDuplicate: boolean }>();
     if (!model?.rows.length) return map;
@@ -198,15 +245,37 @@ export function useSupportImportPrepWizard(options: {
       return map;
     }
 
-    const dupMsg = t('support.importPrep.duplicateRow');
     for (const row of model.rows) {
       const preview = mappedPreviewByRowId.get(row.id);
       const display = preview?.display ?? {};
-      const msgs = validateSupportImportDisplay(display, { projects, requireProjet }).map((m) =>
-        translateImportPrepMessage(m, t)
-      );
-      const isDuplicate = preview?.duplicateExisting ?? false;
-      if (isDuplicate) msgs.push(dupMsg);
+      const validationRaw = validateSupportImportDisplay(display, { projects, requireProjet });
+      const msgs = validationRaw.map((m) => translateImportPrepMessage(m, t));
+      const reasons = anomalyReasonsByRowId.get(row.id) ?? [];
+      const filteredReasons = reasons.filter((r) => {
+        if (
+          r.code === ANOMALY_REASON_CODES.ZERO_AMOUNT &&
+          validationRaw.some((m) => /montant/i.test(m))
+        ) {
+          return false;
+        }
+        if (
+          r.code === ANOMALY_REASON_CODES.SUPPORT_UNKNOWN_PROJECT &&
+          validationRaw.some((m) => /projet/i.test(m))
+        ) {
+          return false;
+        }
+        return true;
+      });
+      if (filteredReasons.length > 0) {
+        msgs.push(formatAnomalyReasons(filteredReasons, t));
+      }
+      const isDuplicate =
+        (preview?.duplicateExisting ?? false) ||
+        reasons.some(
+          (r) =>
+            r.code === ANOMALY_REASON_CODES.SUPPORT_DUPLICATE_EXISTING ||
+            r.code === ANOMALY_REASON_CODES.SUPPORT_DUPLICATE_IN_BATCH
+        );
       map.set(row.id, {
         messages: msgs,
         showDanger: msgs.length > 0,
@@ -214,17 +283,26 @@ export function useSupportImportPrepWizard(options: {
       });
     }
     return map;
-  }, [model, mappingWizardActive, mappedPreviewByRowId, projects, requireProjet, t]);
+  }, [
+    model,
+    mappingWizardActive,
+    mappedPreviewByRowId,
+    anomalyReasonsByRowId,
+    projects,
+    requireProjet,
+    t,
+    i18n.language,
+  ]);
 
-  /** Alertes hors simple doublon (un doublon seul n’est pas une « anomalie » de validation). */
+  /**
+   * Mode complet : toute alerte (validation, anomalie structurée, doublon existant ou dans le lot)
+   * compte pour « Ignorer les anomalies ».
+   */
   const anomalousRowIds = useMemo(() => {
     if (!mappingWizardActive || !model?.rows.length) return [] as string[];
     const out: string[] = [];
     for (const row of model.rows) {
-      const st = rowStatusByRowId.get(row.id);
-      if (!st?.showDanger) continue;
-      if (st.isDuplicate && st.messages.length === 1) continue;
-      out.push(row.id);
+      if (rowStatusByRowId.get(row.id)?.showDanger) out.push(row.id);
     }
     return out;
   }, [mappingWizardActive, model?.rows, rowStatusByRowId]);

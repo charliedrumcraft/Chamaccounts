@@ -886,21 +886,24 @@ const MonthlyAccounting: React.FC = () => {
     data?.rows,
   ]);
 
-  /** Anomalies pour le mois courant (clé = index dans data.rows, comme le rapport CSV). */
+  /**
+   * Anomalies pour le mois courant (clé = index local dans data.rows / rowsForMonth).
+   * Sans `rowIndicesInSource` : sinon rowIndex = Index DB global et la colonne / le filtre
+   * « anomalies seulement » ne matchent plus les lignes affichées.
+   * Le rapport CSV (handleDetectAnomalies) garde les indices globaux volontairement.
+   */
   const monthlyAnomalyByDataRowIndex = useMemo(() => {
     if (!data?.headers?.length || rowsForMonth.length === 0) return new Map<number, string>();
-    const monthData: SourceDataResult = {
+    const { anomalies } = detectAnomalies({
       headers: data.headers,
       rows: rowsForMonth,
-      rowIndicesInSource: rowsForMonthIndicesInSource,
-    };
-    const { anomalies } = detectAnomalies(monthData);
+    });
     const map = new Map<number, string>();
     for (const a of anomalies) {
       map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
     }
     return map;
-  }, [data?.headers, rowsForMonth, rowsForMonthIndicesInSource, t, i18n.language]);
+  }, [data?.headers, rowsForMonth, t, i18n.language]);
 
   useEffect(() => {
     if (!editMode) setEditShowAnomaliesOnly(false);

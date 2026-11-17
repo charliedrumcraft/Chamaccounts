@@ -213,6 +213,12 @@
         "aligned": "src_account_balance.csv : colonnes (hors date) identiques à la liste des comptes actifs et au même ordre.",
         "mismatch": "Écart avec src_account_balance.csv : le nombre ou l’ordre logique des comptes (y compris correspondances d’anciens libellés) ne correspond pas au fichier. Enregistrez les listes pour réaligner le CSV sur les comptes actifs (colonnes réordonnées ou ajoutées, montants regroupés par compte)."
       },
+      "suggestions": {
+        "title": "Suggestions depuis les transactions",
+        "description": "Valeurs présentes dans le fichier transactions mais absentes de cette liste. Ajoutez-les puis enregistrez les listes.",
+        "add": "Ajouter",
+        "empty": "Aucune nouvelle valeur détectée."
+      },
       "entryTypes": {
         "title": "Types d’entrées",
         "description": "Revenus et crédits reconnus.",
@@ -293,7 +299,10 @@
     "balanceDateNotFirstOfMonth": "La date doit être le 1er jour du mois (ex. 01.01.2022), pas un autre jour du mois.",
     "balanceDuplicateDate": "Doublon de date (plusieurs lignes pour le même jour).",
     "balanceWrongCurrency": "Devise incorrecte (colonne « {{column}} », attendu {{currency}}).",
-    "balanceFileMissing": "src_account_balance.csv introuvable ou vide."
+    "balanceFileMissing": "src_account_balance.csv introuvable ou vide.",
+    "supportDuplicateExisting": "Doublon (ligne déjà présente dans Support_data.csv)",
+    "supportDuplicateInBatch": "Doublon (ligne déjà présente dans le lot d’import)",
+    "supportUnknownProject": "Projet inconnu (« {{projet}} ») — réassigner"
   },
   "transactions": {
     "title": "Tableau des transactions",
@@ -381,6 +390,8 @@
       "manualBadgeLine2": "recommandée",
       "manualBadgeLine3": "import possible",
       "currencyAuto": "— Auto (€/£/CHF dans AMOUNT)",
+      "currencyAutoDetected": "— Auto ({{currency}})",
+      "currencyAutoDetectedTitle": "Devise détectée depuis le montant / la ligne : {{currency}}",
       "currencyAria": "CURRENCY (Mapping wizard)",
       "rawEqualsTitle": "Valeur identique à la cellule du fichier brut (sans interprétation)",
       "enableMappingFirst": "Activez le mapping wizard pour préparer et importer les lignes vers src_transaction_data.csv.",
@@ -410,6 +421,7 @@
       "reasonIncomeNaN": "Revenu (INCOME) non numérique",
       "reasonAmountNaN": "AMOUNT non numérique",
       "reasonCurrencyNaN": "CURRENCY non numérique",
+      "reasonCurrencyInvalid": "CURRENCY invalide (code devise attendu)",
       "reasonEmptyRow": "Ligne vide",
       "autoCatReviewBtn": "Revue auto-catégorisation",
       "autoCatReviewTitle": "Revue des auto-catégorisations TYPE",
@@ -482,7 +494,11 @@
       "periodChangeConfirmLeave": "Changer de période",
       "editCell": "Éditer {{header}}",
       "computedCell": "{{header}} (calculé)",
-      "computedTitle": "Calculé à partir de AMOUNT et CURRENCY (taux Settings)"
+      "computedTitle": "Calculé à partir de AMOUNT et CURRENCY (taux Settings)",
+      "deleteLastImport": "Supprimer les lignes de la dernière importation",
+      "deleteLastImportTitle": "Marque pour suppression les lignes ajoutées lors de la dernière importation réussie via le wizard",
+      "deleteLastImportNone": "Aucune dernière importation mémorisée.",
+      "deleteLastImportMarked": "{{count}} ligne(s) de la dernière importation marquées pour suppression."
     },
     "refresh": {
       "button": "Rafraîchir src_transaction_data.csv",
@@ -508,6 +524,8 @@
       "deleteColumn": "Supprimer",
       "deleteRow": "Supprimer la ligne",
       "undoDelete": "Annuler suppression",
+      "selectAllVisibleTitle": "Sélectionner ou désélectionner toutes les lignes visibles",
+      "selectAllVisibleAria": "Sélectionner ou désélectionner toutes les lignes visibles pour suppression",
       "sortAsc": "Croissant",
       "sortDesc": "Décroissant",
       "footerRows": "{{count}} lignes",

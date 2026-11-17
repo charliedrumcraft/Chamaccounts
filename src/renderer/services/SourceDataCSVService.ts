@@ -254,13 +254,25 @@ export class SourceDataCSVService {
     titles: string[];
     types: string[];
     accounts: string[];
+    typeNetAmounts: Record<string, number>;
   } | null> {
     try {
       const api = getTxApi();
       if (!api?.transactionsGetSuggestValues) return null;
       const result = await api.transactionsGetSuggestValues();
       if (!result.success || !result.data) return null;
-      return result.data;
+      const data = result.data as {
+        titles?: string[];
+        types?: string[];
+        accounts?: string[];
+        typeNetAmounts?: Record<string, number>;
+      };
+      return {
+        titles: data.titles ?? [],
+        types: data.types ?? [],
+        accounts: data.accounts ?? [],
+        typeNetAmounts: data.typeNetAmounts ?? {},
+      };
     } catch {
       return null;
     }

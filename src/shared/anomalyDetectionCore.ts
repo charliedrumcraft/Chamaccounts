@@ -19,6 +19,10 @@ import {
   type AnomalyReason,
   type AnomalyReasonFormatter,
 } from './anomalyReasons';
+import {
+  BUILTIN_EXPENSE_TYPES,
+  BUILTIN_INCOME_TYPES,
+} from './transactionsImportMappingPolicy';
 
 export type { AnomalyReason } from './anomalyReasons';
 
@@ -70,14 +74,8 @@ export type DetectAnomaliesFormatOptions = {
 const USUALLY_EMPTY_THRESHOLD = 0.9;
 const USUALLY_FILLED_THRESHOLD = 0.1;
 
-const KNOWN_EXPENSE_TYPES = new Set([
-  'Rent', 'Council', 'Comm', 'Electricity', 'Water', 'SLCdebit', 'Transport', 'Fuel', 'Car',
-  'Food', 'Restaurant', 'Shopping', 'Leisure', 'Holiday', 'LST', 'Misc', 'Health', 'Donation',
-]);
-
-const KNOWN_INCOME_TYPES = new Set([
-  'Other Inc', 'Support', 'Refund', 'Benefit', 'SLCcredit',
-]);
+const KNOWN_EXPENSE_TYPES = new Set<string>(BUILTIN_EXPENSE_TYPES);
+const KNOWN_INCOME_TYPES = new Set<string>(BUILTIN_INCOME_TYPES);
 
 function isExcludedFromAnomalyDetection(row: Record<string, string>): boolean {
   const v = (row[EXCLUDE_ANOMALY_COLUMN] ?? '').trim().toLowerCase();
@@ -225,7 +223,9 @@ export function detectAnomalies(
   const dateTimes = dateHeader ? rowsToAnalyze.map((r) => parseDateToTime(r[dateHeader] ?? '')) : [];
   const titleHeader = findColumn(headers, /^title$/i);
   const amountHeader = findColumn(headers, /^amount$/i);
-  const amountGbpHeader = findColumn(headers, /^amount\s*gbp$/i);
+  // Indicateur AMOUNT GBP historique ou AMOUNT {primary} (EUR, CHF…).
+  const amountGbpHeader =
+    findColumn(headers, /^amount\s+[a-z]{3}$/i) ?? findColumn(headers, /^amount\s*gbp$/i);
   const seenSignatures = new Set<string>();
 
   const parseAmount = (value: string): number => {

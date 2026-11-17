@@ -22,7 +22,7 @@ import {
   type PrepTableColDef,
 } from '../services/mappingWizardService';
 import { detectAnomalies, EXCLUDE_ANOMALY_COLUMN } from '../services/AnomalyDetectionService';
-import type { ValidRow } from '@/shared/transactionsImportCore';
+import { rowSignature, type ValidRow } from '@/shared/transactionsImportCore';
 import {
   buildAutoCategorisationModel,
   labeledTitlesFromSourceRows,
@@ -57,7 +57,7 @@ export type { ImportWizardResultField, PrepTableColDef };
 export function useTransactionsImportPrepWizard(options: {
   existingTransactionSignatures: Set<string>;
   accountAliasLookup?: ReadonlyMap<string, string>;
-  onAfterSuccessfulAppend?: (info?: { count: number }) => void;
+  onAfterSuccessfulAppend?: (info?: { count: number; signatures?: string[] }) => void;
   /** Incrémenter depuis la page (ex. après vidage du dossier Import) pour forcer un rechargement du wizard. */
   folderReloadToken?: number;
   /**
@@ -758,7 +758,10 @@ export function useTransactionsImportPrepWizard(options: {
                 })
               );
               const appended = result.appendedCount ?? toAppend.length;
-              onAfterSuccessfulAppend?.({ count: appended });
+              const signatures = toAppend.map((r) =>
+                rowSignature(r, { accountAliasLookup })
+              );
+              onAfterSuccessfulAppend?.({ count: appended, signatures });
               setImportWizardReloadKey((k) => k + 1);
               return;
             }
@@ -779,7 +782,10 @@ export function useTransactionsImportPrepWizard(options: {
         }
         {
           const appended = result.appendedCount ?? toAppend.length;
-          onAfterSuccessfulAppend?.({ count: appended });
+          const signatures = toAppend.map((r) =>
+            rowSignature(r, { accountAliasLookup })
+          );
+          onAfterSuccessfulAppend?.({ count: appended, signatures });
           setImportWizardReloadKey((k) => k + 1);
           setImportWizardMessage(
             t('transactions.importPrep.appended', {
@@ -801,6 +807,7 @@ export function useTransactionsImportPrepWizard(options: {
     onAfterSuccessfulAppend,
     removeImportedFromImportFolder,
     effectiveDefaultCurrency,
+    accountAliasLookup,
     t,
   ]);
 

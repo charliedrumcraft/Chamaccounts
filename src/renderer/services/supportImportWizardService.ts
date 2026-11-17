@@ -23,10 +23,22 @@ import {
 } from '@/shared/transactionsImportCore';
 import { parseAmountNumericForImport } from '@/shared/transactionsImportMappingPolicy';
 import {
+  normalizeSupportImportCurrency,
+  stripCurrencyDecoratorsFromAmount,
+  supportImportRowSignature,
+  buildSupportExistingSignatures,
+} from '@/shared/supportAnomalyDetection';
+import {
   resolveProjectIdFromRaw,
   type ProjectEntry,
 } from '../constants/projectsStorage';
 import { SUPPORT_IMPORT_DIR, supportImportFile } from '@/shared/dataPaths';
+
+export {
+  normalizeSupportImportCurrency,
+  supportImportRowSignature,
+  buildSupportExistingSignatures,
+};
 
 export {
   buildImportWizardModelFromClipboardText,
@@ -69,55 +81,6 @@ export type BuildSupportMappedDisplayOptions = {
   projects?: ProjectEntry[];
 };
 
-/**
- * Signature de doublon Soutien : DATE|TITLE|AMOUNT|CURRENCY (montants et dates normalisés).
- * Le projet est volontairement exclu (comme TYPE côté transactions).
- */
-export function supportImportRowSignature(fields: {
-  date: string;
-  title: string;
-  amount: string;
-  currency: string;
-}): string {
-  const dateRaw = (fields.date ?? '').trim();
-  const d = formatDateDDMMYY(dateRaw) || dateRaw;
-  const t = (fields.title ?? '').trim();
-  const amtClean = stripCurrencyDecoratorsFromAmount(fields.amount ?? '');
-  const amtNorm = normalizeAmount(amtClean);
-  const amt = amtNorm !== null ? amtNorm : amtClean.trim();
-  const cur =
-    normalizeSupportImportCurrency(fields.currency ?? '') ??
-    (fields.currency ?? '').trim().toUpperCase();
-  return `${d}|${t}|${amt}|${cur}`;
-}
-
-/** Construit l’ensemble des signatures déjà présentes dans Support_data / lignes Support. */
-export function buildSupportExistingSignatures(
-  rows: Record<string, string>[],
-  headers: {
-    date: string | null | undefined;
-    title: string | null | undefined;
-    amount: string | null | undefined;
-    currency?: string | null | undefined;
-  }
-): Set<string> {
-  const set = new Set<string>();
-  const dateH = headers.date ?? null;
-  const titleH = headers.title ?? null;
-  const amountH = headers.amount ?? null;
-  const currencyH = headers.currency ?? null;
-  if (!dateH || !titleH || !amountH) return set;
-  for (const row of rows) {
-    const date = row[dateH] ?? '';
-    const title = row[titleH] ?? '';
-    const amount = row[amountH] ?? '';
-    const currency = currencyH ? (row[currencyH] ?? '') : '';
-    if (!date.trim() && !title.trim() && !amount.trim()) continue;
-    set.add(supportImportRowSignature({ date, title, amount, currency }));
-  }
-  return set;
-}
-
 /** Premières valeurs non vides d’une colonne (aperçu à côté du menu de mapping). */
 export function supportWizardColumnSamplePreview(
   model: ImportWizardModel,
@@ -146,32 +109,9 @@ export function supportWizardColumnSamplePreview(
   return out;
 }
 
-export function normalizeSupportImportCurrency(raw: string): string | null {
-  const s = (raw ?? '').trim();
-  if (!s) return null;
-  const upper = s.toUpperCase();
-  if (upper === 'EUR' || upper === 'EURO' || upper === '€' || /€/.test(s) || /\bEUR\b/.test(upper)) {
-    return 'EUR';
-  }
-  if (upper === 'GBP' || upper === '£' || /£/.test(s) || /\bGBP\b/.test(upper)) {
-    return 'GBP';
-  }
-  if (upper === 'CHF' || /\bCHF\b/.test(upper)) {
-    return 'CHF';
-  }
-  return null;
-}
-
 /** Extrait une devise éventuelle collée dans le montant (ex. « 120 € »). */
 function currencyHintFromAmount(amountRaw: string): string | null {
   return normalizeSupportImportCurrency(amountRaw);
-}
-
-function stripCurrencyDecoratorsFromAmount(amountRaw: string): string {
-  return amountRaw
-    .replace(/€|£|\bEUR\b|\bGBP\b|\bCHF\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 /** Charge le modèle wizard depuis les CSV de SupportData/Import. */

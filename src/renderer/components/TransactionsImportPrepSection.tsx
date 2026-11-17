@@ -750,7 +750,13 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                       </div>
                                     )}
                                     {def.kind === 'wizard' &&
-                                      (def.field === 'CURRENCY' ? (
+                                      (def.field === 'CURRENCY' ? (() => {
+                                        const pipelineCurrency = (
+                                          'valid' in p.processed
+                                            ? p.processed.valid.CURRENCY
+                                            : p.valueMap.CURRENCY
+                                        )?.trim() ?? '';
+                                        return (
                                         <select
                                           value={importWizardManualCellValues[p.row.id]?.CURRENCY ?? ''}
                                           {...prepNavDataProps(def.key, rowIndex)}
@@ -762,13 +768,27 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                           }
                                           className="w-full min-w-0 max-w-full rounded border border-indigo-200/90 bg-indigo-50/90 px-0.5 py-0.5 text-[11px] text-indigo-950"
                                           aria-label={t('transactions.importPrep.currencyAria')}
+                                          title={
+                                            pipelineCurrency
+                                              ? t('transactions.importPrep.currencyAutoDetectedTitle', {
+                                                  currency: pipelineCurrency,
+                                                })
+                                              : undefined
+                                          }
                                         >
-                                          <option value="">{t('transactions.importPrep.currencyAuto')}</option>
+                                          <option value="">
+                                            {pipelineCurrency
+                                              ? t('transactions.importPrep.currencyAutoDetected', {
+                                                  currency: pipelineCurrency,
+                                                })
+                                              : t('transactions.importPrep.currencyAuto')}
+                                          </option>
                                           <option value="EUR">EUR</option>
                                           <option value="GBP">GBP</option>
                                           <option value="CHF">CHF</option>
                                         </select>
-                                      ) : def.field === 'TYPE' ? (() => {
+                                        );
+                                      })() : def.field === 'TYPE' ? (() => {
                                         const manualType = importWizardManualCellValues[p.row.id]?.TYPE;
                                         const pipelineType =
                                           'valid' in p.processed

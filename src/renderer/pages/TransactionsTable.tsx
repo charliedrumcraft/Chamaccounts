@@ -35,7 +35,12 @@ import TransactionsImportPrepSection from '../components/TransactionsImportPrepS
 import ImportWizardPastePanel from '../components/ImportWizardPastePanel';
 import { useTransactionsImportPrepWizard } from '../hooks/useTransactionsImportPrepWizard';
 import { getUiMessageTone, uiMessageClass } from '../utils/uiMessageTone';
-import { buildAccountAliasLookup } from '@/shared/transactionsImportCore';
+import {
+  buildAccountAliasLookup,
+  emptyRow,
+  rowSignature,
+  type ValidRow,
+} from '@/shared/transactionsImportCore';
 import { loadRecognisedAccountsFromStorage } from '../constants/recognisedAccountsStorage';
 import { loadAllRecognisedTypesFromStorage } from '../constants/recognisedTypesStorage';
 import { useProjectsFromStorage } from '../hooks/useProjectsFromStorage';
@@ -65,6 +70,51 @@ const TX_VIEW_ALL_KEY = '__all__';
 /** Persistance de la période affichée (mois `YYYY-MM` ou {@link TX_VIEW_ALL_KEY}). */
 const TX_VIEW_PERIOD_STORAGE_KEY = 'transactions-table-view-period';
 const TX_TABLE_COL_WIDTHS_KEY = 'transactions-table-col-widths';
+/** Signatures des lignes de la dernière importation wizard (pour suppression rapide en édition). */
+const TX_LAST_IMPORT_SIGNATURES_KEY = 'transactions-last-import-signatures';
+
+function readLastImportSignatures(): string[] {
+  try {
+    const raw = localStorage.getItem(TX_LAST_IMPORT_SIGNATURES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+  } catch {
+    return [];
+  }
+}
+
+function writeLastImportSignatures(signatures: string[]): void {
+  try {
+    if (signatures.length === 0) localStorage.removeItem(TX_LAST_IMPORT_SIGNATURES_KEY);
+    else localStorage.setItem(TX_LAST_IMPORT_SIGNATURES_KEY, JSON.stringify(signatures));
+  } catch {
+    /* ignore */
+  }
+}
+
+function sourceRowToValidRowForSignature(
+  row: Record<string, string>,
+  headers: string[]
+): ValidRow {
+  const find = (re: RegExp): string => {
+    const h = headers.find((x) => re.test(x));
+    return h ? (row[h] ?? '') : '';
+  };
+  const amountGbpHeader =
+    headers.find((h) => isAmountIndicatorHeader(h)) ??
+    headers.find((h) => /^amount\s+gbp$/i.test(h));
+  const vr = emptyRow();
+  vr.DATE = find(/^date$/i);
+  vr.TITLE = find(/^title$/i);
+  vr.AMOUNT = find(/^amount$/i);
+  vr.CURRENCY = find(/^currency$/i);
+  vr.ACCOUNT = find(/^account$/i);
+  vr['AMOUNT GBP'] = amountGbpHeader ? (row[amountGbpHeader] ?? '') : '';
+  vr.TYPE = find(/^type$/i);
+  return vr;
+}
 
 function readModuleExpandedFromStorage(key: string): boolean {
   try {
@@ -175,6 +225,26 @@ function isTransactionsEditSessionDirty(
   if (!data || !baseline) return false;
   if (rowsToDelete.size > 0) return true;
   return !isSourceDataResultEqual(data, baseline);
+}
+
+/**
+ * Anomalies indexées sur la position locale dans `data.rows` (0-based).
+ * On omet `rowIndicesInSource` : en vue mois ce champ pointe vers l’index global DB,
+ * ce qui cassait la colonne Anomalie et le filtre « anomalies seulement ».
+ */
+function detectAnomaliesByLocalRowIndex(
+  data: SourceDataResult,
+  translate: Parameters<typeof formatAnomalyReasons>[1]
+): Map<number, string> {
+  const { anomalies } = detectAnomalies({
+    headers: data.headers,
+    rows: data.rows,
+  });
+  const map = new Map<number, string>();
+  for (const a of anomalies) {
+    map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, translate));
+  }
+  return map;
 }
 
 const TransactionsTable: React.FC = () => {
@@ -345,7 +415,10 @@ const TransactionsTable: React.FC = () => {
   );
 
   const reloadAfterImport = useCallback(
-    (info?: { count: number }) => {
+    (info?: { count: number; signatures?: string[] }) => {
+      if (info?.signatures && info.signatures.length > 0) {
+        writeLastImportSignatures(info.signatures);
+      }
       void loadViewScope(selectedMonth);
       void refreshSlimAnomalies(false);
       void refreshRowSignatures();
@@ -468,16 +541,11 @@ const TransactionsTable: React.FC = () => {
 
   /**
    * Colonne Anomalie : payload slim IPC hors édition (remap Index global → index local) ;
-   * en édition, détection locale sur le brouillon de la période affichée.
+   * en édition, détection locale sur le brouillon de la période affichée (indices locaux).
    */
   const transactionAnomalyByDataRowIndex = useMemo(() => {
     if (editMode && data?.rows) {
-      const { anomalies } = detectAnomalies(data);
-      const map = new Map<number, string>();
-      for (const a of anomalies) {
-        map.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
-      }
-      return map;
+      return detectAnomaliesByLocalRowIndex(data, t);
     }
     if (!data?.rows?.length) return new Map<number, string>();
     const map = new Map<number, string>();
@@ -518,12 +586,7 @@ const TransactionsTable: React.FC = () => {
       return;
     }
     setEditFilterRowSnapshot(d.rows.map((row) => ({ ...row })));
-    const { anomalies } = detectAnomalies(d);
-    const anomalyMap = new Map<number, string>();
-    for (const a of anomalies) {
-      anomalyMap.set(a.rowIndex - 1, formatAnomalyReasons(a.reasons, t));
-    }
-    setEditFilterAnomalySnapshot(anomalyMap);
+    setEditFilterAnomalySnapshot(detectAnomaliesByLocalRowIndex(d, t));
     const dc = d.headers.find((h) => /date/i.test(h)) ?? null;
     if (dc) {
       const dates: Date[] = [];
@@ -1107,6 +1170,62 @@ const TransactionsTable: React.FC = () => {
     });
   }, []);
 
+  const visibleDataRowIndices = useMemo(() => {
+    const indices: number[] = [];
+    for (const row of displayRows) {
+      const idx = dataRowIndexByRef.get(row);
+      if (idx != null && idx >= 0) indices.push(idx);
+    }
+    return indices;
+  }, [displayRows, dataRowIndexByRef]);
+
+  const allVisibleMarkedForDelete =
+    visibleDataRowIndices.length > 0 &&
+    visibleDataRowIndices.every((i) => rowsToDelete.has(i));
+
+  const handleToggleDeleteVisibleRows = useCallback(() => {
+    setRowsToDelete((prev) => {
+      const next = new Set(prev);
+      const mark = !visibleDataRowIndices.every((i) => next.has(i));
+      for (const i of visibleDataRowIndices) {
+        if (mark) next.add(i);
+        else next.delete(i);
+      }
+      return next;
+    });
+  }, [visibleDataRowIndices]);
+
+  const handleMarkLastImportForDelete = useCallback(() => {
+    if (!data?.rows?.length) {
+      setSaveMessage(t('transactions.edit.deleteLastImportNone'));
+      return;
+    }
+    const signatures = new Set(readLastImportSignatures());
+    if (signatures.size === 0) {
+      setSaveMessage(t('transactions.edit.deleteLastImportNone'));
+      return;
+    }
+    const matchIndices: number[] = [];
+    data.rows.forEach((row, i) => {
+      const sig = rowSignature(sourceRowToValidRowForSignature(row, data.headers), {
+        accountAliasLookup,
+      });
+      if (signatures.has(sig)) matchIndices.push(i);
+    });
+    if (matchIndices.length === 0) {
+      setSaveMessage(t('transactions.edit.deleteLastImportNone'));
+      return;
+    }
+    setRowsToDelete((prev) => {
+      const next = new Set(prev);
+      for (const i of matchIndices) next.add(i);
+      return next;
+    });
+    setSaveMessage(
+      t('transactions.edit.deleteLastImportMarked', { count: matchIndices.length })
+    );
+  }, [data, accountAliasLookup, t]);
+
   const handleToggleExcludeAnomaly = useCallback((dataRowIndex: number) => {
     setData((prev) => {
       if (!prev) return prev;
@@ -1444,6 +1563,17 @@ const TransactionsTable: React.FC = () => {
                             {saveLoading ? t('common.saving') : t('transactions.edit.save')}
                           </button>
                         )}
+                        {editMode && (
+                          <button
+                            type="button"
+                            onClick={handleMarkLastImportForDelete}
+                            disabled={!data?.rows?.length}
+                            title={t('transactions.edit.deleteLastImportTitle')}
+                            className="rounded border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                          >
+                            {t('transactions.edit.deleteLastImport')}
+                          </button>
+                        )}
                       </div>
                       {reorderChronoMessage && (
                         <p
@@ -1714,7 +1844,18 @@ const TransactionsTable: React.FC = () => {
                         onResizeStart={handleColResizeStart}
                         className="text-left font-semibold text-gray-700 px-3 py-2 whitespace-nowrap bg-gray-100 overflow-hidden"
                       >
-                        {t('transactions.table.deleteColumn')}
+                        <span className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={allVisibleMarkedForDelete}
+                            onChange={handleToggleDeleteVisibleRows}
+                            disabled={visibleDataRowIndices.length === 0}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            title={t('transactions.table.selectAllVisibleTitle')}
+                            aria-label={t('transactions.table.selectAllVisibleAria')}
+                          />
+                          {t('transactions.table.deleteColumn')}
+                        </span>
                       </ResizableTableHeadCell>
                     )}
                   </tr>

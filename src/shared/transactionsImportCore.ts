@@ -64,7 +64,9 @@ const HEADER_MAP: Record<string, string> = {
   credit: 'INCOME',
   crédit: 'INCOME',
   'amount gbp': 'AMOUNT GBP',
-  montant: 'AMOUNT GBP',
+  /** Montant source (pas l’indicateur AMOUNT GBP) — la devise vient de Devise / CURRENCY / implicite. */
+  montant: 'AMOUNT',
+  devise: 'CURRENCY',
   type: 'TYPE',
   category: 'TYPE',
   categorie: 'TYPE',
@@ -97,7 +99,12 @@ export function mapToStandardHeader(norm: string): string | null {
   if (/partner\s*name|beneficiary|counterparty|nom\s*du\s*partenaire/i.test(lower)) return 'TITLE';
   if (/account\s*name|nom\s*du\s*compte/i.test(lower)) return 'ACCOUNT';
   if (/^amount\s*\(\s*[a-z]{3}\s*\)$/i.test(lower)) return 'AMOUNT';
-  if (/^amount\s+[a-z]{3}$/i.test(lower)) return 'AMOUNT GBP';
+  if (/^montant\s*\(\s*[a-z]{3}\s*\)$/i.test(lower)) return 'AMOUNT';
+  // Indicateur historique exact du fichier traité uniquement.
+  if (/^amount\s+gbp$/i.test(lower)) return 'AMOUNT GBP';
+  // « Amount EUR » / « Montant CHF » = montant source dans cette devise (pas l’indicateur).
+  if (/^amount\s+[a-z]{3}$/i.test(lower)) return 'AMOUNT';
+  if (/^montant\s+[a-z]{3}$/i.test(lower)) return 'AMOUNT';
   if (/original\s*currency/i.test(lower)) return 'CURRENCY';
   if ((OUTPUT_HEADERS as readonly string[]).includes(norm) || IMPORT_HEADERS.includes(norm)) return norm;
   return null;
@@ -132,15 +139,19 @@ function columnLooksLikeBankOperationType(lines: string[][], col: number): boole
 /**
  * Devise implicite depuis un en-tête de montant bancaire, ex. « Amount (EUR) » → EUR.
  * Sert de repli quand la colonne CURRENCY est vide (exports N26, etc.).
+ *
+ * Ne jamais déduire une devise depuis la colonne indicateur « AMOUNT GBP » du fichier traité
+ * (sinon defaultCurrency=GBP écrase un taux FX / une vraie devise de ligne).
  */
 export function extractImpliedCurrencyFromHeaderLabel(headerLabel: string): string | null {
   const lower = normalizeHeader(headerLabel).toLowerCase().trim();
-  const paren = lower.match(/^amount\s*\(\s*([a-z]{3})\s*\)$/i);
+  // Indicateur standard du CSV traité — pas une devise de transaction.
+  if (/^amount\s+gbp$/i.test(lower)) return null;
+  const paren = lower.match(/^(?:amount|montant)\s*\(\s*([a-z]{3})\s*\)$/i);
   if (paren) return paren[1]!.toUpperCase();
-  const spaced = lower.match(/^amount\s+([a-z]{3})$/i);
+  // « Amount EUR » / « Montant CHF » (sans parenthèses) = devise du montant source.
+  const spaced = lower.match(/^(?:amount|montant)\s+([a-z]{3})$/i);
   if (spaced) return spaced[1]!.toUpperCase();
-  const fr = lower.match(/^montant\s*\(\s*([a-z]{3})\s*\)$/i);
-  if (fr) return fr[1]!.toUpperCase();
   return null;
 }
 
@@ -319,8 +330,8 @@ function isDateLikeCell(v: string): boolean {
 const CURRENCY_CODE_RE =
   /^(EUR|GBP|CHF|USD|CAD|AUD|JPY|SEK|NOK|DKK|PLN|CZK|HUF|RON|BGN|TRY|MXN|BRL|INR|CNY|HKD|SGD|NZD|ZAR|AED|ILS)$/i;
 
-function isCurrencyCodeCell(v: string): boolean {
-  return CURRENCY_CODE_RE.test(v.trim());
+export function isCurrencyCodeCell(v: string): boolean {
+  return CURRENCY_CODE_RE.test((v ?? '').trim());
 }
 
 /** Montant numérique utilisable (pas une date, pas un code devise). */
@@ -751,13 +762,15 @@ export function processImportRow(
   else if (amountNorm !== null) row.AMOUNT = amountNorm;
 
   const curRaw = (row.CURRENCY ?? '').trim();
-  const curUp = curRaw.toUpperCase();
-  if (curUp === 'EUR' || curUp === 'GBP' || curUp === 'CHF') {
-    row.CURRENCY = curUp;
-  } else {
-    const currencyNorm = normalizeAmount(row.CURRENCY);
-    if (row.CURRENCY.trim() && currencyNorm === null) reasons.push('CURRENCY non numérique');
-    else if (currencyNorm !== null) row.CURRENCY = currencyNorm;
+  if (curRaw) {
+    if (isCurrencyCodeCell(curRaw)) {
+      row.CURRENCY = curRaw.toUpperCase();
+    } else if (parseAmountNumericForImport(curRaw) !== null) {
+      // Ancien format « EUR/GBP » / FX = taux de change, pas une devise ISO → ignorer.
+      row.CURRENCY = '';
+    } else {
+      reasons.push('CURRENCY invalide');
+    }
   }
 
   const isEmpty = OUTPUT_HEADERS.slice(1).every((h) => !(row as unknown as Record<string, string>)[h]?.trim());
@@ -801,6 +814,8 @@ export function parseImportCsv(
   const rates = primaryRates ?? options?.importMappingRates ?? DEFAULT_IMPORT_MAPPING_RATES;
   const workingCurrencies = options?.workingCurrencies;
   const primaryCurrency = options?.primaryCurrency;
+  const expenseTypes = options?.expenseTypes;
+  const incomeTypes = options?.incomeTypes;
 
   const firstLineValues = parseCsvLine(lines[0], delimiter);
   const useFirstLineAsHeader = firstLineLooksLikeHeader(firstLineValues);
@@ -842,6 +857,8 @@ export function parseImportCsv(
       const row = applyValidRowPostProcessMappingPolicy(result.valid, fiatEffective, rates, {
         expenseRaw: valueByStandardName.EXPENSE ?? '',
         incomeRaw: valueByStandardName.INCOME ?? '',
+        expenseTypes,
+        incomeTypes,
         primaryCurrency,
         workingCurrencies,
       });

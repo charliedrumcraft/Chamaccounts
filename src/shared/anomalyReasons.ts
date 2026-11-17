@@ -22,6 +22,9 @@ export const ANOMALY_REASON_CODES = {
   BALANCE_DUPLICATE_DATE: 'BALANCE_DUPLICATE_DATE',
   BALANCE_WRONG_CURRENCY: 'BALANCE_WRONG_CURRENCY',
   BALANCE_FILE_MISSING: 'BALANCE_FILE_MISSING',
+  SUPPORT_DUPLICATE_EXISTING: 'SUPPORT_DUPLICATE_EXISTING',
+  SUPPORT_DUPLICATE_IN_BATCH: 'SUPPORT_DUPLICATE_IN_BATCH',
+  SUPPORT_UNKNOWN_PROJECT: 'SUPPORT_UNKNOWN_PROJECT',
 } as const;
 
 export type AnomalyReasonCode = (typeof ANOMALY_REASON_CODES)[keyof typeof ANOMALY_REASON_CODES];
@@ -55,6 +58,9 @@ const FR_TEMPLATES: Record<AnomalyReasonCode, string> = {
   BALANCE_DUPLICATE_DATE: 'Doublon de date (plusieurs lignes pour le même jour).',
   BALANCE_WRONG_CURRENCY: 'Devise incorrecte (colonne « {{column}} », attendu {{currency}}).',
   BALANCE_FILE_MISSING: 'src_account_balance.csv introuvable ou vide.',
+  SUPPORT_DUPLICATE_EXISTING: 'Doublon (ligne déjà présente dans Support_data.csv)',
+  SUPPORT_DUPLICATE_IN_BATCH: 'Doublon (ligne déjà présente dans le lot d’import)',
+  SUPPORT_UNKNOWN_PROJECT: 'Projet inconnu (« {{projet}} ») — réassigner',
 };
 
 function applyTemplate(template: string, params?: Record<string, string | number>): string {

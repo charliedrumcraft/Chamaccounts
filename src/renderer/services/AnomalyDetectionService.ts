@@ -13,6 +13,11 @@ import {
   type AnomalyResult,
   type TransactionAnomalyContext,
 } from '@/shared/anomalyDetectionCore';
+import {
+  detectSupportAnomalies as detectSupportAnomaliesCore,
+  type SupportAnomalyContext,
+  type SupportAnomalyResult,
+} from '@/shared/supportAnomalyDetection';
 import type { AnomalyReason } from '@/shared/anomalyReasons';
 import {
   collectRecognisedAccountLabelsSet,
@@ -33,6 +38,11 @@ export type {
   AccountBalanceAnomalyRow,
   AccountBalanceAnomalyResult,
 } from '@/shared/anomalyDetectionCore';
+export type {
+  SupportAnomalyContext,
+  SupportAnomalyRow,
+  SupportAnomalyResult,
+} from '@/shared/supportAnomalyDetection';
 
 export function buildTransactionAnomalyContextFromStorage(): TransactionAnomalyContext {
   const labels = Array.from(collectRecognisedAccountLabelsSet(loadRecognisedAccountsFromStorage()));
@@ -65,4 +75,12 @@ export function detectAccountBalanceAnomalies(
   activeAccounts: AccountBalanceActiveAccount[]
 ): AccountBalanceAnomalyResult {
   return detectAccountBalanceAnomaliesCore(headers, rows, activeAccounts, localizedFormatOptions());
+}
+
+export function detectSupportAnomalies(
+  headers: string[],
+  rows: Record<string, string>[],
+  context?: SupportAnomalyContext
+): SupportAnomalyResult {
+  return detectSupportAnomaliesCore(headers, rows, context ?? {}, localizedFormatOptions());
 }

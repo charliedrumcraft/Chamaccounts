@@ -6,6 +6,14 @@
 
 import type { ValidRow } from './transactionsImportCore';
 
+/** Codes ISO reconnus à l’import (aligné sur transactionsImportCore.isCurrencyCodeCell). */
+const IMPORT_CURRENCY_CODE_RE =
+  /^(EUR|GBP|CHF|USD|CAD|AUD|JPY|SEK|NOK|DKK|PLN|CZK|HUF|RON|BGN|TRY|MXN|BRL|INR|CNY|HKD|SGD|NZD|ZAR|AED|ILS)$/i;
+
+function isIsoCurrencyCode(v: string): boolean {
+  return IMPORT_CURRENCY_CODE_RE.test((v ?? '').trim());
+}
+
 /** Taux alignés sur EffectiveExchangeRates.ts (valeurs par défaut Paramètres). */
 export const DEFAULT_EUR_TO_GBP = 0.86;
 export const DEFAULT_CHF_TO_GBP = 0.95;
@@ -42,6 +50,10 @@ export interface ParseImportCsvOptions {
    * Si absent, parseImportCsv peut la dériver des en-têtes.
    */
   defaultCurrency?: string;
+  /** Types reconnus « sorties / dépenses » (Paramètres) — signe − si montant sans signe. */
+  expenseTypes?: string[];
+  /** Types reconnus « entrées / revenus » (Paramètres) — signe + si montant sans signe. */
+  incomeTypes?: string[];
 }
 
 /**
@@ -52,8 +64,13 @@ export interface ParseImportCsvOptions {
 export function amountStringToParseFloatNormalized(amountStr: string): string {
   let raw = amountStr
     .trim()
-    .replace(/\s/g, '')
-    .replace(/[£€$]/g, '')
+    // Espaces classiques + insécables (souvent avant €).
+    .replace(/[\s\u00A0\u202F\u2009]/g, '')
+    .replace(/[£€$₣]/g, '')
+    // Codes ISO / libellés collés au montant (« EUR12,50 », « 12.50GBP », « Fr.10 »).
+    // Pas de \b : les chiffres sont des « word chars », donc EUR12 n’a pas de frontière.
+    .replace(/EUR|GBP|CHF|USD|CAD|AUD|JPY|SEK|NOK|DKK|PLN/gi, '')
+    .replace(/S?Fr\.?/gi, '')
     .replace(/−/g, '-');
   if (raw === '') return '';
   let neg = false;
@@ -150,6 +167,37 @@ export function applyPrimaryFromAmountAndFiatWithRates(
   return converted !== null ? formatAmountGbpForCsvImport(converted) : '';
 }
 
+/** Types de sortie (dépenses) intégrés — alignés sur anomalyDetectionCore. */
+export const BUILTIN_EXPENSE_TYPES = [
+  'Rent',
+  'Council',
+  'Comm',
+  'Electricity',
+  'Water',
+  'SLCdebit',
+  'Transport',
+  'Fuel',
+  'Car',
+  'Food',
+  'Restaurant',
+  'Shopping',
+  'Leisure',
+  'Holiday',
+  'LST',
+  'Misc',
+  'Health',
+  'Donation',
+] as const;
+
+/** Types d’entrée (revenus) intégrés — alignés sur anomalyDetectionCore. */
+export const BUILTIN_INCOME_TYPES = [
+  'Other Inc',
+  'Support',
+  'Refund',
+  'Benefit',
+  'SLCcredit',
+] as const;
+
 /** Même règle que processImportRow : INCOME prioritaire si les deux sont renseignés. */
 function expenseIncomeSemanticSign(expenseRaw: string, incomeRaw: string): 1 | -1 | null {
   const norm = (s: string): boolean => {
@@ -159,6 +207,59 @@ function expenseIncomeSemanticSign(expenseRaw: string, incomeRaw: string): 1 | -
   if (norm(incomeRaw)) return 1;
   if (norm(expenseRaw)) return -1;
   return null;
+}
+
+/** True si le montant CSV porte déjà un signe explicite (+/− ou parenthèses comptables). */
+export function amountStringHasExplicitSign(amountStr: string): boolean {
+  const raw = (amountStr ?? '').trim().replace(/\s/g, '').replace(/[£€$]/g, '');
+  if (!raw) return false;
+  if (raw.startsWith('(') && raw.endsWith(')')) return true;
+  if (raw.startsWith('+') || raw.startsWith('-') || raw.startsWith('−')) return true;
+  return false;
+}
+
+/**
+ * Signe sémantique depuis le TYPE (entrée → +, sortie → −).
+ * Union des listes Paramètres et des types intégrés ; comparaison insensible à la casse.
+ */
+export function resolveTransactionTypeSign(
+  type: string,
+  expenseTypes?: readonly string[],
+  incomeTypes?: readonly string[]
+): 1 | -1 | null {
+  const t = (type ?? '').trim();
+  if (!t) return null;
+  const lo = t.toLowerCase();
+  const income = new Set(
+    [...BUILTIN_INCOME_TYPES, ...(incomeTypes ?? [])].map((s) => s.trim().toLowerCase()).filter(Boolean)
+  );
+  const expense = new Set(
+    [...BUILTIN_EXPENSE_TYPES, ...(expenseTypes ?? [])].map((s) => s.trim().toLowerCase()).filter(Boolean)
+  );
+  if (income.has(lo)) return 1;
+  if (expense.has(lo)) return -1;
+  return null;
+}
+
+/**
+ * Signe à appliquer sur AMOUNT :
+ * 1) colonnes EXPENSE / INCOME (toujours, si présentes) ;
+ * 2) sinon TYPE connu, uniquement si le montant CSV n’a pas déjà de signe.
+ */
+export function resolveImportAmountSemanticSign(
+  amountStr: string,
+  opts?: {
+    expenseRaw?: string;
+    incomeRaw?: string;
+    type?: string;
+    expenseTypes?: readonly string[];
+    incomeTypes?: readonly string[];
+  }
+): 1 | -1 | null {
+  const fromCols = expenseIncomeSemanticSign(opts?.expenseRaw ?? '', opts?.incomeRaw ?? '');
+  if (fromCols !== null) return fromCols;
+  if (amountStringHasExplicitSign(amountStr)) return null;
+  return resolveTransactionTypeSign(opts?.type ?? '', opts?.expenseTypes, opts?.incomeTypes);
 }
 
 /** Aligne AMOUNT sur le signe attendu (dépense / revenu) avant conversion → AMOUNT GBP. */
@@ -173,30 +274,49 @@ export type ApplyValidRowPostProcessOptions = {
   /** Valeurs brutes des colonnes EXPENSE / INCOME (si présentes) pour le signe final. */
   expenseRaw?: string;
   incomeRaw?: string;
+  /** Types reconnus sorties / dépenses (Paramètres). */
+  expenseTypes?: readonly string[];
+  /** Types reconnus entrées / revenus (Paramètres). */
+  incomeTypes?: readonly string[];
 };
 
-function detectFiatFromAmountText(raw: string, allowed?: string[]): string | null {
-  const s = raw ?? '';
+/**
+ * Devise déduite d’un texte de montant (€ → EUR, £ → GBP, code ISO collé, etc.).
+ * Une cellule qui n’est qu’un code ISO seul est ignorée (colonne devise mal mappée vers AMOUNT).
+ */
+export function detectFiatFromAmountText(raw: string): string | null {
+  const s = (raw ?? '').trim();
+  if (!s || isIsoCurrencyCode(s)) return null;
   const codes: Array<{ re: RegExp; code: string }> = [
     { re: /€/, code: 'EUR' },
     { re: /£/, code: 'GBP' },
+    { re: /₣/, code: 'CHF' },
     { re: /\$/, code: 'USD' },
-    { re: /\bCHF\b/i, code: 'CHF' },
-    { re: /\bEUR\b/i, code: 'EUR' },
-    { re: /\bGBP\b/i, code: 'GBP' },
-    { re: /\bUSD\b/i, code: 'USD' },
+    { re: /CHF/i, code: 'CHF' },
+    { re: /S?Fr\.?/i, code: 'CHF' },
+    { re: /EUR/i, code: 'EUR' },
+    { re: /GBP/i, code: 'GBP' },
+    { re: /USD/i, code: 'USD' },
   ];
   for (const { re, code } of codes) {
-    if (re.test(s)) {
-      if (!allowed || allowed.includes(code)) return code;
-    }
+    if (re.test(s)) return code;
+  }
+  return null;
+}
+
+/** Parcourt les champs montant usuels pour trouver un symbole / code devise. */
+function detectFiatFromValueMapAmounts(valueMap: Record<string, string>): string | null {
+  for (const key of ['AMOUNT', 'EXPENSE', 'INCOME', 'AMOUNT GBP'] as const) {
+    const det = detectFiatFromAmountText(valueMap[key] ?? '');
+    if (det) return det;
   }
   return null;
 }
 
 /**
  * Devise effective pour une ligne :
- * choix utilisateur → symbole/code dans AMOUNT → colonne CURRENCY → devise implicite (ex. en-tête Amount (EUR)).
+ * choix utilisateur → symbole/code dans le montant → colonne CURRENCY → devise implicite (ex. Amount (EUR)).
+ * Les symboles €/£ du CSV sont toujours pris en compte (vérité de la ligne).
  */
 export function resolveImportFiatEffective(
   rowId: string,
@@ -208,11 +328,14 @@ export function resolveImportFiatEffective(
   const choice = fiatChoice[rowId];
   if (choice === '') return '';
   const choiceUp = (choice ?? '').trim().toUpperCase();
-  if (choiceUp && (!allowedCurrencies || allowedCurrencies.includes(choiceUp))) return choiceUp;
-  const det = detectFiatFromAmountText(valueMap.AMOUNT ?? '', allowedCurrencies);
+  if (choiceUp) {
+    if (!allowedCurrencies || allowedCurrencies.includes(choiceUp)) return choiceUp;
+  }
+  const det = detectFiatFromValueMapAmounts(valueMap);
   if (det) return det;
   const m = (valueMap.CURRENCY ?? '').trim().toUpperCase();
-  if (m && (!allowedCurrencies || allowedCurrencies.includes(m))) return m;
+  // Uniquement les codes ISO — un taux FX (0.86) ne compte pas comme devise.
+  if (m && isIsoCurrencyCode(m)) return m;
   const def = (defaultCurrency ?? '').trim().toUpperCase();
   if (def && (!allowedCurrencies || allowedCurrencies.includes(def))) return def;
   return '';
@@ -233,7 +356,13 @@ export function applyImportFiatResolutionToValueMap(
     allowedCurrencies,
     defaultCurrency
   );
-  if (fiatEffective) valueMap.CURRENCY = fiatEffective;
+  if (fiatEffective) {
+    const existing = (valueMap.CURRENCY ?? '').trim();
+    // Ne pas écraser un code ISO déjà présent ; remplacer un taux FX / valeur vide.
+    if (!existing || !isIsoCurrencyCode(existing)) {
+      valueMap.CURRENCY = fiatEffective;
+    }
+  }
   return fiatEffective;
 }
 
@@ -300,15 +429,25 @@ export function applyValidRowPostProcessMappingPolicy(
   const primaryRates: PrimaryMappingRates =
     'ratesToPrimary' in rates ? rates : importRatesAsPrimaryRates(rates, primary);
 
+  const amountForSign = (vr.AMOUNT ?? '').trim() || (vr['AMOUNT GBP'] ?? '').trim();
+  const sign = resolveImportAmountSemanticSign(amountForSign, {
+    expenseRaw: opts?.expenseRaw,
+    incomeRaw: opts?.incomeRaw,
+    type: vr.TYPE,
+    expenseTypes: opts?.expenseTypes,
+    incomeTypes: opts?.incomeTypes,
+  });
+  if (sign !== null) {
+    if ((vr.AMOUNT ?? '').trim()) {
+      vr.AMOUNT = applySemanticSignToImportAmountStr(vr.AMOUNT, sign);
+    } else if ((vr['AMOUNT GBP'] ?? '').trim()) {
+      vr['AMOUNT GBP'] = applySemanticSignToImportAmountStr(vr['AMOUNT GBP'], sign);
+    }
+  }
+
   const fiat = (fiatEffective ?? '').trim().toUpperCase();
   if (fiat && working.includes(fiat)) {
     vr.CURRENCY = fiat;
-    const sign = opts
-      ? expenseIncomeSemanticSign(opts.expenseRaw ?? '', opts.incomeRaw ?? '')
-      : null;
-    if (sign !== null && vr.AMOUNT.trim()) {
-      vr.AMOUNT = applySemanticSignToImportAmountStr(vr.AMOUNT, sign);
-    }
     if (!(vr.AMOUNT ?? '').trim() && (vr['AMOUNT GBP'] ?? '').trim()) {
       vr.AMOUNT = vr['AMOUNT GBP'];
     }

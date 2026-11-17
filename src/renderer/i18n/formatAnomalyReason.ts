@@ -24,6 +24,9 @@ const I18N_KEYS: Record<AnomalyReasonCode, string> = {
   BALANCE_DUPLICATE_DATE: 'anomalies.balanceDuplicateDate',
   BALANCE_WRONG_CURRENCY: 'anomalies.balanceWrongCurrency',
   BALANCE_FILE_MISSING: 'anomalies.balanceFileMissing',
+  SUPPORT_DUPLICATE_EXISTING: 'anomalies.supportDuplicateExisting',
+  SUPPORT_DUPLICATE_IN_BATCH: 'anomalies.supportDuplicateInBatch',
+  SUPPORT_UNKNOWN_PROJECT: 'anomalies.supportUnknownProject',
 };
 
 export function formatAnomalyReason(reason: AnomalyReason, t: TFunction): string {

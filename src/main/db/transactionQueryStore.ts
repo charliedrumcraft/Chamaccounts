@@ -481,28 +481,42 @@ export async function queryDashboardTableRows(
 
 export async function getSuggestColumnValues(
   dataRoot: string
-): Promise<{ titles: string[]; types: string[]; accounts: string[] }> {
+): Promise<{
+  titles: string[];
+  types: string[];
+  accounts: string[];
+  /** Somme AMOUNT GBP par type (signe → entrée si ≥ 0, sortie si < 0). */
+  typeNetAmounts: Record<string, number>;
+}> {
   await ensureTransactionStore(dataRoot);
   const database = await openTransactionDb(dataRoot);
   const rows = queryAll(
     database,
-    `SELECT title, type, account FROM transactions`
+    `SELECT title, type, account, amount_gbp FROM transactions`
   );
   const titles = new Set<string>();
-  const types = new Set<string>();
   const accounts = new Set<string>();
+  /** Première casse rencontrée → libellé affiché. */
+  const typeByLo = new Map<string, string>();
+  const typeNetAmounts: Record<string, number> = {};
   for (const r of rows) {
     const t = String(r.title ?? '').trim();
     const ty = String(r.type ?? '').trim();
     const a = String(r.account ?? '').trim();
     if (t) titles.add(t);
-    if (ty) types.add(ty);
+    if (ty) {
+      const lo = ty.toLowerCase();
+      const display = typeByLo.get(lo) ?? ty;
+      if (!typeByLo.has(lo)) typeByLo.set(lo, ty);
+      typeNetAmounts[display] = (typeNetAmounts[display] ?? 0) + parseAmountGbp(String(r.amount_gbp ?? ''));
+    }
     if (a) accounts.add(a);
   }
   return {
     titles: Array.from(titles),
-    types: Array.from(types),
+    types: Array.from(typeByLo.values()),
     accounts: Array.from(accounts),
+    typeNetAmounts,
   };
 }
 

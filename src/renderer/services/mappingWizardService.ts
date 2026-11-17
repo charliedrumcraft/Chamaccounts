@@ -47,6 +47,10 @@ import {
   applyMappingProfileToColumns,
   type MappingWizardProfile,
 } from '@/shared/mappingWizardProfiles';
+import {
+  loadRecognisedEntryTypesFromStorage,
+  loadRecognisedOutputTypesFromStorage,
+} from '../constants/recognisedTypesStorage';
 
 export { WIZARD_STANDARD_KEYS };
 export type { WizardStandardKey };
@@ -484,7 +488,8 @@ export type ImportWizardPreviewComputeParams = {
 function computeSingleImportWizardPreviewItem(
   row: ImportWizardRawRow,
   params: ImportWizardPreviewComputeParams,
-  rates: ImportMappingRates | PrimaryMappingRates
+  rates: ImportMappingRates | PrimaryMappingRates,
+  typeSignLists: { expenseTypes: string[]; incomeTypes: string[] }
 ): ImportWizardPreviewItem {
   const {
     model,
@@ -521,12 +526,19 @@ function computeSingleImportWizardPreviewItem(
   }
 
   // TYPE vide → règles fixes, puis similarité / stats mots (historique DB).
+  // Si une colonne source est déjà mappée vers TYPE, ne pas lancer l’auto-catégorisation.
   // Ne pas réécrire si l’utilisateur a déjà saisi TYPE (y compris effacé → '').
   let typeSuggestion: CategorySuggestion | null = null;
+  const typeColumnMapped = Object.values(importColumnMapping).some((v) => v === 'TYPE');
   const typeManuallySet =
     manualRow?.TYPE !== undefined || mappedOut?.TYPE !== undefined;
   const typeWasEmpty = !(valueMap.TYPE ?? '').trim();
-  if (!typeManuallySet && typeWasEmpty && (valueMap.TITLE ?? '').trim()) {
+  if (
+    !typeColumnMapped &&
+    !typeManuallySet &&
+    typeWasEmpty &&
+    (valueMap.TITLE ?? '').trim()
+  ) {
     const suggestion = suggestTypeForTitle(
       valueMap.TITLE,
       autoCategorisationModel,
@@ -560,6 +572,8 @@ function computeSingleImportWizardPreviewItem(
       valid: applyValidRowPostProcessMappingPolicy(processed.valid, fiatEffective, rates, {
         expenseRaw: valueMap.EXPENSE ?? '',
         incomeRaw: valueMap.INCOME ?? '',
+        expenseTypes: typeSignLists.expenseTypes,
+        incomeTypes: typeSignLists.incomeTypes,
         primaryCurrency: working.primary,
         workingCurrencies: allowed,
       }),
@@ -588,9 +602,14 @@ export function computeTransactionsImportWizardPreview(
   let validOrdinal = 0;
   // Taux AppState / Paramètres (localStorage synchronisé) — pivot = devise primaire du profil.
   const rates = getPrimaryMappingRates();
+  // Sorties = dépenses (−) ; entrées = revenus (+) — listes Paramètres + builtins dans la policy.
+  const typeSignLists = {
+    expenseTypes: loadRecognisedOutputTypesFromStorage(),
+    incomeTypes: loadRecognisedEntryTypesFromStorage(),
+  };
 
   for (const row of rows) {
-    const item = computeSingleImportWizardPreviewItem(row, params, rates);
+    const item = computeSingleImportWizardPreviewItem(row, params, rates, typeSignLists);
     if ('valid' in item.processed) validOrdinal += 1;
     list.push(item);
   }
@@ -626,7 +645,16 @@ export function getPipelineSrcMappedFieldDisplay(
   }
 
   const rates = getPrimaryMappingRates();
-  const item = computeSingleImportWizardPreviewItem(row, { ...rest, importMappedOutputOverrides: nextOverrides }, rates);
+  const typeSignLists = {
+    expenseTypes: loadRecognisedOutputTypesFromStorage(),
+    incomeTypes: loadRecognisedEntryTypesFromStorage(),
+  };
+  const item = computeSingleImportWizardPreviewItem(
+    row,
+    { ...rest, importMappedOutputOverrides: nextOverrides },
+    rates,
+    typeSignLists
+  );
   return getSrcMappedFieldDisplayValue(item, mappedAs);
 }
 
