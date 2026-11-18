@@ -871,9 +871,15 @@ export function computeMappingWizardAvailableFields(_params?: {
 export function filterImportPreviewImportableRows(params: {
   previewList: ImportWizardPreviewItem[];
   importRowSkip: Set<string>;
+  /** Lignes marquées comme exception : importables malgré `duplicateExisting`. */
+  duplicateForceAllow?: Set<string>;
 }): ImportWizardPreviewItem[] {
   if (!params.previewList.length) return [];
-  return params.previewList.filter(
-    (p) => !params.importRowSkip.has(p.row.id) && 'valid' in p.processed && !p.duplicateExisting
-  );
+  const forceAllow = params.duplicateForceAllow;
+  return params.previewList.filter((p) => {
+    if (params.importRowSkip.has(p.row.id)) return false;
+    if (!('valid' in p.processed)) return false;
+    if (p.duplicateExisting && !forceAllow?.has(p.row.id)) return false;
+    return true;
+  });
 }

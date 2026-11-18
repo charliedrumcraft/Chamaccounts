@@ -1,3 +1,24 @@
+# Chamaccounts v1.3.2
+
+Wizard d’import transactions : exceptions pour importer des lignes détectées comme doublons (fausses détections).
+
+### Changements par rapport à v1.3.1
+- **Import transactions — doublons** : case « Exception » par ligne (et en-tête « Autoriser les doublons ») pour forcer l’import malgré une signature déjà présente
+- **Cohérence UI** : ignorer une ligne retire automatiquement son exception ; message d’aside distinct quand l’exception est active
+
+### Installation
+
+| Plateforme | Fichier |
+|------------|---------|
+| Windows 10/11 (64-bit) | `Chamaccounts-1.3.2-win-x64.exe` |
+| macOS Intel | `Chamaccounts-1.3.2-mac-x64.dmg` / `.zip` |
+| macOS Apple Silicon | `Chamaccounts-1.3.2-mac-arm64.dmg` / `.zip` |
+| Linux (AppImage) | `Chamaccounts-1.3.2-linux-x64.AppImage` |
+
+[Télécharger v1.3.2](https://github.com/charliedrumcraft/Chamaccounts/releases/tag/v1.3.2)
+
+---
+
 # Chamaccounts v1.3.1
 
 Import (devises, mapping, soutien) plus fiable, suggestions de listes reconnues, et outils d’édition du tableau des transactions.

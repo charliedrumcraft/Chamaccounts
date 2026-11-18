@@ -80,6 +80,10 @@ export function useTransactionsImportPrepWizard(options: {
   const [importWizardLoading, setImportWizardLoading] = useState(false);
   const [importWizardReloadKey, setImportWizardReloadKey] = useState(0);
   const [importRowSkip, setImportRowSkip] = useState<Set<string>>(() => new Set());
+  /** Exceptions : autoriser l’import malgré une détection de doublon (même signature). */
+  const [importDuplicateForceAllow, setImportDuplicateForceAllow] = useState<Set<string>>(
+    () => new Set()
+  );
   const [importWizardCellOverrides, setImportWizardCellOverrides] = useState<
     Record<string, Record<string, string>>
   >({});
@@ -193,6 +197,7 @@ export function useTransactionsImportPrepWizard(options: {
       setImportWizardModel(model);
       if (model) {
         setImportRowSkip(new Set());
+        setImportDuplicateForceAllow(new Set());
         setImportWizardCellOverrides({});
         setImportWizardManualCellValues({});
         setImportMappedOutputOverrides({});
@@ -354,6 +359,7 @@ export function useTransactionsImportPrepWizard(options: {
       { messages: string[]; pendingManualRecommended: boolean; hasAmberAside: boolean }
     >();
     const dupMsg = t('transactions.importPrep.duplicateRow');
+    const dupAllowedMsg = t('transactions.importPrep.duplicateRowAllowed');
     for (const p of list) {
       const aside: string[] = [];
       if ('anomaly' in p.processed) {
@@ -365,7 +371,9 @@ export function useTransactionsImportPrepWizard(options: {
       if (ar?.length) aside.push(formatAnomalyReasons(ar, t));
       const dateMsgs = dateCoherenceByRowId.get(p.row.id);
       if (dateMsgs?.length) aside.push(...dateMsgs);
-      if (p.duplicateExisting) aside.push(dupMsg);
+      if (p.duplicateExisting) {
+        aside.push(importDuplicateForceAllow.has(p.row.id) ? dupAllowedMsg : dupMsg);
+      }
       const missingManual = uncoveredRecommendedManual.filter((f) => !(p.valueMap[f] ?? '').trim());
       const pendingManualRecommended = missingManual.length > 0;
       const manualLine = pendingManualRecommended
@@ -379,7 +387,15 @@ export function useTransactionsImportPrepWizard(options: {
       });
     }
     return map;
-  }, [importWizardPreview, importWizardModel, importColumnMapping, effectiveDefaultCurrency, t, i18n.language]);
+  }, [
+    importWizardPreview,
+    importWizardModel,
+    importColumnMapping,
+    effectiveDefaultCurrency,
+    importDuplicateForceAllow,
+    t,
+    i18n.language,
+  ]);
 
   const anomalousRowIds = useMemo(() => {
     if (!mappingWizardActive || !importWizardPreview?.list.length) return [] as string[];
@@ -462,6 +478,20 @@ export function useTransactionsImportPrepWizard(options: {
     };
   }, [duplicateRowIds, importRowSkip]);
 
+  const importPrepDuplicateForceAllowHeader = useMemo(() => {
+    const count = duplicateRowIds.length;
+    if (count === 0) return { allAllowed: false, someAllowed: false, count: 0 };
+    let allowed = 0;
+    for (const id of duplicateRowIds) {
+      if (importDuplicateForceAllow.has(id)) allowed += 1;
+    }
+    return {
+      allAllowed: allowed === count,
+      someAllowed: allowed > 0,
+      count,
+    };
+  }, [duplicateRowIds, importDuplicateForceAllow]);
+
   const prepTableColDefs = useMemo(
     () =>
       mappingWizardActive
@@ -484,6 +514,7 @@ export function useTransactionsImportPrepWizard(options: {
   const prepIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
   const prepAnomalyIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
   const prepDuplicateIgnHeaderCheckboxRef = useRef<HTMLInputElement>(null);
+  const prepDuplicateForceAllowHeaderCheckboxRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const el = prepIgnHeaderCheckboxRef.current;
@@ -505,6 +536,14 @@ export function useTransactionsImportPrepWizard(options: {
     el.indeterminate =
       importPrepDuplicateSkipHeader.someSkipped && !importPrepDuplicateSkipHeader.allSkipped;
   }, [importPrepDuplicateSkipHeader]);
+
+  useEffect(() => {
+    const el = prepDuplicateForceAllowHeaderCheckboxRef.current;
+    if (!el) return;
+    el.indeterminate =
+      importPrepDuplicateForceAllowHeader.someAllowed &&
+      !importPrepDuplicateForceAllowHeader.allAllowed;
+  }, [importPrepDuplicateForceAllowHeader]);
 
   const toggleImportPrepSkipAll = useCallback(() => {
     setImportRowSkip((prev) => {
@@ -544,10 +583,52 @@ export function useTransactionsImportPrepWizard(options: {
         for (const id of duplicateRowIds) next.delete(id);
       } else {
         for (const id of duplicateRowIds) next.add(id);
+        setImportDuplicateForceAllow((allowPrev) => {
+          const allowNext = new Set(allowPrev);
+          for (const id of duplicateRowIds) allowNext.delete(id);
+          return allowNext;
+        });
       }
       return next;
     });
   }, [duplicateRowIds]);
+
+  const toggleForceAllowAllDuplicates = useCallback(() => {
+    if (duplicateRowIds.length === 0) return;
+    setImportDuplicateForceAllow((prev) => {
+      const all = duplicateRowIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (all) {
+        for (const id of duplicateRowIds) next.delete(id);
+      } else {
+        for (const id of duplicateRowIds) next.add(id);
+        setImportRowSkip((skipPrev) => {
+          const skipNext = new Set(skipPrev);
+          for (const id of duplicateRowIds) skipNext.delete(id);
+          return skipNext;
+        });
+      }
+      return next;
+    });
+  }, [duplicateRowIds]);
+
+  const toggleDuplicateForceAllowRow = useCallback((rowId: string) => {
+    setImportDuplicateForceAllow((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) {
+        next.delete(rowId);
+      } else {
+        next.add(rowId);
+        setImportRowSkip((skipPrev) => {
+          if (!skipPrev.has(rowId)) return skipPrev;
+          const skipNext = new Set(skipPrev);
+          skipNext.delete(rowId);
+          return skipNext;
+        });
+      }
+      return next;
+    });
+  }, []);
 
   const updateImportColumnMappingUser = useCallback((colKey: string, value: string) => {
     setImportColumnMappingUser((prev) => {
@@ -676,9 +757,10 @@ export function useTransactionsImportPrepWizard(options: {
         ? filterImportPreviewImportableRows({
             previewList: importWizardPreview?.list ?? [],
             importRowSkip,
+            duplicateForceAllow: importDuplicateForceAllow,
           })
         : [],
-    [mappingWizardActive, importWizardPreview, importRowSkip]
+    [mappingWizardActive, importWizardPreview, importRowSkip, importDuplicateForceAllow]
   );
 
   const handleImportLinesToSource = useCallback(async () => {
@@ -708,7 +790,7 @@ export function useTransactionsImportPrepWizard(options: {
     for (const p of importWizardPreview.list) {
       if (importRowSkip.has(p.row.id)) continue;
       if (!('valid' in p.processed)) continue;
-      if (p.duplicateExisting) continue;
+      if (p.duplicateExisting && !importDuplicateForceAllow.has(p.row.id)) continue;
       const amt = parseAmountNumericForImport(p.valueMap.AMOUNT ?? '');
       if (amt !== null && amt !== 0) {
         const fiat = resolveImportFiatEffective(
@@ -804,6 +886,7 @@ export function useTransactionsImportPrepWizard(options: {
     mappingWizardActive,
     importWizardPreview,
     importRowSkip,
+    importDuplicateForceAllow,
     onAfterSuccessfulAppend,
     removeImportedFromImportFolder,
     effectiveDefaultCurrency,
@@ -927,6 +1010,8 @@ export function useTransactionsImportPrepWizard(options: {
     saveLearnedMappingProfile,
     importRowSkip,
     setImportRowSkip,
+    importDuplicateForceAllow,
+    toggleDuplicateForceAllowRow,
     importWizardCellOverrides,
     importMappedOutputOverrides,
     importLinesLoading,
@@ -941,15 +1026,18 @@ export function useTransactionsImportPrepWizard(options: {
     importPrepIgnSkipHeader,
     importPrepAnomalySkipHeader,
     importPrepDuplicateSkipHeader,
+    importPrepDuplicateForceAllowHeader,
     prepTableColDefs,
     visiblePrepColDefs,
     prepStickyKey,
     prepIgnHeaderCheckboxRef,
     prepAnomalyIgnHeaderCheckboxRef,
     prepDuplicateIgnHeaderCheckboxRef,
+    prepDuplicateForceAllowHeaderCheckboxRef,
     toggleImportPrepSkipAll,
     toggleSkipAllAnomalous,
     toggleSkipAllDuplicates,
+    toggleForceAllowAllDuplicates,
     updateWizardManualCell,
     updateMappedOutputCell,
     updateImportPrepCell,

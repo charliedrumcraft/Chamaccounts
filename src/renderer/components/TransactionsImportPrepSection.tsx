@@ -164,6 +164,8 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
     importMappedOutputOverrides,
     importRowSkip,
     setImportRowSkip,
+    importDuplicateForceAllow,
+    toggleDuplicateForceAllowRow,
     importWizardMessage,
     importWizardPreview,
     importWizardSuggestionRows,
@@ -173,14 +175,17 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
     importPrepIgnSkipHeader,
     importPrepAnomalySkipHeader,
     importPrepDuplicateSkipHeader,
+    importPrepDuplicateForceAllowHeader,
     visiblePrepColDefs,
     prepStickyKey,
     prepIgnHeaderCheckboxRef,
     prepAnomalyIgnHeaderCheckboxRef,
     prepDuplicateIgnHeaderCheckboxRef,
+    prepDuplicateForceAllowHeaderCheckboxRef,
     toggleImportPrepSkipAll,
     toggleSkipAllAnomalous,
     toggleSkipAllDuplicates,
+    toggleForceAllowAllDuplicates,
     updateWizardManualCell,
     updateMappedOutputCell,
     updateImportPrepCell,
@@ -445,6 +450,30 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                   </label>
                 )}
                 {mappingWizardActive && (
+                  <label
+                    className="inline-flex items-center gap-1 font-normal text-gray-700 cursor-pointer select-none"
+                    title={
+                      importPrepDuplicateForceAllowHeader.count === 0
+                        ? t('transactions.importPrep.allowDuplicatesNone')
+                        : t('transactions.importPrep.allowDuplicatesHint')
+                    }
+                  >
+                    <input
+                      ref={prepDuplicateForceAllowHeaderCheckboxRef}
+                      type="checkbox"
+                      className="shrink-0"
+                      checked={importPrepDuplicateForceAllowHeader.allAllowed}
+                      disabled={importPrepDuplicateForceAllowHeader.count === 0}
+                      onChange={toggleForceAllowAllDuplicates}
+                      aria-label={t('transactions.importPrep.allowDuplicatesAria')}
+                    />
+                    {t('transactions.importPrep.allowDuplicates')}
+                    {importPrepDuplicateForceAllowHeader.count > 0 && (
+                      <span className="text-gray-500">({importPrepDuplicateForceAllowHeader.count})</span>
+                    )}
+                  </label>
+                )}
+                {mappingWizardActive && (
                   <button
                     type="button"
                     onClick={() => setAutoCatReviewOpen(true)}
@@ -624,6 +653,7 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                     {mappingWizardActive && importWizardPreview
                       ? importWizardPreview.list.map((p, rowIndex) => {
                           const skipped = importRowSkip.has(p.row.id);
+                          const duplicateForceAllowed = importDuplicateForceAllow.has(p.row.id);
                           const rowCount = importWizardPreview.list.length;
                           const prepSugRows =
                             importWizardSuggestionRows.length > 0
@@ -703,12 +733,16 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                           handleImportPrepEnterNav(e, def.key, rowIndex, rowCount)
                                         }
                                         onChange={() => {
+                                          const willSkip = !skipped;
                                           setImportRowSkip((prev) => {
                                             const n = new Set(prev);
                                             if (n.has(p.row.id)) n.delete(p.row.id);
                                             else n.add(p.row.id);
                                             return n;
                                           });
+                                          if (willSkip && importDuplicateForceAllow.has(p.row.id)) {
+                                            toggleDuplicateForceAllowRow(p.row.id);
+                                          }
                                         }}
                                         aria-label={t('transactions.importPrep.skipRowAria')}
                                       />
@@ -744,7 +778,24 @@ const TransactionsImportPrepSection: React.FC<TransactionsImportPrepSectionProps
                                             ⚠️
                                           </span>
                                         )}
-                                        {!pendingManualRecommended && !hasAmberAside && (
+                                        {p.duplicateExisting && (
+                                          <label
+                                            className="inline-flex items-center justify-center gap-1 rounded border border-amber-300 bg-amber-50 px-1 py-0.5 text-[9px] font-medium text-amber-950 cursor-pointer select-none"
+                                            title={t('transactions.importPrep.allowDuplicateRowHint')}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              className="shrink-0"
+                                              checked={duplicateForceAllowed}
+                                              onChange={() => toggleDuplicateForceAllowRow(p.row.id)}
+                                              aria-label={t('transactions.importPrep.allowDuplicateRowAria')}
+                                            />
+                                            {t('transactions.importPrep.allowDuplicateRow')}
+                                          </label>
+                                        )}
+                                        {!pendingManualRecommended &&
+                                          !hasAmberAside &&
+                                          !p.duplicateExisting && (
                                           <span className="text-gray-400">—</span>
                                         )}
                                       </div>
