@@ -44,8 +44,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 : plus stable que macos-latest pour electron-builder DMG (APFS / dmgbuild).
-          - os: macos-14
+          # macos-15 : remplace macos-14 (retiré nov. 2026). Arm64 M1, adapté electron-builder DMG.
+          - os: macos-15
             platform: mac
             prepare_signing: true
           - os: windows-latest
